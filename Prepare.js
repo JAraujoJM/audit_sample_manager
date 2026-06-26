@@ -36,7 +36,7 @@ function listMyAssignments() {
         assignment_id: a.assignment_id, request_id: a.request_id, line_id: a.line_id,
         request_title: req.title || '', document_no: line.document_no || '', vendor: line.vendor || '',
         evidence_type: a.evidence_type, status: a.status, due_date: toDateStr_(a.due_date, tz),
-        files: files
+        note: line.note || '', files: files
       };
     })
     .sort(function (x, y) { return String(x.due_date || '9999').localeCompare(String(y.due_date || '9999')); });
@@ -137,10 +137,6 @@ function withdrawAssignment(assignmentId) {
 }
 
 /* ---------- helpers ---------- */
-function findAssignment_(id) { return readObjects_(dataSs_(), 'Assignments').filter(function (a) { return String(a.assignment_id) === String(id); })[0] || null; }
-function findLine_(id)       { return readObjects_(dataSs_(), 'Sample_Lines').filter(function (l) { return String(l.line_id) === String(id); })[0] || null; }
-function findRequest_(id)    { return readObjects_(dataSs_(), 'Requests').filter(function (r) { return String(r.request_id) === String(id); })[0] || null; }
-
 function assertOwner_(asg, me) {
   if (me.role === ROLES.ADMIN) return;
   if (String(asg.assigned_to || '').toLowerCase() !== me.email.toLowerCase()) {

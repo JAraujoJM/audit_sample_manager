@@ -138,6 +138,11 @@ function conditionsMet_(matchStr, facts) {
   });
 }
 
+/* ---------- row lookups by id ---------- */
+function findRequest_(id)    { return readObjects_(dataSs_(), 'Requests').filter(function (r) { return String(r.request_id) === String(id); })[0] || null; }
+function findLine_(id)       { return readObjects_(dataSs_(), 'Sample_Lines').filter(function (l) { return String(l.line_id) === String(id); })[0] || null; }
+function findAssignment_(id) { return readObjects_(dataSs_(), 'Assignments').filter(function (a) { return String(a.assignment_id) === String(id); })[0] || null; }
+
 /* ---------- assignments (multi-preparer per line) ---------- */
 function getAssignments(lineId) {
   return readObjects_(dataSs_(), 'Assignments').filter(function (a) { return String(a.line_id) === String(lineId); });

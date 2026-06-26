@@ -166,6 +166,15 @@
   .link-btn{border:0; background:none; color:var(--text-3); font:inherit; font-size:12px; cursor:pointer; text-decoration:underline; padding:0;}
   .task-foot{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
   .upmsg{font-size:12px; min-height:1px;}
+  .task-note{margin:0 0 10px; font-size:12.5px; color:var(--amber); background:var(--amber-tint); border-radius:6px; padding:7px 10px;}
+
+  /* review / audit */
+  .asg-r{display:grid; grid-template-columns:1.2fr 1fr 1.4fr; gap:10px; align-items:center; padding:9px 0; border-top:1px solid var(--sep); font-size:13px;}
+  @media (max-width:620px){.asg-r{grid-template-columns:1fr; gap:4px;}}
+  .asg-r .etype{display:flex; align-items:center; gap:8px;}
+  .files-inline a{color:var(--accent); text-decoration:none; font-size:12.5px;} .files-inline a:hover{text-decoration:underline;}
+  .note-line{margin-top:11px; font-size:12.5px; color:var(--amber); background:var(--amber-tint); border-radius:6px; padding:7px 10px;}
+  .note-in{flex:1; min-width:170px;}
 </style>
 </head>
 <body>
@@ -244,6 +253,26 @@
       <p class="sub">Evidence the auditors need you to collect. Upload the document, then submit it for review.</p>
       <div id="taskList"><div class="empty">Loading…</div></div>
     </section>
+
+    <!-- REVIEW ----------------------------------------------------------- -->
+    <section class="view" id="view-review" hidden>
+      <h2>Review</h2>
+      <p class="sub">Check that each line's evidence is complete, then submit it to the auditor — or return it to the preparer.</p>
+      <div class="assign-grid">
+        <aside class="req-list" id="reviewList"><div class="empty">Loading…</div></aside>
+        <div class="req-detail" id="reviewDetail"><div class="empty">Select a request to review.</div></div>
+      </div>
+    </section>
+
+    <!-- AUDIT ------------------------------------------------------------ -->
+    <section class="view" id="view-audit" hidden>
+      <h2>Audit</h2>
+      <p class="sub">Review the evidence submitted for each line, then close it or return it for rework.</p>
+      <div class="assign-grid">
+        <aside class="req-list" id="auditList"><div class="empty">Loading…</div></aside>
+        <div class="req-detail" id="auditDetail"><div class="empty">Select a request to audit.</div></div>
+      </div>
+    </section>
   </main>
 
   <datalist id="preparers"></datalist>
@@ -254,8 +283,13 @@
   function fmtNum(v){ if(v===null||v===undefined||String(v).trim()==='') return '—'; var n=Number(v); return isNaN(n)?esc(v):n.toLocaleString(undefined,{maximumFractionDigits:2}); }
   function fmtDate(s){ if(!s) return '—'; var d=new Date(s); return isNaN(d)?esc(String(s).slice(0,10)):d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }
 
-  var VIEW_LABELS={enrich:'Enrich', assign:'Assign', tasks:'My tasks'};
-  var ROLE_VIEWS={ 'Administrator':['enrich','assign','tasks'], 'Preparer':['tasks'] };
+  var VIEW_LABELS={enrich:'Enrich', assign:'Assign', tasks:'My tasks', review:'Review', audit:'Audit'};
+  var ROLE_VIEWS={
+    'Administrator':['enrich','assign','tasks','review','audit'],
+    'Preparer':['tasks'],
+    'Reviewer':['review'],
+    'Auditor':['audit']
+  };
   var currentUser=null, currentReqId=null, assignLoaded=false;
 
   /* ---------- boot ---------- */
@@ -293,8 +327,12 @@
     $('view-enrich').hidden = name!=='enrich';
     $('view-assign').hidden = name!=='assign';
     $('view-tasks').hidden  = name!=='tasks';
+    $('view-review').hidden = name!=='review';
+    $('view-audit').hidden  = name!=='audit';
     if(name==='assign') loadAssign();
     if(name==='tasks')  refreshTasks();
+    if(name==='review') loadStage('review');
+    if(name==='audit')  loadStage('audit');
   }
 
   /* ---------- enrich ---------- */
@@ -407,8 +445,11 @@
   }
   function statusPill(s){
     s=String(s||'pending').toLowerCase();
-    var cls = s==='assigned'?'blue' : (s==='accepted'||s==='complete')?'green' : s==='rejected'?'red' : s==='submitted'?'amber' : 'neutral';
-    return '<span class="pill '+cls+'">'+esc(s)+'</span>';
+    var cls = (s==='closed'||s==='accepted'||s==='complete') ? 'green'
+            : (s==='assigned'||s==='with_auditor') ? 'blue'
+            : (s==='submitted'||s==='returned') ? 'amber'
+            : (s==='rejected') ? 'red' : 'neutral';
+    return '<span class="pill '+cls+'">'+esc(s.replace(/_/g,' '))+'</span>';
   }
   function renderLineCard(l){
     var adv=/advance/i.test(l.mpl_type);
@@ -466,10 +507,12 @@
       ? '<button class="btn sm withdraw" data-aid="'+esc(t.assignment_id)+'">Withdraw</button>'
       : '<label class="btn sm">Add file<input type="file" class="file-input" data-aid="'+esc(t.assignment_id)+'" hidden></label>'
         +'<button class="btn primary sm submit" data-aid="'+esc(t.assignment_id)+'"'+(t.files.length?'':' disabled')+'>Submit for review</button>';
+    var note = t.note ? '<div class="task-note">'+esc(t.note)+'</div>' : '';
     return '<div class="task-card">'
       +'<div class="task-head"><span class="doc">'+esc(t.document_no)+'</span><span class="ven">'+esc(t.vendor||'')+'</span>'
         +'<span class="grow"></span>'+statusPill(t.status)+'</div>'
       +'<div class="task-evi">'+esc(t.evidence_type)+(t.due_date?' · due '+esc(t.due_date):'')+' · '+esc(t.request_title)+'</div>'
+      +note
       +'<div class="files">'+files+'</div>'
       +'<div class="task-foot">'+actions+'</div>'
       +'<div class="upmsg muted"></div></div>';
@@ -500,6 +543,81 @@
     if(btn){ btn.disabled=true; }
     google.script.run.withSuccessHandler(renderTasks)
       .withFailureHandler(function(e){ if(btn) btn.disabled=false; alert(e.message); })[method](arg);
+  }
+
+  /* ---------- review / audit (reviewer + auditor) ---------- */
+  var STAGE_CFG={
+    review:{ list:'reviewList', detail:'reviewDetail', primaryLabel:'Submit to auditor', primaryFn:'reviewerSubmit', returnFn:'reviewerReturn', verb:'check' },
+    audit: { list:'auditList',  detail:'auditDetail',  primaryLabel:'Close',             primaryFn:'auditorClose',   returnFn:'auditorReturn', verb:'review' }
+  };
+  var stageReqId={ review:null, audit:null };
+
+  function loadStage(stage){
+    google.script.run.withSuccessHandler(function(r){ renderStageList(stage,r); })
+      .withFailureHandler(function(e){ $(STAGE_CFG[stage].list).innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
+      .reviewQueue(stage);
+  }
+  function renderStageList(stage, reqs){
+    var el=$(STAGE_CFG[stage].list);
+    if(!reqs.length){ el.innerHTML='<div class="empty">Nothing here yet.</div>'; return; }
+    el.innerHTML=reqs.map(function(r){
+      var badge = r.pendingCount ? '<span class="pill amber">'+r.pendingCount+' to '+STAGE_CFG[stage].verb+'</span>' : '<span class="pill neutral">0 pending</span>';
+      return '<button class="req-item'+(r.request_id===stageReqId[stage]?' active':'')+'" data-id="'+esc(r.request_id)+'">'
+        +'<div class="rt">'+esc(r.title)+'</div><div class="rm">'+esc(fmtDate(r.created_at))+' · '+r.lineCount+' lines</div>'
+        +'<div class="rm" style="margin-top:5px">'+badge+'</div></button>';
+    }).join('');
+    Array.prototype.forEach.call(el.querySelectorAll('.req-item'), function(b){ b.addEventListener('click', function(){ selectStageReq(stage, b.dataset.id); }); });
+  }
+  function selectStageReq(stage, id){
+    stageReqId[stage]=id;
+    Array.prototype.forEach.call($(STAGE_CFG[stage].list).querySelectorAll('.req-item'), function(b){ b.classList.toggle('active', b.dataset.id===id); });
+    $(STAGE_CFG[stage].detail).innerHTML='<div class="empty">Loading…</div>';
+    google.script.run.withSuccessHandler(function(d){ renderStageDetail(stage,d); })
+      .withFailureHandler(function(e){ $(STAGE_CFG[stage].detail).innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
+      .reviewDetail(id, stage);
+  }
+  function renderStageDetail(stage, d){
+    var head='<div class="card"><h2 style="font-size:16px">'+esc(d.request.title)+'</h2>'
+      +'<p class="sub" style="margin:2px 0 0">'+esc(d.request.period)+' · '+d.lines.length+' lines</p></div>';
+    var lines=d.lines.filter(function(l){ return String(l.status).toLowerCase()!=='not_found'; });
+    if(!lines.length){ $(STAGE_CFG[stage].detail).innerHTML=head+'<div class="card"><div class="empty">No lines to show.</div></div>'; return; }
+    $(STAGE_CFG[stage].detail).innerHTML=head+'<div class="card">'+lines.map(function(l){ return renderStageLine(stage,d.actionable,l); }).join('')+'</div>';
+    wireStage(stage);
+  }
+  function renderStageLine(stage, actionable, l){
+    var adv=/advance/i.test(l.mpl_type);
+    var mpl=adv?'<span class="pill blue">MPL advance</span>':'<span class="pill neutral">Regular</span>';
+    var paid=l.paid_status?('<span class="pill '+(/unpaid/i.test(l.paid_status)?'amber':'green')+'">'+esc(l.paid_status)+'</span>'):'';
+    var asgs=l.assignments.map(function(a){
+      var files=a.files.length? a.files.map(function(f){ return '<a href="'+esc(f.url)+'" target="_blank" rel="noopener">'+esc(f.file_name)+'</a>'; }).join(' · ') : '<span class="muted">no files</span>';
+      return '<div class="asg-r"><div class="etype">'+esc(a.evidence_type)+' '+statusPill(a.status)+'</div>'
+        +'<div class="muted" style="font-size:12px">'+esc(a.assigned_to||'unassigned')+'</div>'
+        +'<div class="files-inline">'+files+'</div></div>';
+    }).join('');
+    var note = l.note ? '<div class="note-line">'+esc(l.note)+'</div>' : '';
+    var actions='';
+    if(String(l.status).toLowerCase()===actionable){
+      actions='<div class="line-foot"><input class="note-in" placeholder="Note (required to return)">'
+        +'<button class="btn primary sm stage-primary" data-id="'+esc(l.line_id)+'">'+esc(STAGE_CFG[stage].primaryLabel)+'</button>'
+        +'<button class="btn sm stage-return" data-id="'+esc(l.line_id)+'">Return</button></div>';
+    }
+    return '<div class="line-card" data-id="'+esc(l.line_id)+'">'
+      +'<div class="line-head"><span class="doc">'+esc(l.document_no)+'</span><span class="ven">'+esc(l.vendor||'')+'</span>'
+        +'<span class="grow"></span>'+mpl+' '+paid+' '+statusPill(l.status)+'</div>'
+      +asgs+note+actions+'</div>';
+  }
+  function wireStage(stage){
+    var el=$(STAGE_CFG[stage].detail);
+    Array.prototype.forEach.call(el.querySelectorAll('.stage-primary'), function(b){ b.addEventListener('click', function(){ stageAction(stage, STAGE_CFG[stage].primaryFn, b, false); }); });
+    Array.prototype.forEach.call(el.querySelectorAll('.stage-return'),  function(b){ b.addEventListener('click', function(){ stageAction(stage, STAGE_CFG[stage].returnFn, b, true); }); });
+  }
+  function stageAction(stage, method, btn, needNote){
+    var card=btn.closest('.line-card'), id=card.dataset.id;
+    var noteEl=card.querySelector('.note-in'), note=noteEl?noteEl.value.trim():'';
+    if(needNote && !note){ alert('Please add a note explaining what to fix.'); return; }
+    btn.disabled=true;
+    google.script.run.withSuccessHandler(function(d){ renderStageDetail(stage,d); loadStage(stage); })
+      .withFailureHandler(function(e){ btn.disabled=false; alert(e.message); })[method](id, note);
   }
 </script>
 </body>
