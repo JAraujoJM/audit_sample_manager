@@ -42,6 +42,26 @@ function appendObject_(ss, sheetName, obj) {
   return row;
 }
 
+/** Patch the first row whose `idCol` equals `idValue`. Returns true if found. */
+function updateRowById_(ss, sheetName, idCol, idValue, patch) {
+  var sh = ss.getSheetByName(sheetName);
+  if (!sh) throw new Error('Sheet not found: ' + sheetName);
+  var values = sh.getDataRange().getValues();
+  var headers = values[0];
+  var idIdx = headers.indexOf(idCol);
+  if (idIdx === -1) throw new Error('No column "' + idCol + '" in ' + sheetName);
+  for (var r = 1; r < values.length; r++) {
+    if (String(values[r][idIdx]) === String(idValue)) {
+      Object.keys(patch).forEach(function (k) {
+        var c = headers.indexOf(k);
+        if (c !== -1) sh.getRange(r + 1, c + 1).setValue(patch[k]);
+      });
+      return true;
+    }
+  }
+  return false;
+}
+
 function nowIso_() {
   return Utilities.formatDate(new Date(), 'UTC', "yyyy-MM-dd'T'HH:mm:ss'Z'");
 }
