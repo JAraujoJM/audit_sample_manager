@@ -110,14 +110,24 @@ function toDateStr_(v, tz) {
   return v == null ? '' : String(v);
 }
 
-/** Reflect assignment coverage on the line: all assigned -> 'assigned', else 'open'. */
+/**
+ * Roll the assignment lifecycle up to the line status (pre-review only):
+ *   open -> assigned -> in_progress -> submitted.
+ * 'submitted' means every required item is submitted/accepted — i.e. all
+ * preparers have responded, so the line is ready to advance. Review/closed
+ * states are left untouched.
+ */
 function updateLineAssignmentRollup_(lineId) {
   var items = getAssignments(lineId);
   if (!items.length) return;
   var line = readObjects_(dataSs_(), 'Sample_Lines').filter(function (l) { return String(l.line_id) === String(lineId); })[0];
   if (!line) return;
-  var cur = String(line.status).toLowerCase();
-  if (cur !== 'open' && cur !== 'assigned') return;   // don't disturb downstream statuses
+  if (['open', 'assigned', 'in_progress', 'submitted'].indexOf(String(line.status).toLowerCase()) === -1) return;
+
+  var st = function (a) { return String(a.status).toLowerCase(); };
+  var allDone     = items.every(function (a) { return st(a) === 'submitted' || st(a) === 'accepted'; });
+  var anyWork     = items.some(function (a) { return ['in_progress', 'submitted', 'accepted'].indexOf(st(a)) !== -1; });
   var allAssigned = items.every(function (a) { return String(a.assigned_to || '').trim() !== ''; });
-  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: allAssigned ? 'assigned' : 'open' });
+  var next = allDone ? 'submitted' : anyWork ? 'in_progress' : allAssigned ? 'assigned' : 'open';
+  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: next });
 }

@@ -18,6 +18,8 @@
     --shadow:0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.04);
   }
   *{box-sizing:border-box;}
+  [hidden]{display:none !important;}
+  html{scrollbar-gutter:stable;}        /* reserve scrollbar space so views don't shift sideways */
   html,body{margin:0;}
   body{
     background:var(--bg); color:var(--text);
@@ -150,6 +152,20 @@
   .saved{font-size:12.5px; color:var(--green); opacity:0; transition:opacity .2s;}
   .saved.on{opacity:1;}
   label.fld{font-size:11px; color:var(--text-3); display:block; margin-bottom:4px;}
+
+  /* my tasks */
+  .task-card{border:1px solid var(--sep); border-radius:var(--radius-sm); padding:14px 16px; margin-bottom:12px;}
+  .task-head{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+  .task-head .doc{font-family:var(--mono); font-size:13px; font-weight:600;}
+  .task-head .ven{color:var(--text-2); font-size:12.5px;}
+  .task-head .grow{flex:1;}
+  .task-evi{color:var(--text-2); font-size:12.5px; margin:5px 0 11px;}
+  .files{display:flex; flex-direction:column; gap:5px; margin-bottom:11px;}
+  .file{font-size:13px; display:flex; align-items:center; gap:6px;}
+  .file a{color:var(--accent); text-decoration:none;} .file a:hover{text-decoration:underline;}
+  .link-btn{border:0; background:none; color:var(--text-3); font:inherit; font-size:12px; cursor:pointer; text-decoration:underline; padding:0;}
+  .task-foot{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+  .upmsg{font-size:12px; min-height:1px;}
 </style>
 </head>
 <body>
@@ -159,10 +175,7 @@
   </header>
 
   <div class="nav-wrap" id="navWrap" hidden>
-    <div class="segmented" id="nav">
-      <button class="seg active" data-view="enrich">Enrich</button>
-      <button class="seg" data-view="assign">Assign</button>
-    </div>
+    <div class="segmented" id="nav"></div>
   </div>
 
   <main class="wrap">
@@ -224,6 +237,13 @@
         <div class="req-detail" id="reqDetail"><div class="empty">Select a run to assign its evidence.</div></div>
       </div>
     </section>
+
+    <!-- MY TASKS --------------------------------------------------------- -->
+    <section class="view" id="view-tasks" hidden>
+      <h2>My tasks</h2>
+      <p class="sub">Evidence the auditors need you to collect. Upload the document, then submit it for review.</p>
+      <div id="taskList"><div class="empty">Loading…</div></div>
+    </section>
   </main>
 
   <datalist id="preparers"></datalist>
@@ -234,7 +254,8 @@
   function fmtNum(v){ if(v===null||v===undefined||String(v).trim()==='') return '—'; var n=Number(v); return isNaN(n)?esc(v):n.toLocaleString(undefined,{maximumFractionDigits:2}); }
   function fmtDate(s){ if(!s) return '—'; var d=new Date(s); return isNaN(d)?esc(String(s).slice(0,10)):d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }
 
-  var ROLE_ADMIN='Administrator';
+  var VIEW_LABELS={enrich:'Enrich', assign:'Assign', tasks:'My tasks'};
+  var ROLE_VIEWS={ 'Administrator':['enrich','assign','tasks'], 'Preparer':['tasks'] };
   var currentUser=null, currentReqId=null, assignLoaded=false;
 
   /* ---------- boot ---------- */
@@ -244,27 +265,36 @@
     currentUser=u;
     $('who').innerHTML = u.email ? esc(u.email)+' <span class="role">'+esc(u.role||'no role')+'</span>' : 'Unidentified';
     if(!u.isSetup){ gate('The app isn\'t set up yet. An administrator needs to run setup().'); return; }
-    if(u.role!==ROLE_ADMIN){
+    var views = ROLE_VIEWS[u.role];
+    if(!views){
       gate(u.role ? ('Signed in as '+esc(u.role)+'. Your workspace is coming in a later phase.')
                   : 'You don\'t have access yet. Ask an administrator to add your email.');
       return;
     }
-    $('navWrap').hidden=false;
-    showView('enrich');
+    buildNav(views);
+  }
+
+  function buildNav(views){
+    var nav=$('nav'); nav.innerHTML='';
+    views.forEach(function(v,i){
+      var b=document.createElement('button'); b.className='seg'+(i===0?' active':''); b.dataset.view=v; b.textContent=VIEW_LABELS[v]||v;
+      b.addEventListener('click', function(){ showView(v); });
+      nav.appendChild(b);
+    });
+    $('navWrap').hidden = views.length<2;          // a single-view role needs no switcher
+    showView(views[0]);
   }
 
   function gate(msg){ $('navWrap').hidden=true; $('gate').hidden=false; $('gate').textContent=msg; }
 
-  /* ---------- view switching ---------- */
-  Array.prototype.forEach.call(document.querySelectorAll('.seg'), function(b){
-    b.addEventListener('click', function(){ showView(b.dataset.view); });
-  });
   function showView(name){
     $('gate').hidden=true;
-    Array.prototype.forEach.call(document.querySelectorAll('.seg'), function(b){ b.classList.toggle('active', b.dataset.view===name); });
+    Array.prototype.forEach.call($('nav').querySelectorAll('.seg'), function(b){ b.classList.toggle('active', b.dataset.view===name); });
     $('view-enrich').hidden = name!=='enrich';
     $('view-assign').hidden = name!=='assign';
+    $('view-tasks').hidden  = name!=='tasks';
     if(name==='assign') loadAssign();
+    if(name==='tasks')  refreshTasks();
   }
 
   /* ---------- enrich ---------- */
@@ -413,6 +443,63 @@
     }).withFailureHandler(function(e){
       btn.disabled=false; btn.textContent='Save'; alert(e.message);
     }).assignBatch(updates);
+  }
+
+  /* ---------- my tasks (preparer) ---------- */
+  function refreshTasks(){
+    google.script.run.withSuccessHandler(renderTasks)
+      .withFailureHandler(function(e){ $('taskList').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
+      .listMyAssignments();
+  }
+  function renderTasks(items){
+    if(!items.length){ $('taskList').innerHTML='<div class="empty">No tasks assigned to you yet.</div>'; return; }
+    $('taskList').innerHTML='<div class="card">'+items.map(renderTaskCard).join('')+'</div>';
+    wireTasks();
+  }
+  function renderTaskCard(t){
+    var submitted = String(t.status).toLowerCase()==='submitted';
+    var files = t.files.map(function(f){
+      var link = f.url ? '<a href="'+esc(f.url)+'" target="_blank" rel="noopener">'+esc(f.file_name)+'</a>' : esc(f.file_name);
+      return '<div class="file">'+link+(submitted?'':'<button class="link-btn rm-file" data-eid="'+esc(f.evidence_id)+'">remove</button>')+'</div>';
+    }).join('') || '<div class="muted" style="font-size:12.5px">No files yet.</div>';
+    var actions = submitted
+      ? '<button class="btn sm withdraw" data-aid="'+esc(t.assignment_id)+'">Withdraw</button>'
+      : '<label class="btn sm">Add file<input type="file" class="file-input" data-aid="'+esc(t.assignment_id)+'" hidden></label>'
+        +'<button class="btn primary sm submit" data-aid="'+esc(t.assignment_id)+'"'+(t.files.length?'':' disabled')+'>Submit for review</button>';
+    return '<div class="task-card">'
+      +'<div class="task-head"><span class="doc">'+esc(t.document_no)+'</span><span class="ven">'+esc(t.vendor||'')+'</span>'
+        +'<span class="grow"></span>'+statusPill(t.status)+'</div>'
+      +'<div class="task-evi">'+esc(t.evidence_type)+(t.due_date?' · due '+esc(t.due_date):'')+' · '+esc(t.request_title)+'</div>'
+      +'<div class="files">'+files+'</div>'
+      +'<div class="task-foot">'+actions+'</div>'
+      +'<div class="upmsg muted"></div></div>';
+  }
+  function wireTasks(){
+    var L=$('taskList');
+    Array.prototype.forEach.call(L.querySelectorAll('.file-input'), function(inp){ inp.addEventListener('change', function(){ handleUpload(inp); }); });
+    Array.prototype.forEach.call(L.querySelectorAll('.submit'),     function(b){ b.addEventListener('click', function(){ taskCall('submitAssignment', b.dataset.aid, b); }); });
+    Array.prototype.forEach.call(L.querySelectorAll('.withdraw'),   function(b){ b.addEventListener('click', function(){ taskCall('withdrawAssignment', b.dataset.aid, b); }); });
+    Array.prototype.forEach.call(L.querySelectorAll('.rm-file'),    function(b){ b.addEventListener('click', function(){ taskCall('removeEvidence', b.dataset.eid, b); }); });
+  }
+  function handleUpload(inp){
+    var file = inp.files && inp.files[0]; if(!file) return;
+    var msg = inp.closest('.task-card').querySelector('.upmsg');
+    if(file.size > 20*1024*1024){ msg.textContent='File too large (max 20 MB).'; inp.value=''; return; }
+    msg.textContent='Uploading '+file.name+'…';
+    var reader=new FileReader();
+    reader.onload=function(){
+      var b64=String(reader.result).split(',')[1];
+      google.script.run.withSuccessHandler(renderTasks)
+        .withFailureHandler(function(e){ msg.textContent=e.message; })
+        .uploadEvidence(inp.dataset.aid, file.name, file.type, b64);
+    };
+    reader.onerror=function(){ msg.textContent='Could not read the file.'; };
+    reader.readAsDataURL(file);
+  }
+  function taskCall(method, arg, btn){
+    if(btn){ btn.disabled=true; }
+    google.script.run.withSuccessHandler(renderTasks)
+      .withFailureHandler(function(e){ if(btn) btn.disabled=false; alert(e.message); })[method](arg);
   }
 </script>
 </body>

@@ -62,6 +62,19 @@ function updateRowById_(ss, sheetName, idCol, idValue, patch) {
   return false;
 }
 
+/** Delete the first row whose `idCol` equals `idValue`. Returns true if found. */
+function deleteRowById_(ss, sheetName, idCol, idValue) {
+  var sh = ss.getSheetByName(sheetName);
+  if (!sh) throw new Error('Sheet not found: ' + sheetName);
+  var values = sh.getDataRange().getValues();
+  var idIdx = values[0].indexOf(idCol);
+  if (idIdx === -1) throw new Error('No column "' + idCol + '" in ' + sheetName);
+  for (var r = values.length - 1; r >= 1; r--) {
+    if (String(values[r][idIdx]) === String(idValue)) { sh.deleteRow(r + 1); return true; }
+  }
+  return false;
+}
+
 function nowIso_() {
   return Utilities.formatDate(new Date(), 'UTC', "yyyy-MM-dd'T'HH:mm:ss'Z'");
 }
