@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<style>
+  :root{
+    --paper:#F7F6F2;--panel:#fff;--ink:#1B2A2F;--muted:#5C6B6F;--line:#DEDCD3;--line-strong:#C9C6BB;
+    --verify:#1F7A5C;--verify-tint:#E7F0EB;--stamp:#B23A2E;--stamp-tint:#F5E7E4;
+    --teal:#2F6F8F;--teal-tint:#E5EEF2;--amber:#9C7416;--amber-tint:#F3ECDB;--slate-tint:#EAECEA;
+    --orange:#F97316;--orange-tint:#FDEBDD;--orange-ink:#9A4310;
+    --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;line-height:1.5;}
+  .wrap{max-width:1040px;margin:0 auto;padding:22px 18px 64px;}
+  h1{font-size:23px;font-weight:800;margin:0 0 2px;letter-spacing:-.01em;}
+  .sub{color:var(--muted);font-size:13.5px;margin:0 0 18px;font-family:var(--mono);letter-spacing:.02em;}
+  .card{background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;padding:18px;margin-bottom:18px;}
+  textarea{width:100%;min-height:104px;font-family:var(--mono);font-size:12.5px;padding:11px;border:1px solid var(--line-strong);border-radius:6px;background:#fbfbf9;resize:vertical;}
+  textarea:focus{outline:2px solid var(--verify);border-color:var(--verify);}
+  .row{display:flex;gap:9px;align-items:center;margin-top:12px;flex-wrap:wrap;}
+  button{font-size:13.5px;font-weight:600;padding:9px 17px;border-radius:6px;border:1px solid var(--line-strong);background:#fff;cursor:pointer;}
+  button.primary{background:var(--verify);border-color:var(--verify);color:#fff;}
+  button:disabled{opacity:.5;cursor:not-allowed;}
+  .status{font-family:var(--mono);font-size:12.5px;margin-top:14px;display:none;}
+  .status.on{display:block;}
+  .status.warn{color:var(--stamp);} .status.info{color:var(--teal);}
+
+  /* loader */
+  .loader{display:none;align-items:center;gap:16px;margin-top:16px;padding:16px;border:1px solid var(--line-strong);border-radius:8px;background:#fbfbf9;}
+  .loader.on{display:flex;}
+  .ring{width:34px;height:34px;border-radius:50%;border:3.5px solid var(--teal-tint);border-top-color:var(--teal);animation:spin .9s linear infinite;flex:none;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .loader .lt{font-family:var(--mono);font-size:12.5px;color:var(--teal);}
+  .loader .le{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:3px;}
+  .dots span{display:inline-block;animation:blink 1.4s infinite both;}
+  .dots span:nth-child(2){animation-delay:.2s;} .dots span:nth-child(3){animation-delay:.4s;}
+  @keyframes blink{0%,80%,100%{opacity:.2;}40%{opacity:1;}}
+  @media (prefers-reduced-motion:reduce){.ring{animation:none;}.dots span{animation:none;opacity:.7;}}
+
+  table{border-collapse:collapse;width:100%;margin-top:6px;}
+  table{font-size:12px;}
+  th,td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.35;}
+  th{font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);background:#fbfbf9;}
+  td.doc,td.code{font-family:var(--mono);font-size:11.5px;white-space:nowrap;}
+  th.num,td.num{text-align:right;font-family:var(--mono);font-size:11.5px;white-space:nowrap;}
+  tr.nf{background:var(--stamp-tint);}
+  .pill{font-family:var(--mono);font-size:10.5px;padding:2px 8px;border-radius:3px;white-space:nowrap;}
+  .p-reg{background:var(--slate-tint);} .p-adv{background:var(--teal-tint);color:#1f5066;}
+  .p-paid{background:var(--verify-tint);color:#155c45;} .p-unpaid{background:var(--amber-tint);color:#7a5a10;}
+  .act{font-weight:600;display:inline-flex;align-items:flex-start;gap:6px;}
+  .act .dot{margin-top:4px;}
+  td:last-child{min-width:150px;}
+  td:nth-child(3){max-width:140px;}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none;}
+  .a-pop .dot{background:var(--verify);} .a-vc .dot{background:var(--amber);} .a-adv .dot{background:var(--teal);}
+  .nftxt{color:var(--stamp);font-weight:600;}
+  .meta{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:10px;}
+
+  /* IPE / SOX */
+  .ipe{border:1px solid var(--orange);border-radius:8px;overflow:hidden;margin-bottom:18px;display:none;}
+  .ipe.on{display:block;}
+  .ipe-head{background:var(--orange-tint);border-bottom:1px solid var(--orange);padding:13px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;}
+  .ipe-head .t{font-weight:800;font-size:14px;letter-spacing:.04em;color:var(--orange-ink);}
+  .ipe-head .ref{font-family:var(--mono);font-size:11.5px;color:var(--orange-ink);}
+  .ipe-body{padding:18px;background:var(--panel);}
+  .ipe-sec{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--orange-ink);font-weight:700;margin:18px 0 8px;}
+  .ipe-sec:first-child{margin-top:0;}
+  .mgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:0;border:1px solid var(--line);border-radius:6px;overflow:hidden;}
+  .mgrid .mc{padding:9px 13px;border-bottom:1px solid var(--line);}
+  .mgrid .mc:nth-child(odd){border-right:1px solid var(--line);}
+  .mgrid .mk{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);}
+  .mgrid .mv{font-size:12.5px;font-weight:500;margin-top:2px;word-break:break-word;}
+  .mgrid .mv.mono{font-family:var(--mono);font-size:11px;}
+  .badge{font-family:var(--mono);font-size:10px;font-weight:600;padding:2px 9px;border-radius:3px;}
+  .b-pass{background:var(--verify-tint);color:#155c45;} .b-flag{background:var(--amber-tint);color:#7a5a10;}
+  details.sql{border:1px solid var(--line);border-radius:6px;background:#fbfbf9;}
+  details.sql summary{cursor:pointer;padding:9px 13px;font-family:var(--mono);font-size:11.5px;color:var(--ink);user-select:none;}
+  details.sql pre{margin:0;padding:13px;border-top:1px solid var(--line);overflow-x:auto;font-family:var(--mono);font-size:11px;line-height:1.5;color:#243;white-space:pre;}
+  .copybtn{font-size:11px;padding:4px 10px;margin:8px 13px 12px;}
+  .hashrow{font-family:var(--mono);font-size:10.5px;word-break:break-all;background:#fbfbf9;border:1px solid var(--line);border-radius:6px;padding:10px 13px;}
+  .hashrow b{color:var(--orange-ink);}
+  .ipe-foot{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);border-top:1px solid var(--line);padding:11px 18px;background:#fbfbf9;}
+  @media (max-width:560px){.mgrid{grid-template-columns:1fr;}.mgrid .mc:nth-child(odd){border-right:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Audit Requests Manager</h1>
+  <p class="sub">Flow A - Marketplace revenues</p>
+
+  <div class="card">
+    <textarea id="docs" spellcheck="false" placeholder="Paste document numbers — one per line or comma-separated"></textarea>
+    <div class="row">
+      <button class="primary" id="run">Run enrichment</button>
+    </div>
+    <div class="loader" id="loader">
+      <div class="ring"></div>
+      <div>
+        <div class="lt" id="ltext">Submitting query to the gateway<span class="dots"><span>.</span><span>.</span><span>.</span></span></div>
+        <div class="le" id="lelapsed">elapsed 0s</div>
+      </div>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <!-- Results -->
+  <div class="card" id="out" style="display:none;">
+    <div id="counts" class="meta"></div>
+    <table>
+      <thead><tr>
+        <th>Document No.</th><th>Company</th><th>Vendor</th><th>MPL type</th>
+        <th>Statement code</th><th>Paid at</th>
+        <th class="num">Txn amount</th><th class="num">Closing balance</th><th class="num">Down payment</th>
+        <th>Action required</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <!-- IPE / SOX -->
+  <div class="ipe" id="ipe">
+    <div class="ipe-head">
+      <span class="t">IPE / SOX — IT-Produced Evidence</span>
+      <span class="ref" id="ipeRef"></span>
+    </div>
+    <div class="ipe-body">
+      <div class="ipe-sec">1 · Completeness &amp; accuracy assessment</div>
+      <table id="ipeChecks">
+        <thead><tr><th>Check</th><th>Method</th><th>Result</th></tr></thead>
+        <tbody></tbody>
+      </table>
+
+      <div class="ipe-sec">2 · SQL query — full text as executed</div>
+      <details class="sql">
+        <summary>Show query (read-only, hardcoded date literals)</summary>
+        <pre id="ipeSql"></pre>
+        <button class="copybtn" id="copySql">Copy query</button>
+      </details>
+
+      <div class="ipe-sec">3 · File integrity &amp; evidence</div>
+      <div class="hashrow" id="ipeHash"></div>
+    </div>
+    <div class="ipe-foot" id="ipeFoot"></div>
+  </div>
+
+</div>
+
+<script>
+  var ACT = { pop:'a-pop', vc:'a-vc', adv:'a-adv' };
+  var LOADING_MSGS = [
+    "Submitting query to the gateway",
+    "Running the read-only extraction",
+    "Retrieving the result set",
+    "Verifying and hashing the evidence"
+  ];
+  var loaderTimer = null, elapsedTimer = null, t0 = 0;
+  function $(id){return document.getElementById(id);}
+  function setStatus(msg, cls){ var s=$('status'); s.className='status on '+(cls||''); s.textContent=msg; }
+  function clearStatus(){ $('status').className='status'; $('status').textContent=''; }
+
+  function startLoader(){
+    $('loader').classList.add('on');
+    var i=0; t0=Date.now();
+    $('ltext').innerHTML = LOADING_MSGS[0] + '<span class="dots"><span>.</span><span>.</span><span>.</span></span>';
+    loaderTimer = setInterval(function(){
+      i = (i+1) % LOADING_MSGS.length;
+      $('ltext').innerHTML = LOADING_MSGS[i] + '<span class="dots"><span>.</span><span>.</span><span>.</span></span>';
+    }, 2600);
+    elapsedTimer = setInterval(function(){
+      $('lelapsed').textContent = 'elapsed ' + Math.round((Date.now()-t0)/1000) + 's';
+    }, 1000);
+  }
+  function stopLoader(){
+    $('loader').classList.remove('on');
+    if(loaderTimer){clearInterval(loaderTimer);loaderTimer=null;}
+    if(elapsedTimer){clearInterval(elapsedTimer);elapsedTimer=null;}
+  }
+
+  $('run').addEventListener('click', run);
+  function run(){
+    var text = $('docs').value.trim();
+    if(!text){ $('docs').focus(); return; }
+    $('run').disabled = true; clearStatus(); startLoader();
+    google.script.run
+      .withSuccessHandler(handle)
+      .withFailureHandler(function(e){ stopLoader(); $('run').disabled=false; setStatus('Error: '+e.message, 'warn'); })
+      .enrich(text);
+  }
+
+  function handle(res){
+    stopLoader(); $('run').disabled = false;
+    if(res.status==='empty'){ setStatus('No document numbers detected.', 'warn'); return; }
+    if(res.status==='failed'){ setStatus('Enrichment failed — '+res.reason, 'warn'); return; }
+    if(res.status==='pending'){
+      setStatus('The request is still running — click Run again to resume it (it will not resubmit).', 'info');
+      return;
+    }
+    clearStatus();
+    render(res.rows);
+    if(res.ipe) renderIpe(res.ipe);
+  }
+
+  function render(rows){
+    $('out').style.display='block';
+    var c={pop:0,vc:0,adv:0,nf:0};
+    rows.forEach(function(r){ if(!r.found) c.nf++; else c[r.action]++; });
+    $('counts').textContent = rows.length+' lines · '+c.pop+' proof of payment · '+c.vc+' VC screenshot · '+c.adv+' advance · '+c.nf+' not found';
+    $('rows').innerHTML = rows.map(function(r){
+      if(!r.found) return '<tr class="nf"><td class="doc">'+esc(r.doc)+'</td><td colspan="8" class="nftxt">Not found in reconciliation</td><td class="nftxt">No action</td></tr>';
+      var adv = /advance/i.test(r.mpl);
+      var mpl = adv ? '<span class="pill p-adv">MPL advance</span>' : '<span class="pill p-reg">Regular</span>';
+      var paid = adv ? '<span class="pill p-adv">n/a</span>'
+        : (r.paid_at ? '<span class="pill p-paid">'+esc(r.paid_at)+'</span>' : '<span class="pill p-unpaid">Unpaid</span>');
+      return '<tr><td class="doc">'+esc(r.doc)+'</td><td>'+esc(r.company)+'</td><td>'+esc(r.vendor)+'</td>'
+        +'<td>'+mpl+'</td><td class="code">'+esc(r.statement||'—')+'</td><td>'+paid+'</td>'
+        +'<td class="num">'+fmtNum(r.amount)+'</td><td class="num">'+fmtNum(r.closing_balance)+'</td><td class="num">'+fmtNum(r.downpay)+'</td>'
+        +'<td><span class="act '+ACT[r.action]+'"><span class="dot"></span>'+esc(r.action_label)+'</span></td></tr>';
+    }).join('');
+  }
+
+  function renderIpe(ipe){
+    $('ipe').classList.add('on');
+    $('ipeRef').textContent = ipe.documentRef;
+    $('ipeChecks').querySelector('tbody').innerHTML = ipe.checks.map(function(c){
+      var b = c.result==='Pass' ? '<span class="badge b-pass">Pass</span>' : '<span class="badge b-flag">Flag</span>';
+      return '<tr><td style="font-weight:600">'+esc(c.name)+'</td><td>'+esc(c.method)+'</td><td>'+b+'</td></tr>';
+    }).join('');
+
+    $('ipeSql').textContent = ipe.query;
+    $('ipeHash').innerHTML =
+        '<div><b>File</b> &nbsp;'+esc(ipe.csvName)+' &nbsp;·&nbsp; '+Number(ipe.csvSize).toLocaleString()+' bytes</div>'
+      + '<div style="margin-top:6px"><b>SHA-256</b> &nbsp;'+esc(ipe.csvSha256)+'</div>'
+      + '<div style="margin-top:8px;color:var(--muted)">'+esc(ipe.evidenceNote)+'</div>';
+    $('ipeFoot').textContent = 'CONFIDENTIAL · SOX-Relevant · ' + ipe.documentRef;
+  }
+
+  $('copySql').addEventListener('click', function(){
+    var txt = $('ipeSql').textContent;
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(txt).then(function(){ flashCopy(); }, function(){ legacyCopy(txt); });
+    } else { legacyCopy(txt); }
+  });
+  function flashCopy(){ var b=$('copySql'); var o=b.textContent; b.textContent='Copied'; setTimeout(function(){b.textContent=o;},1200); }
+  function legacyCopy(txt){ var ta=document.createElement('textarea'); ta.value=txt; document.body.appendChild(ta); ta.select(); try{document.execCommand('copy');flashCopy();}catch(e){} document.body.removeChild(ta); }
+
+  function fmtNum(v){ if(v===null||v===undefined||String(v).trim()==='') return '—'; var n=Number(v); return isNaN(n)?esc(v):n.toLocaleString(undefined,{maximumFractionDigits:2}); }
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+</script>
+</body>
+</html>
