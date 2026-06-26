@@ -80,6 +80,47 @@ function getSetting(key) {
   return hit.length ? hit[0].value : null;
 }
 
+/* ---------- routing engine (config-driven) ---------- */
+/** Reduce a line to the facts routing matches on. */
+function lineFacts_(mplType, paidAt) {
+  return {
+    mpl:  /advance/i.test(String(mplType)) ? 'advance' : 'regular',
+    paid: (paidAt && String(paidAt).trim() !== '') ? 'yes' : 'no'
+  };
+}
+
+/** Required evidence for a line = every active Routing row whose match holds. */
+function routeLine_(facts, flowId) {
+  return getRouting(flowId).filter(function (r) { return conditionsMet_(String(r.match), facts); });
+}
+
+/** `match` is a ';'-separated list of key=value conditions, all of which must hold. */
+function conditionsMet_(matchStr, facts) {
+  if (!matchStr) return true;
+  return matchStr.split(';').every(function (cond) {
+    var kv = cond.split('=');
+    if (kv.length !== 2) return true;
+    var k = kv[0].trim().toLowerCase(), v = kv[1].trim().toLowerCase();
+    return String(facts[k] === undefined ? '' : facts[k]).toLowerCase() === v;
+  });
+}
+
+/* ---------- assignments (multi-preparer per line) ---------- */
+function getAssignments(lineId) {
+  return readObjects_(dataSs_(), 'Assignments').filter(function (a) { return String(a.line_id) === String(lineId); });
+}
+
+/**
+ * A line advances only once EVERY required-evidence Assignment is satisfied —
+ * this is the "all preparers must respond before moving forward" rule.
+ */
+function lineIsComplete_(lineId) {
+  var items = getAssignments(lineId);
+  return items.length > 0 && items.every(function (a) {
+    return ['accepted', 'complete'].indexOf(String(a.status).toLowerCase()) !== -1;
+  });
+}
+
 /* ---------- admin: register a user (idempotent upsert) ---------- */
 function addUser(email, role) {
   requireRole_([ROLES.ADMIN]);

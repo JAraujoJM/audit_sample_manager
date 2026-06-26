@@ -150,6 +150,34 @@ function routeAction_(mplType, paidAt) {
   return { key: 'vc', label: 'VC screenshot (Unpaid)' };
 }
 
+/**
+ * Required evidence for a line. Prefers the Flow A Routing config (one entry per
+ * required document, so advance returns two), falling back to the hardcoded rule
+ * above when the config layer isn't available yet (app not set up).
+ */
+function resolveAction_(mplType, paidAt) {
+  if (isSetupDone_()) {
+    var matched = routeLine_(lineFacts_(mplType, paidAt), 'flowA');
+    if (matched.length) {
+      return {
+        key:     styleKey_(matched),
+        label:   matched.map(function (m) { return m.required_evidence; }).join(' + '),
+        matched: matched
+      };
+    }
+  }
+  var a = routeAction_(mplType, paidAt);
+  return { key: a.key, label: a.label, matched: [] };
+}
+
+/** Map matched routing rules to the UI's colour key (a-pop / a-vc / a-adv). */
+function styleKey_(matched) {
+  var names = matched.map(function (m) { return String(m.rule_name); }).join(' ');
+  if (/advance/i.test(names)) return 'adv';
+  if (/unpaid/i.test(names))  return 'vc';
+  return 'pop';
+}
+
 /* ---------- gateway round trip ---------- */
 function submitJob_(query) {
   var requestId = APP_ID + '_' + Utilities.getUuid();
@@ -189,6 +217,7 @@ function props_() { return PropertiesService.getUserProperties(); }
  * RE-POLLS that id instead of resubmitting (no duplicate jobs).
  */
 function enrich(docText) {
+  if (isSetupDone_()) requireRole_([ROLES.ADMIN]);   // SoD: only the Administrator runs enrichment
   var docs = parseDocs_(docText);
   if (docs.length === 0) return { status: 'empty' };
 
@@ -222,9 +251,8 @@ function enrich(docText) {
 
 function buildResults_(csv, docs, requestId, query, file) {
   if (!csv || !csv.length) {                       // empty result → everything not found
-    return { status: 'ok', requestId: requestId,
-             rows: docs.map(function (d) { return { doc: d, found: false }; }),
-             ipe: buildIpe_(docs, 0, requestId, query, file) };
+    var empty = docs.map(function (d) { return { doc: d, found: false, _matched: [] }; });
+    return finalizeRun_(empty, docs, 0, requestId, query, file);
   }
   var header = csv[0];
   var idx = {};
@@ -241,10 +269,10 @@ function buildResults_(csv, docs, requestId, query, file) {
 
   var results = docs.map(function (d) {
     var row = byDoc[d.toUpperCase()];
-    if (!row) return { doc: d, found: false };
+    if (!row) return { doc: d, found: false, _matched: [] };
     var mpl = cell(row, 'MPL type');
     var paid = cell(row, 'Paid_At_Date');
-    var action = routeAction_(mpl, paid);
+    var routed = resolveAction_(mpl, paid);
     return {
       doc: d, found: true,
       company: cell(row, 'ID_Company'),
@@ -256,13 +284,97 @@ function buildResults_(csv, docs, requestId, query, file) {
       closing_balance: cell(row, 'Statement Closing Balance'),
       po: cell(row, 'PO_NUMBER'),
       downpay: cell(row, 'Down Payment Amount'),
-      action: action.key, action_label: action.label
+      action: routed.key, action_label: routed.label,
+      _matched: routed.matched                     // internal: routing rows → assignments
     };
   });
   var foundCount = results.filter(function (x) { return x.found; }).length;
-  return { status: 'ok', requestId: requestId, rows: results,
-           ipe: buildIpe_(docs, foundCount, requestId, query, file) };
+  return finalizeRun_(results, docs, foundCount, requestId, query, file);
 }
+
+/* ---------- persist a successful run, then return a clean payload to the UI ---------- */
+function finalizeRun_(results, docs, foundCount, requestId, query, file) {
+  var ret = {
+    status: 'ok', requestId: requestId,
+    rows: results.map(stripInternal_),
+    ipe: buildIpe_(docs, foundCount, requestId, query, file)
+  };
+  if (isSetupDone_()) {
+    try {
+      ret.dbRequestId = persistRun_(results, requestId).dbRequestId;
+    } catch (e) {
+      ret.persistError = String(e);                // never block the auditor's result on a write failure
+      logActivity('ENRICH_PERSIST_FAILED', 'request', requestId, String(e));
+    }
+  }
+  return ret;
+}
+
+function stripInternal_(row) {
+  var o = {};
+  for (var k in row) if (row.hasOwnProperty(k) && k.charAt(0) !== '_') o[k] = row[k];
+  return o;
+}
+
+/**
+ * A successful enrichment becomes a Request + one Sample_Line per document + one
+ * Assignment per required evidence item. Assignments default to the routing
+ * `responsible`; when that's a role (not an email), assigned_to is left blank for
+ * the admin to assign a specific preparer — including different people per item.
+ */
+function persistRun_(results, gatewayRequestId) {
+  var flow  = getFlow('flowA') || { flow_id: 'flowA', name: 'Marketplace revenues / COGS' };
+  var actor = Session.getActiveUser().getEmail() || 'system';
+  var ds    = dataSs_();
+  var reqId = newId_('REQ');
+  var ts    = nowIso_();
+
+  appendObject_(ds, 'Requests', {
+    request_id: reqId, flow_id: flow.flow_id, title: flow.name,
+    period: FY_START + ' to ' + FY_END, status: 'enriched',
+    created_by: actor, created_at: ts, updated_at: ts
+  });
+
+  var lines = 0, assignments = 0;
+  results.forEach(function (r) {
+    var lineId = newId_('LIN');
+    if (!r.found) {
+      appendObject_(ds, 'Sample_Lines', {
+        line_id: lineId, request_id: reqId, document_no: r.doc,
+        status: 'not_found', required_count: 0, created_at: ts
+      });
+      lines++;
+      return;
+    }
+    var matched = r._matched || [];
+    appendObject_(ds, 'Sample_Lines', {
+      line_id: lineId, request_id: reqId, document_no: r.doc,
+      company: r.company, vendor: r.vendor, mpl_type: r.mpl,
+      paid_status: r.paid_at ? 'Paid' : 'Unpaid',
+      statement_code: r.statement, amount: r.amount,
+      route_rule: matched.map(function (m) { return m.rule_name; }).join(','),
+      required_count: matched.length, status: 'open',
+      evidence_folder_id: '', created_at: ts
+    });
+    lines++;
+    matched.forEach(function (m) {
+      var resp = String(m.responsible || '');
+      appendObject_(ds, 'Assignments', {
+        assignment_id: newId_('ASG'), line_id: lineId, request_id: reqId,
+        evidence_type: m.required_evidence,
+        assigned_to: /@jumia\.com$/i.test(resp) ? resp : '',
+        status: 'pending', due_date: '', submitted_at: '', notes: '', created_at: ts
+      });
+      assignments++;
+    });
+  });
+
+  logActivity('ENRICH_PERSIST', 'request', reqId,
+              lines + ' lines, ' + assignments + ' assignments (gateway ' + gatewayRequestId + ')');
+  return { dbRequestId: reqId, lines: lines, assignments: assignments };
+}
+
+function newId_(prefix) { return prefix + '_' + Utilities.getUuid().slice(0, 8); }
 
 /* ---------- IPE / SOX evidence metadata ---------- */
 function sha256Hex_(bytes) {

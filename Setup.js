@@ -85,10 +85,18 @@ function ensureSheets_(ss, schema) {
   Object.keys(schema).forEach(function (sheetName) {
     var sh = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
     var headers = schema[sheetName];
-    var firstRow = sh.getRange(1, 1, 1, headers.length).getValues()[0];
-    if (firstRow.join('') === '') {                 // only write headers if row 1 is blank
+    if (sh.getLastRow() <= 1) {
+      // Empty (header-only or blank): write the canonical headers exactly. This
+      // also cleans up renamed/removed columns from an earlier schema version.
+      if (sh.getLastColumn() > headers.length) sh.getRange(1, 1, 1, sh.getLastColumn()).clearContent();
       sh.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
       sh.setFrozenRows(1);
+    } else {
+      // Has data: only ADD missing columns at the end (never touch existing data).
+      var existing = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String);
+      headers.forEach(function (h) {
+        if (existing.indexOf(h) === -1) sh.getRange(1, sh.getLastColumn() + 1).setValue(h).setFontWeight('bold');
+      });
     }
   });
   var def = ss.getSheetByName('Sheet1');             // drop the empty default tab
@@ -116,11 +124,7 @@ function seedConfig_(runner, folderIds) {
     });
   }
 
-  if (sheetIsEmpty_(cfg, 'Routing')) {
-    appendObject_(cfg, 'Routing', { flow_id: 'flowA', rule_name: 'mpl_advance',    match: 'mpl=advance',         required_evidence: 'Consignment contract + down-payment proof', responsible: ROLES.PREPARER, active: true });
-    appendObject_(cfg, 'Routing', { flow_id: 'flowA', rule_name: 'regular_paid',   match: 'mpl=regular;paid=yes', required_evidence: 'Proof of payment',                          responsible: ROLES.PREPARER, active: true });
-    appendObject_(cfg, 'Routing', { flow_id: 'flowA', rule_name: 'regular_unpaid', match: 'mpl=regular;paid=no',  required_evidence: 'VC screenshot (Unpaid)',                     responsible: ROLES.PREPARER, active: true });
-  }
+  if (sheetIsEmpty_(cfg, 'Routing')) seedFlowARouting_(cfg);
 
   if (sheetIsEmpty_(cfg, 'Settings')) {
     appendObject_(cfg, 'Settings', { key: 'evidence_folder_id',        value: folderIds.evidence, description: 'Drive folder where preparer evidence is stored' });
@@ -134,4 +138,33 @@ function seedConfig_(runner, folderIds) {
 function sheetIsEmpty_(ss, sheetName) {
   var sh = ss.getSheetByName(sheetName);
   return !sh || sh.getLastRow() <= 1;               // header only (or missing) = empty
+}
+
+/**
+ * Canonical Flow A routing — one row per required document. The advance case is
+ * split into two rows (contract + down-payment) so each can be assigned to a
+ * different preparer; the engine treats every matching row as its own Assignment.
+ */
+function seedFlowARouting_(cfg) {
+  appendObject_(cfg, 'Routing', { flow_id: 'flowA', rule_name: 'mpl_advance_contract',    match: 'mpl=advance',          required_evidence: 'Consignment contract',   responsible: ROLES.PREPARER, active: true });
+  appendObject_(cfg, 'Routing', { flow_id: 'flowA', rule_name: 'mpl_advance_downpayment', match: 'mpl=advance',          required_evidence: 'Down-payment proof',     responsible: ROLES.PREPARER, active: true });
+  appendObject_(cfg, 'Routing', { flow_id: 'flowA', rule_name: 'regular_paid',            match: 'mpl=regular;paid=yes', required_evidence: 'Proof of payment',       responsible: ROLES.PREPARER, active: true });
+  appendObject_(cfg, 'Routing', { flow_id: 'flowA', rule_name: 'regular_unpaid',          match: 'mpl=regular;paid=no',  required_evidence: 'VC screenshot (Unpaid)', responsible: ROLES.PREPARER, active: true });
+}
+
+/**
+ * Admin-run: rewrite Flow A routing to the canonical set above. OVERWRITES the
+ * existing Flow A rows (other flows are preserved). Use once on a sheet seeded
+ * before the advance rule was split into two documents.
+ */
+function reseedFlowARouting() {
+  requireRole_([ROLES.ADMIN]);
+  var cfg = configSs_();
+  var sh = cfg.getSheetByName('Routing');
+  var kept = readObjects_(cfg, 'Routing').filter(function (r) { return String(r.flow_id) !== 'flowA'; });
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).clearContent();
+  kept.forEach(function (r) { appendObject_(cfg, 'Routing', r); });
+  seedFlowARouting_(cfg);
+  logActivity('ROUTING_RESEED', 'flow', 'flowA', 'Reseeded Flow A routing (advance split into contract + down-payment)');
+  return getRouting('flowA');
 }

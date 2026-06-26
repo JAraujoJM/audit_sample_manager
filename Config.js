@@ -56,9 +56,14 @@ var SCHEMA = {
   data: {
     Requests:     ['request_id', 'flow_id', 'title', 'period', 'status', 'created_by', 'created_at', 'updated_at'],
     Sample_Lines: ['line_id', 'request_id', 'document_no', 'company', 'vendor', 'mpl_type', 'paid_status',
-                   'statement_code', 'amount', 'action_key', 'action_label', 'assigned_to', 'status',
+                   'statement_code', 'amount', 'route_rule', 'required_count', 'status',
                    'evidence_folder_id', 'created_at'],
-    Evidence:     ['evidence_id', 'line_id', 'request_id', 'file_id', 'file_name', 'mime', 'uploaded_by', 'uploaded_at', 'status'],
+    // One row per required evidence item per line — this is where multi-preparer lives.
+    // A line can carry several Assignments (e.g. invoice + proof of payment), each owned
+    // by a different preparer; the line only advances once every Assignment is satisfied.
+    Assignments:  ['assignment_id', 'line_id', 'request_id', 'evidence_type', 'assigned_to', 'status',
+                   'due_date', 'submitted_at', 'notes', 'created_at'],
+    Evidence:     ['evidence_id', 'assignment_id', 'line_id', 'request_id', 'file_id', 'file_name', 'mime', 'uploaded_by', 'uploaded_at', 'status'],
     Activity_Log: ['ts', 'actor', 'action', 'entity_type', 'entity_id', 'details']
   }
 };
