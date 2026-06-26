@@ -4,6 +4,7 @@
 <base target="_top">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   :root{
     --bg:#F5F5F7; --surface:#FFFFFF;
@@ -167,12 +168,32 @@
   .task-foot{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
   .upmsg{font-size:12px; min-height:1px;}
   .task-note{margin:0 0 10px; font-size:12.5px; color:var(--amber); background:var(--amber-tint); border-radius:6px; padding:7px 10px;}
+  .task-facts{display:flex; flex-wrap:wrap; gap:6px 18px; font-size:12.5px; color:var(--text-2); margin:0 0 11px;}
+  .task-facts b{color:var(--text); font-weight:600;}
 
   /* review / audit */
-  .asg-r{display:grid; grid-template-columns:1.2fr 1fr 1.4fr; gap:10px; align-items:center; padding:9px 0; border-top:1px solid var(--sep); font-size:13px;}
-  @media (max-width:620px){.asg-r{grid-template-columns:1fr; gap:4px;}}
-  .asg-r .etype{display:flex; align-items:center; gap:8px;}
-  .files-inline a{color:var(--accent); text-decoration:none; font-size:12.5px;} .files-inline a:hover{text-decoration:underline;}
+  .filter-bar{display:inline-flex; gap:2px; background:#ECECEF; border-radius:9px; padding:2px; margin-bottom:14px;}
+  .filter-bar button{border:0; background:transparent; font:inherit; font-size:12.5px; font-weight:500; padding:5px 14px; border-radius:7px; cursor:pointer; color:var(--text);}
+  .filter-bar button.active{background:var(--surface); box-shadow:0 1px 3px rgba(0,0,0,.12);}
+  .rev-grid{display:grid; grid-template-columns:minmax(210px,1fr) 1.25fr; gap:16px; align-items:start; margin-top:4px;}
+  @media (max-width:760px){.rev-grid{grid-template-columns:1fr;}}
+  .facts .f{display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-bottom:1px solid var(--sep); font-size:13px;}
+  .facts .fk{color:var(--text-3);} .facts .fv{font-weight:500; text-align:right; word-break:break-word;}
+  .asg-rev{margin-top:12px; font-size:13px;}
+  .asg-rev .et{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+  .asg-rev .who{color:var(--text-3); font-size:12px; margin-top:2px;}
+  .doc-chips{display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;}
+  .chip{font-size:12px; border:1px solid var(--sep-strong); background:var(--surface); border-radius:6px; padding:4px 10px; cursor:pointer; color:var(--text);}
+  .chip:hover{border-color:var(--accent);}
+  .chip.active{border-color:var(--accent); color:var(--accent); background:var(--accent-tint);}
+  .preview{border:1px solid var(--sep); border-radius:var(--radius-sm); background:#FBFBFD; min-height:260px; display:flex; align-items:center; justify-content:center; overflow:auto; padding:8px;}
+  .preview img{max-width:100%; height:auto; border-radius:4px; cursor:zoom-in;}
+  .preview .pdf-wrap{width:100%;}
+  .preview .pdf-pages{display:flex; flex-direction:column; gap:8px; max-height:600px; overflow:auto;}
+  .preview canvas.pdf-canvas{max-width:100%; border-radius:3px; box-shadow:0 1px 4px rgba(0,0,0,.12);}
+  .preview .pdf-full{text-align:center; margin-top:7px; font-size:12.5px;}
+  .preview .pdf-full a{color:var(--accent); text-decoration:none;}
+  .preview .ph{color:var(--text-3); font-size:13px; text-align:center;}
   .note-line{margin-top:11px; font-size:12.5px; color:var(--amber); background:var(--amber-tint); border-radius:6px; padding:7px 10px;}
   .note-in{flex:1; min-width:170px;}
 </style>
@@ -258,6 +279,10 @@
     <section class="view" id="view-review" hidden>
       <h2>Review</h2>
       <p class="sub">Check that each line's evidence is complete, then submit it to the auditor — or return it to the preparer.</p>
+      <div class="filter-bar" data-stage="review">
+        <button class="active" data-f="pending">Pending my action</button>
+        <button data-f="all">All</button>
+      </div>
       <div class="assign-grid">
         <aside class="req-list" id="reviewList"><div class="empty">Loading…</div></aside>
         <div class="req-detail" id="reviewDetail"><div class="empty">Select a request to review.</div></div>
@@ -268,6 +293,10 @@
     <section class="view" id="view-audit" hidden>
       <h2>Audit</h2>
       <p class="sub">Review the evidence submitted for each line, then close it or return it for rework.</p>
+      <div class="filter-bar" data-stage="audit">
+        <button class="active" data-f="pending">Pending my action</button>
+        <button data-f="all">All</button>
+      </div>
       <div class="assign-grid">
         <aside class="req-list" id="auditList"><div class="empty">Loading…</div></aside>
         <div class="req-detail" id="auditDetail"><div class="empty">Select a request to audit.</div></div>
@@ -445,9 +474,9 @@
   }
   function statusPill(s){
     s=String(s||'pending').toLowerCase();
-    var cls = (s==='closed'||s==='accepted'||s==='complete') ? 'green'
-            : (s==='assigned'||s==='with_auditor') ? 'blue'
-            : (s==='submitted'||s==='returned') ? 'amber'
+    var cls = (s==='closed'||s==='accepted') ? 'green'
+            : (s==='pending_audit'||s==='reviewed'||s==='assigned') ? 'blue'
+            : (s==='pending_review'||s==='submitted'||s==='returned') ? 'amber'
             : (s==='rejected') ? 'red' : 'neutral';
     return '<span class="pill '+cls+'">'+esc(s.replace(/_/g,' '))+'</span>';
   }
@@ -498,20 +527,29 @@
     wireTasks();
   }
   function renderTaskCard(t){
-    var submitted = String(t.status).toLowerCase()==='submitted';
+    var s=String(t.status).toLowerCase();
+    var editable = ['pending','assigned','in_progress'].indexOf(s)!==-1;
+    var submitted = s==='submitted';
     var files = t.files.map(function(f){
-      var link = f.url ? '<a href="'+esc(f.url)+'" target="_blank" rel="noopener">'+esc(f.file_name)+'</a>' : esc(f.file_name);
-      return '<div class="file">'+link+(submitted?'':'<button class="link-btn rm-file" data-eid="'+esc(f.evidence_id)+'">remove</button>')+'</div>';
+      return '<div class="file"><a href="#" class="view-doc" data-eid="'+esc(f.evidence_id)+'">'+esc(f.file_name)+'</a>'
+        +(editable?'<button class="link-btn rm-file" data-eid="'+esc(f.evidence_id)+'">remove</button>':'')+'</div>';
     }).join('') || '<div class="muted" style="font-size:12.5px">No files yet.</div>';
-    var actions = submitted
-      ? '<button class="btn sm withdraw" data-aid="'+esc(t.assignment_id)+'">Withdraw</button>'
-      : '<label class="btn sm">Add file<input type="file" class="file-input" data-aid="'+esc(t.assignment_id)+'" hidden></label>'
-        +'<button class="btn primary sm submit" data-aid="'+esc(t.assignment_id)+'"'+(t.files.length?'':' disabled')+'>Submit for review</button>';
+    var actions = editable
+      ? '<label class="btn sm">Add file<input type="file" class="file-input" data-aid="'+esc(t.assignment_id)+'" hidden></label>'
+        +'<button class="btn primary sm submit" data-aid="'+esc(t.assignment_id)+'"'+(t.files.length?'':' disabled')+'>Submit for review</button>'
+      : submitted
+        ? '<button class="btn sm withdraw" data-aid="'+esc(t.assignment_id)+'">Withdraw</button>'
+        : '<span class="muted" style="font-size:12.5px">Locked · '+esc(s.replace(/_/g,' '))+'</span>';
     var note = t.note ? '<div class="task-note">'+esc(t.note)+'</div>' : '';
+    var facts = '<div class="task-facts">'
+      +'<span>Statement no. <b>'+esc(t.statement_code||'—')+'</b></span>'
+      +'<span>Statement amount <b>'+fmtNum(t.statement_amount)+'</b></span>'
+      +'<span>Paid at <b>'+esc(t.paid_at||'—')+'</b></span></div>';
     return '<div class="task-card">'
       +'<div class="task-head"><span class="doc">'+esc(t.document_no)+'</span><span class="ven">'+esc(t.vendor||'')+'</span>'
         +'<span class="grow"></span>'+statusPill(t.status)+'</div>'
       +'<div class="task-evi">'+esc(t.evidence_type)+(t.due_date?' · due '+esc(t.due_date):'')+' · '+esc(t.request_title)+'</div>'
+      +facts
       +note
       +'<div class="files">'+files+'</div>'
       +'<div class="task-foot">'+actions+'</div>'
@@ -523,6 +561,7 @@
     Array.prototype.forEach.call(L.querySelectorAll('.submit'),     function(b){ b.addEventListener('click', function(){ taskCall('submitAssignment', b.dataset.aid, b); }); });
     Array.prototype.forEach.call(L.querySelectorAll('.withdraw'),   function(b){ b.addEventListener('click', function(){ taskCall('withdrawAssignment', b.dataset.aid, b); }); });
     Array.prototype.forEach.call(L.querySelectorAll('.rm-file'),    function(b){ b.addEventListener('click', function(){ taskCall('removeEvidence', b.dataset.eid, b); }); });
+    Array.prototype.forEach.call(L.querySelectorAll('.view-doc'),   function(a){ a.addEventListener('click', function(ev){ ev.preventDefault(); viewEvidence(a.dataset.eid); }); });
   }
   function handleUpload(inp){
     var file = inp.files && inp.files[0]; if(!file) return;
@@ -551,6 +590,19 @@
     audit: { list:'auditList',  detail:'auditDetail',  primaryLabel:'Close',             primaryFn:'auditorClose',   returnFn:'auditorReturn', verb:'review' }
   };
   var stageReqId={ review:null, audit:null };
+  var stageFilter={ review:'pending', audit:'pending' };
+
+  Array.prototype.forEach.call(document.querySelectorAll('.filter-bar'), function(bar){
+    var stage=bar.dataset.stage;
+    Array.prototype.forEach.call(bar.querySelectorAll('button'), function(btn){
+      btn.addEventListener('click', function(){
+        stageFilter[stage]=btn.dataset.f;
+        Array.prototype.forEach.call(bar.querySelectorAll('button'), function(b){ b.classList.toggle('active', b===btn); });
+        loadStage(stage);
+        if(stageReqId[stage]) selectStageReq(stage, stageReqId[stage]);
+      });
+    });
+  });
 
   function loadStage(stage){
     google.script.run.withSuccessHandler(function(r){ renderStageList(stage,r); })
@@ -559,7 +611,8 @@
   }
   function renderStageList(stage, reqs){
     var el=$(STAGE_CFG[stage].list);
-    if(!reqs.length){ el.innerHTML='<div class="empty">Nothing here yet.</div>'; return; }
+    if(stageFilter[stage]==='pending') reqs=reqs.filter(function(r){ return r.pendingCount>0; });
+    if(!reqs.length){ el.innerHTML='<div class="empty">Nothing pending your action.</div>'; return; }
     el.innerHTML=reqs.map(function(r){
       var badge = r.pendingCount ? '<span class="pill amber">'+r.pendingCount+' to '+STAGE_CFG[stage].verb+'</span>' : '<span class="pill neutral">0 pending</span>';
       return '<button class="req-item'+(r.request_id===stageReqId[stage]?' active':'')+'" data-id="'+esc(r.request_id)+'">'
@@ -580,19 +633,29 @@
     var head='<div class="card"><h2 style="font-size:16px">'+esc(d.request.title)+'</h2>'
       +'<p class="sub" style="margin:2px 0 0">'+esc(d.request.period)+' · '+d.lines.length+' lines</p></div>';
     var lines=d.lines.filter(function(l){ return String(l.status).toLowerCase()!=='not_found'; });
-    if(!lines.length){ $(STAGE_CFG[stage].detail).innerHTML=head+'<div class="card"><div class="empty">No lines to show.</div></div>'; return; }
-    $(STAGE_CFG[stage].detail).innerHTML=head+'<div class="card">'+lines.map(function(l){ return renderStageLine(stage,d.actionable,l); }).join('')+'</div>';
+    if(stageFilter[stage]==='pending') lines=lines.filter(function(l){ return String(l.status).toLowerCase()===d.actionable; });
+    if(!lines.length){ $(STAGE_CFG[stage].detail).innerHTML=head+'<div class="card"><div class="empty">No lines pending your action here. Switch the filter to “All” to see the rest.</div></div>'; return; }
+    $(STAGE_CFG[stage].detail).innerHTML=head+lines.map(function(l){ return renderStageLine(stage,d.actionable,l); }).join('');
     wireStage(stage);
   }
+  function fact(k,v){ return '<div class="f"><span class="fk">'+k+'</span><span class="fv">'+v+'</span></div>'; }
   function renderStageLine(stage, actionable, l){
     var adv=/advance/i.test(l.mpl_type);
-    var mpl=adv?'<span class="pill blue">MPL advance</span>':'<span class="pill neutral">Regular</span>';
-    var paid=l.paid_status?('<span class="pill '+(/unpaid/i.test(l.paid_status)?'amber':'green')+'">'+esc(l.paid_status)+'</span>'):'';
+    var facts='<div class="facts">'
+      +fact('Transaction no.', '<span class="mono">'+esc(l.document_no||'—')+'</span>')
+      +fact('Seller', esc(l.vendor||'—'))
+      +fact('Statement no.', '<span class="mono">'+esc(l.statement_code||'—')+'</span>')
+      +fact('Transaction amount', fmtNum(l.amount))
+      +fact('Statement amount', fmtNum(l.closing_balance))
+      +fact('Paid at', esc(l.paid_at||'—'))
+      +fact('MPL type', adv?'MPL advance':'Regular')+'</div>';
     var asgs=l.assignments.map(function(a){
-      var files=a.files.length? a.files.map(function(f){ return '<a href="'+esc(f.url)+'" target="_blank" rel="noopener">'+esc(f.file_name)+'</a>'; }).join(' · ') : '<span class="muted">no files</span>';
-      return '<div class="asg-r"><div class="etype">'+esc(a.evidence_type)+' '+statusPill(a.status)+'</div>'
-        +'<div class="muted" style="font-size:12px">'+esc(a.assigned_to||'unassigned')+'</div>'
-        +'<div class="files-inline">'+files+'</div></div>';
+      var chips=a.files.length
+        ? a.files.map(function(f){ return '<button class="chip" data-eid="'+esc(f.evidence_id)+'" data-line="'+esc(l.line_id)+'">'+esc(f.file_name)+'</button>'; }).join('')
+        : '<span class="muted" style="font-size:12px">no files</span>';
+      return '<div class="asg-rev"><div class="et">'+esc(a.evidence_type)+'</div>'
+        +'<div class="who">'+esc(a.assigned_to||'unassigned')+'</div>'
+        +'<div class="doc-chips">'+chips+'</div></div>';
     }).join('');
     var note = l.note ? '<div class="note-line">'+esc(l.note)+'</div>' : '';
     var actions='';
@@ -601,15 +664,68 @@
         +'<button class="btn primary sm stage-primary" data-id="'+esc(l.line_id)+'">'+esc(STAGE_CFG[stage].primaryLabel)+'</button>'
         +'<button class="btn sm stage-return" data-id="'+esc(l.line_id)+'">Return</button></div>';
     }
-    return '<div class="line-card" data-id="'+esc(l.line_id)+'">'
+    return '<div class="card line-card" data-id="'+esc(l.line_id)+'">'
       +'<div class="line-head"><span class="doc">'+esc(l.document_no)+'</span><span class="ven">'+esc(l.vendor||'')+'</span>'
-        +'<span class="grow"></span>'+mpl+' '+paid+' '+statusPill(l.status)+'</div>'
-      +asgs+note+actions+'</div>';
+        +'<span class="grow"></span>'+statusPill(l.status)+'</div>'
+      +'<div class="rev-grid"><div>'+facts+asgs+note+'</div>'
+      +'<div class="preview" id="prev-'+esc(l.line_id)+'"><span class="ph">Select a document to preview</span></div></div>'
+      +actions+'</div>';
   }
   function wireStage(stage){
     var el=$(STAGE_CFG[stage].detail);
+    Array.prototype.forEach.call(el.querySelectorAll('.chip'),          function(c){ c.addEventListener('click', function(){ openDoc(c.dataset.line, c.dataset.eid, c); }); });
     Array.prototype.forEach.call(el.querySelectorAll('.stage-primary'), function(b){ b.addEventListener('click', function(){ stageAction(stage, STAGE_CFG[stage].primaryFn, b, false); }); });
     Array.prototype.forEach.call(el.querySelectorAll('.stage-return'),  function(b){ b.addEventListener('click', function(){ stageAction(stage, STAGE_CFG[stage].returnFn, b, true); }); });
+    Array.prototype.forEach.call(el.querySelectorAll('.line-card'),     function(card){ var first=card.querySelector('.chip'); if(first) openDoc(first.dataset.line, first.dataset.eid, first); });
+  }
+  function openDoc(lineId, eid, chip){
+    var pane=$('prev-'+lineId); if(!pane) return;
+    if(chip){ var box=chip.parentNode; Array.prototype.forEach.call(box.querySelectorAll('.chip'), function(c){ c.classList.remove('active'); }); chip.classList.add('active'); }
+    pane.innerHTML='<span class="ph">Loading…</span>';
+    google.script.run.withSuccessHandler(function(f){ renderPreview(pane, f); })
+      .withFailureHandler(function(e){ pane.innerHTML='<span class="ph">'+esc(e.message)+'</span>'; })
+      .getEvidenceFile(eid);
+  }
+  function renderPreview(pane, f){
+    var url=toBlobUrl(f);   // blob URLs render PDFs and avoid data:-URL limits
+    if(/^image\//.test(f.mime)){
+      pane.innerHTML='<img src="'+url+'" alt="'+esc(f.name)+'" title="Click to open full screen">';
+      var img=pane.querySelector('img'); if(img) img.addEventListener('click', function(){ window.open(url,'_blank'); });
+    } else if(f.mime==='application/pdf'){
+      pane.innerHTML='<div class="pdf-wrap"><div class="pdf-pages"><span class="ph">Rendering…</span></div>'
+        +'<div class="pdf-full"><a href="'+url+'" target="_blank" rel="noopener">Open full screen ↗</a></div></div>';
+      renderPdf(pane.querySelector('.pdf-pages'), f, url);
+    } else {
+      pane.innerHTML='<div class="ph">No inline preview for '+esc(f.name)+'.<br><a href="'+url+'" download="'+esc(f.name)+'">Download</a></div>';
+    }
+  }
+  function toBlobUrl(f){
+    return URL.createObjectURL(new Blob([bytesOf(f)],{type:f.mime}));
+  }
+  function bytesOf(f){
+    var bin=atob(f.dataUrl.split(',')[1]), arr=new Uint8Array(bin.length);
+    for(var i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+    return arr;
+  }
+  /* PDFs can't render via blob/data URLs inside the sandboxed iframe, so draw them to canvas with PDF.js */
+  function renderPdf(container, f, url){
+    if(typeof pdfjsLib==='undefined'){ container.innerHTML='<div class="ph">PDF viewer didn\'t load. <a href="'+url+'" target="_blank" rel="noopener">Open full screen</a></div>'; return; }
+    try{ pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }catch(e){}
+    pdfjsLib.getDocument({data:bytesOf(f)}).promise.then(function(pdf){
+      container.innerHTML='';
+      var pages=Math.min(pdf.numPages, 15), chain=Promise.resolve();
+      for(var p=1;p<=pages;p++){ (function(num){ chain=chain.then(function(){ return drawPdfPage(pdf, num, container); }); })(p); }
+      return chain;
+    }).catch(function(){ container.innerHTML='<div class="ph">Could not render this PDF. <a href="'+url+'" target="_blank" rel="noopener">Open full screen</a></div>'; });
+  }
+  function drawPdfPage(pdf, num, container){
+    return pdf.getPage(num).then(function(page){
+      var base=page.getViewport({scale:1}), width=container.clientWidth||380;
+      var vp=page.getViewport({scale:Math.max(0.2, width/base.width)});
+      var canvas=document.createElement('canvas'); canvas.className='pdf-canvas'; canvas.width=vp.width; canvas.height=vp.height;
+      container.appendChild(canvas);
+      return page.render({canvasContext:canvas.getContext('2d'), viewport:vp}).promise;
+    });
   }
   function stageAction(stage, method, btn, needNote){
     var card=btn.closest('.line-card'), id=card.dataset.id;
@@ -618,6 +734,15 @@
     btn.disabled=true;
     google.script.run.withSuccessHandler(function(d){ renderStageDetail(stage,d); loadStage(stage); })
       .withFailureHandler(function(e){ btn.disabled=false; alert(e.message); })[method](id, note);
+  }
+
+  /* ---------- shared: open an evidence file in a new tab (app-mediated) ---------- */
+  function viewEvidence(eid){
+    google.script.run.withSuccessHandler(openBlob).withFailureHandler(function(e){ alert(e.message); }).getEvidenceFile(eid);
+  }
+  function openBlob(f){
+    try{ window.open(toBlobUrl(f), '_blank'); }
+    catch(e){ alert('Could not open the file.'); }
   }
 </script>
 </body>

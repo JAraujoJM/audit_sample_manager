@@ -14,7 +14,7 @@
  *                                  ^------------ returned (note) -----------|
  */
 
-var STAGE_STATUS = { review: 'submitted', audit: 'with_auditor' };
+var STAGE_STATUS = { review: 'pending_review', audit: 'pending_audit' };
 
 function stageRoles_(stage) {
   return stage === 'audit' ? [ROLES.AUDITOR, ROLES.ADMIN] : [ROLES.REVIEWER, ROLES.ADMIN];
@@ -46,28 +46,31 @@ function reviewDetail(requestId, stage) {
   var req = readObjects_(ds, 'Requests').filter(function (r) { return String(r.request_id) === String(requestId); })[0];
   if (!req) throw new Error('Request not found.');
 
-  var evidence = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.request_id) === String(requestId); });
-  evidence.forEach(function (e) {                       // let the reviewer/auditor open the evidence
-    if (e.file_id) { try { DriveApp.getFileById(e.file_id).addViewer(me.email); } catch (err) {} }
-  });
+  // Evidence is served through the app (getEvidenceFile) — we no longer share
+  // files on Drive, so reviewers/auditors get no "shared with you" emails.
   var evByAsg = {};
-  evidence.forEach(function (e) {
-    (evByAsg[e.assignment_id] = evByAsg[e.assignment_id] || []).push({
-      file_name: e.file_name, url: e.file_id ? ('https://drive.google.com/file/d/' + e.file_id + '/view') : ''
+  readObjects_(ds, 'Evidence')
+    .filter(function (e) { return String(e.request_id) === String(requestId); })
+    .forEach(function (e) {
+      (evByAsg[e.assignment_id] = evByAsg[e.assignment_id] || []).push({
+        evidence_id: e.evidence_id, file_name: e.file_name, mime: e.mime || ''
+      });
     });
-  });
 
   var asgByLine = {};
   readObjects_(ds, 'Assignments')
     .filter(function (a) { return String(a.request_id) === String(requestId); })
     .forEach(function (a) { (asgByLine[a.line_id] = asgByLine[a.line_id] || []).push(a); });
 
+  var tz = ds.getSpreadsheetTimeZone();
   var lines = readObjects_(ds, 'Sample_Lines')
     .filter(function (l) { return String(l.request_id) === String(requestId); })
     .map(function (l) {
       return {
-        line_id: l.line_id, document_no: l.document_no, vendor: l.vendor,
-        mpl_type: l.mpl_type, paid_status: l.paid_status, status: l.status, note: l.note || '',
+        line_id: l.line_id, document_no: l.document_no, company: l.company, vendor: l.vendor,
+        mpl_type: l.mpl_type, paid_status: l.paid_status, statement_code: l.statement_code,
+        amount: l.amount, closing_balance: l.closing_balance, paid_at: toDateStr_(l.paid_at, tz),
+        status: l.status, note: l.note || '',
         assignments: (asgByLine[l.line_id] || []).map(function (a) {
           return { evidence_type: a.evidence_type, assigned_to: a.assigned_to, status: a.status, files: evByAsg[a.assignment_id] || [] };
         })
@@ -76,11 +79,35 @@ function reviewDetail(requestId, stage) {
   return { request: req, stage: stage, actionable: STAGE_STATUS[stage], lines: lines };
 }
 
+/**
+ * Stream one evidence file to the client as a data URL (app-mediated — the file
+ * is never shared on Drive). Reviewer/Auditor/Admin may fetch any; a Preparer
+ * only their own uploads.
+ */
+function getEvidenceFile(evidenceId) {
+  var me = requireRole_([ROLES.REVIEWER, ROLES.AUDITOR, ROLES.ADMIN, ROLES.PREPARER]);
+  var ev = readObjects_(dataSs_(), 'Evidence').filter(function (e) { return String(e.evidence_id) === String(evidenceId); })[0];
+  if (!ev) throw new Error('File not found.');
+  if (me.role === ROLES.PREPARER && String(ev.uploaded_by).toLowerCase() !== me.email.toLowerCase()) {
+    throw new Error('That file is not yours.');
+  }
+  var blob = DriveApp.getFileById(ev.file_id).getBlob();
+  var bytes = blob.getBytes();
+  if (bytes.length > 12 * 1024 * 1024) throw new Error('File is too large to preview here (' + Math.round(bytes.length / 1048576) + ' MB). Open it in Drive instead.');
+  var mime = blob.getContentType();
+  return { name: ev.file_name, mime: mime, size: bytes.length, dataUrl: 'data:' + mime + ';base64,' + Utilities.base64Encode(bytes) };
+}
+
 /* ---------- reviewer actions ---------- */
 function reviewerSubmit(lineId) {
   requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
-  var line = requireLineStatus_(lineId, 'submitted');
-  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'with_auditor', note: '' });
+  var line = requireLineStatus_(lineId, 'pending_review');
+  getAssignments(lineId).forEach(function (a) {
+    if (String(a.status).toLowerCase() === 'submitted') {
+      updateRowById_(dataSs_(), 'Assignments', 'assignment_id', a.assignment_id, { status: 'reviewed' });
+    }
+  });
+  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'pending_audit', note: '' });
   logActivity('REVIEW_SUBMIT', 'line', lineId, 'submitted to auditor');
   return reviewDetail(line.request_id, 'review');
 }
@@ -88,7 +115,7 @@ function reviewerSubmit(lineId) {
 function reviewerReturn(lineId, note) {
   requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
   if (!String(note || '').trim()) throw new Error('Please add a note explaining what to fix.');
-  var line = requireLineStatus_(lineId, 'submitted');
+  var line = requireLineStatus_(lineId, 'pending_review');
   reopenLineAssignments_(lineId);
   updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'in_progress', note: 'Returned by reviewer: ' + note });
   logActivity('REVIEW_RETURN', 'line', lineId, note);
@@ -98,9 +125,9 @@ function reviewerReturn(lineId, note) {
 /* ---------- auditor actions ---------- */
 function auditorClose(lineId, note) {
   requireRole_([ROLES.AUDITOR, ROLES.ADMIN]);
-  var line = requireLineStatus_(lineId, 'with_auditor');
+  var line = requireLineStatus_(lineId, 'pending_audit');
   getAssignments(lineId).forEach(function (a) {
-    if (String(a.status).toLowerCase() === 'submitted') {
+    if (['submitted', 'reviewed'].indexOf(String(a.status).toLowerCase()) !== -1) {
       updateRowById_(dataSs_(), 'Assignments', 'assignment_id', a.assignment_id, { status: 'accepted' });
     }
   });
@@ -113,7 +140,7 @@ function auditorClose(lineId, note) {
 function auditorReturn(lineId, note) {
   requireRole_([ROLES.AUDITOR, ROLES.ADMIN]);
   if (!String(note || '').trim()) throw new Error('Please add a note explaining what to fix.');
-  var line = requireLineStatus_(lineId, 'with_auditor');
+  var line = requireLineStatus_(lineId, 'pending_audit');
   reopenLineAssignments_(lineId);
   updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'in_progress', note: 'Returned by auditor: ' + note });
   logActivity('AUDIT_RETURN', 'line', lineId, note);
@@ -132,8 +159,7 @@ function requireLineStatus_(lineId, want) {
 
 function reopenLineAssignments_(lineId) {
   getAssignments(lineId).forEach(function (a) {
-    var s = String(a.status).toLowerCase();
-    if (s === 'submitted' || s === 'accepted') {
+    if (['submitted', 'reviewed', 'accepted'].indexOf(String(a.status).toLowerCase()) !== -1) {
       updateRowById_(dataSs_(), 'Assignments', 'assignment_id', a.assignment_id, { status: 'in_progress', submitted_at: '' });
     }
   });

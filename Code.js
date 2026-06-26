@@ -352,6 +352,7 @@ function persistRun_(results, gatewayRequestId) {
       company: r.company, vendor: r.vendor, mpl_type: r.mpl,
       paid_status: r.paid_at ? 'Paid' : 'Unpaid',
       statement_code: r.statement, amount: r.amount,
+      paid_at: r.paid_at || '', closing_balance: r.closing_balance || '',
       route_rule: matched.map(function (m) { return m.rule_name; }).join(','),
       required_count: matched.length, status: 'open',
       evidence_folder_id: '', created_at: ts

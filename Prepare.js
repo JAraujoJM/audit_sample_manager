@@ -26,15 +26,13 @@ function listMyAssignments() {
       var files = evidence
         .filter(function (e) { return String(e.assignment_id) === String(a.assignment_id); })
         .map(function (e) {
-          return {
-            evidence_id: e.evidence_id, file_name: e.file_name,
-            url: e.file_id ? ('https://drive.google.com/file/d/' + e.file_id + '/view') : '',
-            uploaded_at: toDateStr_(e.uploaded_at, tz)
-          };
+          return { evidence_id: e.evidence_id, file_name: e.file_name, mime: e.mime || '', uploaded_at: toDateStr_(e.uploaded_at, tz) };
         });
       return {
         assignment_id: a.assignment_id, request_id: a.request_id, line_id: a.line_id,
         request_title: req.title || '', document_no: line.document_no || '', vendor: line.vendor || '',
+        statement_code: line.statement_code || '', statement_amount: line.closing_balance || '',
+        paid_at: toDateStr_(line.paid_at, tz),
         evidence_type: a.evidence_type, status: a.status, due_date: toDateStr_(a.due_date, tz),
         note: line.note || '', files: files
       };
@@ -49,6 +47,7 @@ function uploadEvidence(assignmentId, fileName, mimeType, base64Data) {
   var asg = findAssignment_(assignmentId);
   if (!asg) throw new Error('Assignment not found.');
   assertOwner_(asg, me);
+  assertEditable_(asg, me);
   if (!base64Data) throw new Error('No file data received.');
 
   fileName = sanitizeName_(fileName || 'evidence');
@@ -59,8 +58,7 @@ function uploadEvidence(assignmentId, fileName, mimeType, base64Data) {
 
   var folder = evidenceDocFolder_(flowId, asg.request_id, docNo);
   var blob = Utilities.newBlob(Utilities.base64Decode(base64Data), mimeType || 'application/octet-stream', fileName);
-  var file = folder.createFile(blob);
-  try { file.addViewer(me.email); } catch (e) { /* Shared Drive may restrict per-file sharing */ }
+  var file = folder.createFile(blob);   // owned by the deployer; served to others via getEvidenceFile
 
   if (line && !String(line.evidence_folder_id || '').trim()) {
     updateRowById_(ds, 'Sample_Lines', 'line_id', asg.line_id, { evidence_folder_id: folder.getId() });
@@ -87,8 +85,10 @@ function removeEvidence(evidenceId) {
   if (!ev) throw new Error('Evidence not found.');
   var asg = findAssignment_(ev.assignment_id);
   if (asg) assertOwner_(asg, me);
-  if (asg && me.role !== ROLES.ADMIN && String(asg.status).toLowerCase() === 'submitted') {
-    throw new Error('Withdraw the submission before removing files.');
+  if (asg && me.role !== ROLES.ADMIN) {
+    var s = String(asg.status).toLowerCase();
+    if (s === 'submitted') throw new Error('Withdraw the submission before removing files.');
+    if (['pending', 'assigned', 'in_progress'].indexOf(s) === -1) throw new Error('This task is locked and can no longer be edited.');
   }
 
   try { DriveApp.getFileById(ev.file_id).setTrashed(true); } catch (e) { /* already gone */ }
@@ -113,6 +113,7 @@ function submitAssignment(assignmentId) {
   var asg = findAssignment_(assignmentId);
   if (!asg) throw new Error('Assignment not found.');
   assertOwner_(asg, me);
+  assertEditable_(asg, me);
   var files = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.assignment_id) === String(assignmentId); });
   if (!files.length) throw new Error('Upload at least one evidence file before submitting.');
 
@@ -141,6 +142,14 @@ function assertOwner_(asg, me) {
   if (me.role === ROLES.ADMIN) return;
   if (String(asg.assigned_to || '').toLowerCase() !== me.email.toLowerCase()) {
     throw new Error('This task is not assigned to you.');
+  }
+}
+
+/** A preparer may only edit while the item is still in their hands. */
+function assertEditable_(asg, me) {
+  if (me.role === ROLES.ADMIN) return;
+  if (['pending', 'assigned', 'in_progress'].indexOf(String(asg.status).toLowerCase()) === -1) {
+    throw new Error('This task is locked and can no longer be edited.');
   }
 }
 
