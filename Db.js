@@ -22,12 +22,18 @@ function readObjects_(ss, sheetName) {
   if (!sh || sh.getLastRow() < 2) return [];
   var values = sh.getDataRange().getValues();
   var headers = values[0];
+  var tz = ss.getSpreadsheetTimeZone();
   var out = [];
   for (var r = 1; r < values.length; r++) {
     var row = values[r];
     if (row.join('') === '') continue;            // skip blank trailing lines
     var o = {};
-    for (var c = 0; c < headers.length; c++) o[String(headers[c])] = row[c];
+    for (var c = 0; c < headers.length; c++) {
+      var v = row[c];
+      // Sheets coerces date-like cells to Date objects, which google.script.run
+      // cannot return to the client (it hangs silently). Always hand back strings.
+      o[String(headers[c])] = (v instanceof Date) ? Utilities.formatDate(v, tz, "yyyy-MM-dd'T'HH:mm:ss") : v;
+    }
     out.push(o);
   }
   return out;
@@ -111,6 +117,21 @@ function getRouting(flowId) {
 function getSetting(key) {
   var hit = readObjects_(configSs_(), 'Settings').filter(function (s) { return String(s.key) === String(key); });
   return hit.length ? hit[0].value : null;
+}
+
+/** Active audit periods for a flow, with dates normalised to yyyy-MM-dd strings. */
+function getPeriods(flowId) {
+  var cfg = configSs_();
+  var tz = cfg.getSpreadsheetTimeZone();
+  return readObjects_(cfg, 'Periods')
+    .filter(function (p) { return String(p.flow_id) === String(flowId) && p.active !== false && String(p.active) !== 'FALSE'; })
+    .map(function (p) { return { name: String(p.name), start: toDateStr_(p.start_date, tz), end: toDateStr_(p.end_date, tz) }; });
+}
+
+function findPeriod_(flowId, name) {
+  var ps = getPeriods(flowId);
+  for (var i = 0; i < ps.length; i++) if (ps[i].name === String(name)) return ps[i];
+  return null;
 }
 
 /* ---------- routing engine (config-driven) ---------- */

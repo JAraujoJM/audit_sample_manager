@@ -49,12 +49,15 @@ var NAME = {
 var SCHEMA = {
   config: {
     Users:    ['email', 'role', 'status', 'added_by', 'added_at'],
-    Flows:    ['flow_id', 'name', 'database', 'query_mode', 'fy_start', 'fy_end', 'sample_key', 'dedup_keys', 'active'],
+    Flows:    ['flow_id', 'name', 'database', 'query_mode', 'sample_key', 'dedup_keys', 'active'],
     Routing:  ['flow_id', 'rule_name', 'match', 'required_evidence', 'responsible', 'active'],
+    Periods:  ['flow_id', 'name', 'start_date', 'end_date', 'active'],
     Settings: ['key', 'value', 'description']
   },
   data: {
-    Requests:     ['request_id', 'flow_id', 'title', 'period', 'status', 'created_by', 'created_at', 'updated_at'],
+    Requests:     ['request_id', 'flow_id', 'title', 'period', 'period_start', 'period_end', 'auditor_email',
+                   'status', 'created_by', 'created_at', 'updated_at',
+                   'csv_file_id', 'xlsx_file_id', 'thread_file_id', 'ipe_json'],
     Sample_Lines: ['line_id', 'request_id', 'document_no', 'company', 'vendor', 'mpl_type', 'paid_status',
                    'statement_code', 'amount', 'paid_at', 'closing_balance', 'route_rule', 'required_count',
                    'status', 'evidence_folder_id', 'note', 'created_at'],

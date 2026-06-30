@@ -99,6 +99,17 @@
   tr.nf td{background:var(--red-tint);}
   .counts{color:var(--text-2); font-size:12.5px; margin-bottom:12px;}
 
+  /* request form + progress */
+  .form-grid{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+  @media (max-width:620px){.form-grid{grid-template-columns:1fr;}}
+  .progressbar{display:flex; height:8px; border-radius:5px; overflow:hidden; background:var(--sep); margin:10px 0 8px;}
+  .progressbar span{display:block; height:100%;}
+  .prog-legend{display:flex; flex-wrap:wrap; gap:6px 14px; font-size:12px; color:var(--text-2);}
+  .prog-lbl{display:inline-flex; align-items:center; gap:5px;}
+  .prog-lbl i{width:9px; height:9px; border-radius:2px; display:inline-block;}
+  .seg-green{background:var(--green);} .seg-blue{background:var(--accent);} .seg-amber{background:var(--amber);}
+  .seg-neutral{background:#c4c4cc;} .seg-gray{background:#e2e2e8;} .seg-red{background:var(--red);}
+
   /* pills + dots */
   .pill{font-size:12px; font-weight:500; padding:2px 9px; border-radius:6px; display:inline-block; white-space:nowrap;}
   .pill.neutral{background:#F0F0F2; color:var(--text-2);}
@@ -211,12 +222,19 @@
   <main class="wrap">
     <div class="gate" id="gate" hidden></div>
 
-    <!-- ENRICH ----------------------------------------------------------- -->
+    <!-- REQUEST ---------------------------------------------------------- -->
     <section class="view" id="view-enrich" hidden>
-      <h2>Enrich a sample</h2>
-      <p class="sub">Paste the auditor's document numbers — the gateway resolves each line and routes it to the evidence a preparer must collect.</p>
+      <h2>New request</h2>
+      <p class="sub">Log an auditor's sampling request: choose the flow and period, drop the document numbers, and enrich them through the gateway.</p>
 
       <div class="card">
+        <div class="form-grid">
+          <div><label class="fld">Flow</label><select id="flowSel"></select></div>
+          <div><label class="fld">Period</label><select id="periodSel"></select></div>
+          <div><label class="fld">Auditor email</label><input id="auditorEmail" type="email" placeholder="name@auditor.com"></div>
+          <div><label class="fld">Email thread (optional)</label><input id="threadFile" type="file"></div>
+        </div>
+        <label class="fld" style="margin-top:14px">Document numbers</label>
         <textarea id="docs" spellcheck="false" placeholder="Paste document numbers — one per line or comma-separated"></textarea>
         <div class="row"><button class="btn primary" id="run">Run enrichment</button></div>
         <div class="loader" id="loader">
@@ -242,19 +260,13 @@
         </table>
       </div>
 
-      <div class="card ipe" id="ipe">
-        <div class="ipe-head"><span class="t">IPE / SOX — IT-Produced Evidence</span><span class="ref" id="ipeRef"></span></div>
-        <div class="ipe-sec">1 · Completeness &amp; accuracy</div>
-        <table id="ipeChecks"><thead><tr><th>Check</th><th>Method</th><th>Result</th></tr></thead><tbody></tbody></table>
-        <div class="ipe-sec">2 · SQL query as executed</div>
-        <details class="sql">
-          <summary>Show query (read-only, hardcoded date literals)</summary>
-          <pre id="ipeSql"></pre>
-          <div style="padding:8px 13px 12px;"><button class="btn sm" id="copySql">Copy query</button></div>
-        </details>
-        <div class="ipe-sec">3 · File integrity &amp; evidence</div>
-        <div class="hashrow" id="ipeHash"></div>
-        <div class="ipe-foot" id="ipeFoot"></div>
+      <div class="card ipe" id="ipe"></div>
+
+      <h2 style="margin-top:28px">Previous requests</h2>
+      <p class="sub">Track progress and revisit the IPE and the gateway files captured at enrichment.</p>
+      <div class="assign-grid">
+        <aside class="req-list" id="histList"><div class="empty">Loading…</div></aside>
+        <div class="req-detail" id="histDetail"><div class="empty">Select a request to see its progress, IPE and files.</div></div>
       </div>
     </section>
 
@@ -312,7 +324,7 @@
   function fmtNum(v){ if(v===null||v===undefined||String(v).trim()==='') return '—'; var n=Number(v); return isNaN(n)?esc(v):n.toLocaleString(undefined,{maximumFractionDigits:2}); }
   function fmtDate(s){ if(!s) return '—'; var d=new Date(s); return isNaN(d)?esc(String(s).slice(0,10)):d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }
 
-  var VIEW_LABELS={enrich:'Enrich', assign:'Assign', tasks:'My tasks', review:'Review', audit:'Audit'};
+  var VIEW_LABELS={enrich:'Request', assign:'Assign', tasks:'My tasks', review:'Review', audit:'Audit'};
   var ROLE_VIEWS={
     'Administrator':['enrich','assign','tasks','review','audit'],
     'Preparer':['tasks'],
@@ -358,6 +370,7 @@
     $('view-tasks').hidden  = name!=='tasks';
     $('view-review').hidden = name!=='review';
     $('view-audit').hidden  = name!=='audit';
+    if(name==='enrich') loadRequest();
     if(name==='assign') loadAssign();
     if(name==='tasks')  refreshTasks();
     if(name==='review') loadStage('review');
@@ -377,12 +390,42 @@
   }
   function stopLoader(){ $('loader').classList.remove('on'); if(loaderTimer){clearInterval(loaderTimer);loaderTimer=null;} if(elapsedTimer){clearInterval(elapsedTimer);elapsedTimer=null;} }
 
+  /* ---- new request form ---- */
+  var formFlows=[], requestLoaded=false;
+  function loadRequest(){
+    if(!requestLoaded){
+      requestLoaded=true;
+      google.script.run.withSuccessHandler(function(cfg){
+        formFlows=(cfg&&cfg.flows)||[];
+        $('flowSel').innerHTML = formFlows.length ? formFlows.map(function(f){ return '<option value="'+esc(f.flow_id)+'">'+esc(f.name)+'</option>'; }).join('') : '<option value="">No flows configured</option>';
+        populatePeriods();
+      }).withFailureHandler(function(e){ setStatus(e.message,'warn'); }).requestFormConfig();
+      $('flowSel').addEventListener('change', populatePeriods);
+    }
+    refreshHistory();
+  }
+  function populatePeriods(){
+    var f=formFlows.filter(function(x){ return x.flow_id===$('flowSel').value; })[0];
+    var ps=(f&&f.periods)||[];
+    $('periodSel').innerHTML = ps.length ? ps.map(function(p){ return '<option value="'+esc(p.name)+'">'+esc(p.name)+' ('+esc(p.start)+' → '+esc(p.end)+')</option>'; }).join('') : '<option value="">No periods configured</option>';
+  }
+
   $('run').addEventListener('click', function(){
-    var text=$('docs').value.trim(); if(!text){ $('docs').focus(); return; }
+    var docs=$('docs').value.trim(); if(!docs){ $('docs').focus(); return; }
+    var flowId=$('flowSel').value, periodName=$('periodSel').value, auditor=$('auditorEmail').value.trim();
+    if(!flowId){ setStatus('Choose a flow.','warn'); return; }
+    if(!periodName){ setStatus('Choose a period.','warn'); return; }
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(auditor)){ setStatus('Enter a valid auditor email.','warn'); return; }
+    var file=$('threadFile').files && $('threadFile').files[0];
+    if(file && file.size>20*1024*1024){ setStatus('Attachment too large (max 20 MB).','warn'); return; }
     $('run').disabled=true; clearStatus(); startLoader();
-    google.script.run.withSuccessHandler(handleEnrich)
-      .withFailureHandler(function(e){ stopLoader(); $('run').disabled=false; setStatus('Error: '+e.message,'warn'); })
-      .enrich(text);
+    function go(attachment){
+      google.script.run.withSuccessHandler(handleEnrich)
+        .withFailureHandler(function(e){ stopLoader(); $('run').disabled=false; setStatus('Error: '+e.message,'warn'); })
+        .enrich({ docs:docs, flowId:flowId, periodName:periodName, auditorEmail:auditor, attachment:attachment });
+    }
+    if(file){ var r=new FileReader(); r.onload=function(){ go({ fileName:file.name, mimeType:file.type, base64:String(r.result).split(',')[1] }); }; r.onerror=function(){ stopLoader(); $('run').disabled=false; setStatus('Could not read the attachment.','warn'); }; r.readAsDataURL(file); }
+    else go(null);
   });
   function handleEnrich(res){
     stopLoader(); $('run').disabled=false;
@@ -393,6 +436,7 @@
     if(res.persistError) setStatus('Results shown, but saving to the workbook failed: '+res.persistError,'warn');
     renderRows(res.rows);
     if(res.ipe) renderIpe(res.ipe);
+    refreshHistory();
   }
   function renderRows(rows){
     $('out').style.display='block';
@@ -410,26 +454,96 @@
         +'<td><span class="dot '+esc(r.action)+'"></span>'+esc(r.action_label)+'</td></tr>';
     }).join('');
   }
-  function renderIpe(ipe){
-    $('ipe').classList.add('on');
-    $('ipeRef').textContent=ipe.documentRef;
-    $('ipeChecks').querySelector('tbody').innerHTML = ipe.checks.map(function(c){
+  function renderIpe(ipe){ var el=$('ipe'); el.className='card ipe on'; el.innerHTML=ipeHtml(ipe); wireCopy(el); }
+
+  /* reusable IPE panel markup (immediate run + history detail) */
+  function ipeHtml(ipe){
+    if(!ipe) return '<div class="empty">No IPE captured.</div>';
+    var checks=(ipe.checks||[]).map(function(c){
       var b = c.result==='Pass' ? '<span class="badge pass">Pass</span>' : '<span class="badge flag">Flag</span>';
       return '<tr><td style="font-weight:500">'+esc(c.name)+'</td><td class="muted">'+esc(c.method)+'</td><td>'+b+'</td></tr>';
     }).join('');
-    $('ipeSql').textContent=ipe.query;
-    $('ipeHash').innerHTML='<div><b>File</b> &nbsp;'+esc(ipe.csvName)+' &nbsp;·&nbsp; '+Number(ipe.csvSize).toLocaleString()+' bytes</div>'
-      +'<div style="margin-top:6px"><b>SHA-256</b> &nbsp;'+esc(ipe.csvSha256)+'</div>'
-      +'<div style="margin-top:8px" class="muted">'+esc(ipe.evidenceNote)+'</div>';
-    $('ipeFoot').textContent='CONFIDENTIAL · SOX-Relevant · '+ipe.documentRef;
+    return '<div class="ipe-head"><span class="t">IPE / SOX — IT-Produced Evidence</span><span class="ref">'+esc(ipe.documentRef)+'</span></div>'
+      +'<div class="ipe-sec">1 · Completeness &amp; accuracy</div>'
+      +'<table><thead><tr><th>Check</th><th>Method</th><th>Result</th></tr></thead><tbody>'+checks+'</tbody></table>'
+      +'<div class="ipe-sec">2 · SQL query as executed</div>'
+      +'<details class="sql"><summary>Show query</summary><pre>'+esc(ipe.query||'')+'</pre>'
+        +'<div style="padding:8px 13px 12px;"><button class="btn sm copy-sql">Copy query</button></div></details>'
+      +'<div class="ipe-sec">3 · File integrity &amp; evidence</div>'
+      +'<div class="hashrow"><div><b>File</b> &nbsp;'+esc(ipe.csvName)+' &nbsp;·&nbsp; '+Number(ipe.csvSize||0).toLocaleString()+' bytes</div>'
+        +'<div style="margin-top:6px"><b>SHA-256</b> &nbsp;'+esc(ipe.csvSha256)+'</div>'
+        +'<div style="margin-top:8px" class="muted">'+esc(ipe.evidenceNote||'')+'</div></div>'
+      +'<div class="ipe-foot">'+esc(ipe.classification||'CONFIDENTIAL · SOX-Relevant')+' · '+esc(ipe.documentRef)+'</div>';
   }
-  $('copySql').addEventListener('click', function(){
-    var txt=$('ipeSql').textContent, b=$('copySql');
-    function flash(){ var o=b.textContent; b.textContent='Copied'; setTimeout(function(){b.textContent=o;},1200); }
-    if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(txt).then(flash,function(){legacyCopy(txt,flash);}); }
-    else legacyCopy(txt,flash);
-  });
+  function wireCopy(scope){
+    Array.prototype.forEach.call(scope.querySelectorAll('.copy-sql'), function(b){
+      b.addEventListener('click', function(){
+        var pre=b.closest('details').querySelector('pre'), txt=pre?pre.textContent:'';
+        function flash(){ var o=b.textContent; b.textContent='Copied'; setTimeout(function(){b.textContent=o;},1200); }
+        if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(txt).then(flash,function(){legacyCopy(txt,flash);}); }
+        else legacyCopy(txt,flash);
+      });
+    });
+  }
   function legacyCopy(txt,cb){ var ta=document.createElement('textarea'); ta.value=txt; document.body.appendChild(ta); ta.select(); try{document.execCommand('copy');cb();}catch(e){} document.body.removeChild(ta); }
+
+  /* ---- previous requests (history) ---- */
+  var histReqId=null;
+  function refreshHistory(){
+    google.script.run.withSuccessHandler(renderHistList)
+      .withFailureHandler(function(e){ $('histList').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
+      .requestOverview();
+  }
+  function renderHistList(reqs){
+    if(!reqs.length){ $('histList').innerHTML='<div class="empty">No requests yet.</div>'; return; }
+    $('histList').innerHTML=reqs.map(function(r){
+      return '<button class="req-item'+(r.request_id===histReqId?' active':'')+'" data-id="'+esc(r.request_id)+'">'
+        +'<div class="rt">'+esc(r.title)+'</div>'
+        +'<div class="rm">'+esc(r.period||'—')+' · '+esc(fmtDate(r.created_at))+'</div>'
+        +'<div class="rm" style="margin-top:5px">'+statusPill(r.status)+' '+r.lineCount+' lines</div></button>';
+    }).join('');
+    Array.prototype.forEach.call($('histList').querySelectorAll('.req-item'), function(b){ b.addEventListener('click', function(){ selectHist(b.dataset.id); }); });
+  }
+  function selectHist(id){
+    histReqId=id;
+    Array.prototype.forEach.call($('histList').querySelectorAll('.req-item'), function(b){ b.classList.toggle('active', b.dataset.id===id); });
+    $('histDetail').innerHTML='<div class="empty">Loading…</div>';
+    google.script.run.withSuccessHandler(renderHistDetail)
+      .withFailureHandler(function(e){ $('histDetail').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
+      .requestReport(id);
+  }
+  function renderHistDetail(rep){
+    var q=rep.request;
+    var dl=[];
+    if(rep.files.csv)    dl.push('<button class="btn sm dlfile" data-w="csv">Download CSV</button>');
+    if(rep.files.xlsx)   dl.push('<button class="btn sm dlfile" data-w="xlsx">Download evidence XLSX</button>');
+    if(rep.files.thread) dl.push('<button class="btn sm dlfile" data-w="thread">Email thread</button>');
+    var head='<div class="card"><div class="line-head"><h2 style="font-size:16px;margin:0">'+esc(q.title)+'</h2><span class="grow"></span>'+statusPill(q.status)+'</div>'
+      +'<div class="task-facts" style="margin-top:10px">'
+        +'<span>Period <b>'+esc(q.period||'—')+'</b></span>'
+        +'<span>Auditor <b>'+esc(q.auditor_email||'—')+'</b></span>'
+        +'<span>By <b>'+esc(q.created_by||'—')+'</b></span>'
+        +'<span>'+esc(fmtDate(q.created_at))+'</span></div>'
+      +renderProgress(rep.progress, rep.lineCount)
+      +(dl.length?'<div class="row" style="margin-top:6px">'+dl.join('')+'</div>':'')
+      +'</div>';
+    $('histDetail').innerHTML=head+'<div class="card ipe on">'+ipeHtml(rep.ipe)+'</div>';
+    wireCopy($('histDetail'));
+    Array.prototype.forEach.call($('histDetail').querySelectorAll('.dlfile'), function(b){ b.addEventListener('click', function(){ downloadRequestFile(histReqId, b.dataset.w, b); }); });
+  }
+  function renderProgress(p, total){
+    if(!total) return '<div class="muted" style="font-size:12.5px;margin:8px 0">No lines.</div>';
+    var order=[['closed','green'],['pending_audit','blue'],['pending_review','amber'],['in_progress','neutral'],['assigned','blue'],['open','gray'],['not_found','red']];
+    var bar=order.map(function(o){ var n=p[o[0]]||0; return n?'<span class="seg-'+o[1]+'" style="width:'+(100*n/total)+'%"></span>':''; }).join('');
+    var lbl=order.filter(function(o){return p[o[0]];}).map(function(o){ return '<span class="prog-lbl"><i class="seg-'+o[1]+'"></i>'+esc(o[0].replace(/_/g,' '))+' '+p[o[0]]+'</span>'; }).join('');
+    return '<div class="progressbar">'+bar+'</div><div class="prog-legend">'+lbl+'</div>';
+  }
+  function downloadRequestFile(id, which, btn){
+    var o=btn.textContent; btn.disabled=true; btn.textContent='Preparing…';
+    google.script.run.withSuccessHandler(function(f){ btn.disabled=false; btn.textContent=o; openBlob(f); })
+      .withFailureHandler(function(e){ btn.disabled=false; btn.textContent=o; alert(e.message); })
+      .getRequestFile(id, which);
+  }
 
   /* ---------- assign ---------- */
   function loadAssign(){

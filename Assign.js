@@ -104,10 +104,13 @@ function assignBatch(updates) {
   return { ok: true, updated: updates.length };
 }
 
-/** A Sheets-coerced date cell -> 'yyyy-MM-dd' string (in the sheet's own timezone). */
+/** Normalise a date cell to a 'yyyy-MM-dd' string. Handles both raw Date cells
+ * and the ISO strings readObjects_ now produces (keeps just the date part). */
 function toDateStr_(v, tz) {
   if (v instanceof Date) return Utilities.formatDate(v, tz, 'yyyy-MM-dd');
-  return v == null ? '' : String(v);
+  var s = v == null ? '' : String(v);
+  var m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : s;
 }
 
 /**

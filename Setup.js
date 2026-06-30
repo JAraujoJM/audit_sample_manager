@@ -119,12 +119,16 @@ function seedConfig_(runner, folderIds) {
     appendObject_(cfg, 'Flows', {
       flow_id: 'flowA', name: 'Marketplace revenues / COGS',
       database: 'AIG_Nav_Jumia_Reconciliation', query_mode: 'full',
-      fy_start: '2025-01-01', fy_end: '2026-01-01',
       sample_key: 'Transaction_No', dedup_keys: 'Posting Date|Id_Company|Document No.', active: true
     });
   }
 
   if (sheetIsEmpty_(cfg, 'Routing')) seedFlowARouting_(cfg);
+
+  if (sheetIsEmpty_(cfg, 'Periods')) {
+    appendObject_(cfg, 'Periods', { flow_id: 'flowA', name: 'Full year audit 2025', start_date: '2025-01-01', end_date: '2026-01-01', active: true });
+    appendObject_(cfg, 'Periods', { flow_id: 'flowA', name: 'Interim audit 2025',   start_date: '2025-01-01', end_date: '2025-07-01', active: true });
+  }
 
   if (sheetIsEmpty_(cfg, 'Settings')) {
     appendObject_(cfg, 'Settings', { key: 'evidence_folder_id',        value: folderIds.evidence, description: 'Drive folder where preparer evidence is stored' });

@@ -39,8 +39,13 @@ function sub_(name) {
 function sqlLiteral_(v) {                       // escape + quote a value for an IN list
   return "'" + String(v).replace(/'/g, "''") + "'";
 }
-function buildQuery_(docs) {
-  return QUERY_MODE === 'full' ? buildQueryFull_(docs) : buildQueryLean_(docs);
+/**
+ * buildQuery_ — parameterised by flow + period. `p` carries:
+ *   { database, queryMode, fyStart, fyEnd }
+ * The flow supplies database/queryMode; the selected period supplies the dates.
+ */
+function buildQuery_(docs, p) {
+  return p.queryMode === 'full' ? buildQueryFull_(docs, p) : buildQueryLean_(docs, p);
 }
 
 /**
@@ -49,8 +54,9 @@ function buildQuery_(docs) {
  * tables with their conditions in the ON clause, so the join key drives an index
  * seek instead of materialising a full year per join.
  */
-function buildQueryLean_(docs) {
+function buildQueryLean_(docs, p) {
   var inList = docs.map(sqlLiteral_).join(',');
+  var DATABASE = p.database, FY_START = p.fyStart, FY_END = p.fyEnd;
   return [
 "SELECT t.[ID_Company]",
 "      ,t.[Transaction_No]",
@@ -87,8 +93,9 @@ function buildQueryLean_(docs) {
  * `notes` column (dp.notes = soi.PO_NUMBER); if it's unindexed this is the join
  * to watch, so keep this mode for when you actually need those columns.
  */
-function buildQueryFull_(docs) {
+function buildQueryFull_(docs, p) {
   var inList = docs.map(sqlLiteral_).join(',');
+  var DATABASE = p.database, FY_START = p.fyStart, FY_END = p.fyEnd;
   return [
 "SELECT t.[ID_Company]",
 "      ,t.[Transaction_No]",
@@ -179,24 +186,25 @@ function styleKey_(matched) {
 }
 
 /* ---------- gateway round trip ---------- */
-function submitJob_(query) {
+function submitJob_(query, database) {
   var requestId = APP_ID + '_' + Utilities.getUuid();
   var job = {
     query: query, request_id: requestId, app_id: APP_ID, output_name: requestId,
-    database: DATABASE, evidence: true, contract_version: 1,
-    description: 'Flow A enrichment (POC)', requested_by: Session.getActiveUser().getEmail()
+    database: database || DATABASE, evidence: true, contract_version: 1,
+    description: 'Audit Request Manager enrichment', requested_by: Session.getActiveUser().getEmail()
   };
   sub_('Requests_Pending').createFile(requestId + '.json', JSON.stringify(job, null, 2), 'application/json');
   return requestId;
 }
-function findCsv_(requestId) {
+function findResponse_(requestId, rx) {
   var files = sub_('Responses').getFiles();
   while (files.hasNext()) {
     var f = files.next(), n = f.getName();
-    if (n.indexOf(requestId + '_') === 0 && /\.csv$/i.test(n)) return f;
+    if (n.indexOf(requestId + '_') === 0 && rx.test(n)) return f;
   }
   return null;
 }
+function findCsv_(requestId) { return findResponse_(requestId, /\.csv$/i); }
 function isFailed_(requestId) {
   return sub_('Requests_Failed').getFilesByName(requestId + '.json').hasNext();
 }
@@ -216,13 +224,31 @@ function props_() { return PropertiesService.getUserProperties(); }
  * its id, return {status:'pending'}, and the next call with the same docs
  * RE-POLLS that id instead of resubmitting (no duplicate jobs).
  */
-function enrich(docText) {
+/**
+ * Entry point from the New request form. `payload`:
+ *   { docs, flowId, periodName, auditorEmail, attachment? }
+ * attachment (optional): { fileName, mimeType, base64 } — the email thread.
+ * The flow + period select the database and date window; the rest is captured on
+ * the persisted Request. Single-phase submit+poll with the same safe-retry rule.
+ */
+function enrich(payload) {
   if (isSetupDone_()) requireRole_([ROLES.ADMIN]);   // SoD: only the Administrator runs enrichment
-  var docs = parseDocs_(docText);
+  payload = payload || {};
+  var docs = parseDocs_(payload.docs || '');
   if (docs.length === 0) return { status: 'empty' };
 
-  var query = buildQuery_(docs);
-  var signature = sig_(docs);
+  var flow = getFlow(payload.flowId);
+  if (!flow) throw new Error('Choose a flow.');
+  var period = findPeriod_(payload.flowId, payload.periodName);
+  if (!period) throw new Error('Choose a period.');
+  var auditor = String(payload.auditorEmail || '').trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(auditor)) throw new Error('Enter a valid auditor email.');
+
+  var qp = { database: flow.database || DATABASE, queryMode: flow.query_mode || QUERY_MODE, fyStart: period.start, fyEnd: period.end };
+  var query = buildQuery_(docs, qp);
+  var ctx = { flow: flow, period: period, auditor: auditor, qp: qp, attachment: payload.attachment || null };
+
+  var signature = sig_(docs) + '|' + flow.flow_id + '|' + period.start + '|' + period.end + '|' + qp.queryMode;
   var p = props_();
   var stored = JSON.parse(p.getProperty('outstanding') || 'null');
 
@@ -230,14 +256,14 @@ function enrich(docText) {
   if (stored && stored.sig === signature) {
     requestId = stored.requestId;            // resume polling the existing job
   } else {
-    requestId = submitJob_(query);
+    requestId = submitJob_(query, qp.database);
     p.setProperty('outstanding', JSON.stringify({ requestId: requestId, sig: signature }));
   }
 
   var deadline = Date.now() + POLL_BUDGET_MS;
   while (Date.now() < deadline) {
     var resultFile = findCsv_(requestId);
-    if (resultFile) { p.deleteProperty('outstanding'); return buildResults_(parseCsv_(resultFile), docs, requestId, query, resultFile); }
+    if (resultFile) { p.deleteProperty('outstanding'); return buildResults_(parseCsv_(resultFile), docs, requestId, query, resultFile, ctx); }
     if (isFailed_(requestId)) {
       p.deleteProperty('outstanding');
       return { status: 'failed', requestId: requestId,
@@ -249,10 +275,10 @@ function enrich(docText) {
   return { status: 'pending', requestId: requestId };
 }
 
-function buildResults_(csv, docs, requestId, query, file) {
+function buildResults_(csv, docs, requestId, query, file, ctx) {
   if (!csv || !csv.length) {                       // empty result → everything not found
     var empty = docs.map(function (d) { return { doc: d, found: false, _matched: [] }; });
-    return finalizeRun_(empty, docs, 0, requestId, query, file);
+    return finalizeRun_(empty, docs, 0, requestId, query, file, ctx);
   }
   var header = csv[0];
   var idx = {};
@@ -289,19 +315,17 @@ function buildResults_(csv, docs, requestId, query, file) {
     };
   });
   var foundCount = results.filter(function (x) { return x.found; }).length;
-  return finalizeRun_(results, docs, foundCount, requestId, query, file);
+  return finalizeRun_(results, docs, foundCount, requestId, query, file, ctx);
 }
 
 /* ---------- persist a successful run, then return a clean payload to the UI ---------- */
-function finalizeRun_(results, docs, foundCount, requestId, query, file) {
-  var ret = {
-    status: 'ok', requestId: requestId,
-    rows: results.map(stripInternal_),
-    ipe: buildIpe_(docs, foundCount, requestId, query, file)
-  };
+function finalizeRun_(results, docs, foundCount, requestId, query, file, ctx) {
+  ctx = ctx || {};
+  var ipe = buildIpe_(docs, foundCount, requestId, query, file, ctx);
+  var ret = { status: 'ok', requestId: requestId, rows: results.map(stripInternal_), ipe: ipe };
   if (isSetupDone_()) {
     try {
-      ret.dbRequestId = persistRun_(results, requestId).dbRequestId;
+      ret.dbRequestId = persistRun_(results, requestId, file, ctx, ipe).dbRequestId;
     } catch (e) {
       ret.persistError = String(e);                // never block the auditor's result on a write failure
       logActivity('ENRICH_PERSIST_FAILED', 'request', requestId, String(e));
@@ -322,17 +346,26 @@ function stripInternal_(row) {
  * `responsible`; when that's a role (not an email), assigned_to is left blank for
  * the admin to assign a specific preparer — including different people per item.
  */
-function persistRun_(results, gatewayRequestId) {
-  var flow  = getFlow('flowA') || { flow_id: 'flowA', name: 'Marketplace revenues / COGS' };
-  var actor = Session.getActiveUser().getEmail() || 'system';
-  var ds    = dataSs_();
-  var reqId = newId_('REQ');
-  var ts    = nowIso_();
+function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
+  ctx = ctx || {};
+  var flow   = ctx.flow   || getFlow('flowA') || { flow_id: 'flowA', name: 'Marketplace revenues / COGS' };
+  var period = ctx.period || { name: '', start: '', end: '' };
+  var actor  = Session.getActiveUser().getEmail() || 'system';
+  var ds     = dataSs_();
+  var reqId  = newId_('REQ');
+  var ts     = nowIso_();
+
+  var stored = {};
+  try { stored = storeRequestFiles_(reqId, gatewayRequestId, file, ctx.attachment); }
+  catch (e) { logActivity('STORE_FILES_FAILED', 'request', reqId, String(e)); }
 
   appendObject_(ds, 'Requests', {
     request_id: reqId, flow_id: flow.flow_id, title: flow.name,
-    period: FY_START + ' to ' + FY_END, status: 'enriched',
-    created_by: actor, created_at: ts, updated_at: ts
+    period: period.name, period_start: period.start, period_end: period.end,
+    auditor_email: ctx.auditor || '', status: 'enriched',
+    created_by: actor, created_at: ts, updated_at: ts,
+    csv_file_id: stored.csvId || '', xlsx_file_id: stored.xlsxId || '', thread_file_id: stored.threadId || '',
+    ipe_json: ipe ? JSON.stringify(ipe) : ''
   });
 
   var lines = 0, assignments = 0;
@@ -377,12 +410,48 @@ function persistRun_(results, gatewayRequestId) {
 
 function newId_(prefix) { return prefix + '_' + Utilities.getUuid().slice(0, 8); }
 
+/**
+ * Copy the gateway outputs (result CSV + SOX evidence XLSX) and the optional
+ * email-thread attachment into Exports/{reqId}/ so we keep our own copy to hand
+ * to the audit team. The XLSX can land a few seconds after the CSV, so wait a
+ * short while for it. Files are COPIED (the gateway's Responses/ is shared).
+ */
+function storeRequestFiles_(reqId, gatewayRequestId, csvFile, attachment) {
+  var exportsId = PropertiesService.getScriptProperties().getProperty(PROP.EXPORTS);
+  if (!exportsId) return {};
+  var folder = getOrCreateFolder_(DriveApp.getFolderById(exportsId), reqId);
+  var out = {};
+
+  if (csvFile) { try { out.csvId = csvFile.makeCopy(csvFile.getName(), folder).getId(); } catch (e) {} }
+
+  var deadline = Date.now() + 20000, xlsx = null;
+  while (Date.now() < deadline) {
+    xlsx = findResponse_(gatewayRequestId, /\.xlsx$/i);
+    if (xlsx) break;
+    Utilities.sleep(2500);
+  }
+  if (xlsx) { try { out.xlsxId = xlsx.makeCopy(xlsx.getName(), folder).getId(); } catch (e) {} }
+
+  if (attachment && attachment.base64) {
+    try {
+      var blob = Utilities.newBlob(Utilities.base64Decode(attachment.base64),
+        attachment.mimeType || 'application/octet-stream', sanitizeName_(attachment.fileName || 'request_thread'));
+      out.threadId = folder.createFile(blob).getId();
+    } catch (e) {}
+  }
+  return out;
+}
+
 /* ---------- IPE / SOX evidence metadata ---------- */
 function sha256Hex_(bytes) {
   var d = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, bytes);
   return d.map(function (b) { return ('0' + (b & 0xff).toString(16)).slice(-2); }).join('');
 }
-function buildIpe_(docs, foundCount, requestId, query, file) {
+function buildIpe_(docs, foundCount, requestId, query, file, ctx) {
+  ctx = ctx || {};
+  var flow   = ctx.flow   || { flow_id: 'flowA', name: 'Marketplace revenues / COGS' };
+  var period = ctx.period || { name: '', start: FY_START, end: FY_END };
+  var qp     = ctx.qp     || { database: DATABASE, queryMode: QUERY_MODE };
   var now = new Date();
   var yyyymm = Utilities.formatDate(now, 'UTC', 'yyyyMM');
   var ts = Utilities.formatDate(now, 'UTC', 'yyyy-MM-dd HH:mm:ss') + ' UTC';
@@ -391,11 +460,11 @@ function buildIpe_(docs, foundCount, requestId, query, file) {
   var requested = docs.length, notFound = requested - foundCount;
 
   return {
-    documentRef:    'IPE-MPL-' + yyyymm + '-001',
-    period:         'Created_Date window ' + FY_START + ' → ' + FY_END,
-    scope:          'Marketplace revenues / COGS · Flow A',
-    primaryDb:      DATABASE,
-    queryMode:      QUERY_MODE,
+    documentRef:    'IPE-' + String(flow.flow_id || 'flow').toUpperCase() + '-' + yyyymm,
+    period:         (period.name ? period.name + ' · ' : '') + 'Created_Date window ' + period.start + ' → ' + period.end,
+    scope:          flow.name + ' · ' + flow.flow_id,
+    primaryDb:      qp.database,
+    queryMode:      qp.queryMode,
     timestamp:      ts,
     requestedBy:    Session.getActiveUser().getEmail() || 'n/a',
     requestId:      requestId,
@@ -411,7 +480,7 @@ function buildIpe_(docs, foundCount, requestId, query, file) {
     evidenceNote:   'A SOX evidence workbook (query, script, result set, timestamp) was generated by the gateway for this request (evidence = true).',
     checks: [
       { name: 'Source authenticity',  method: 'Read-only SELECT executed via the FinRec SQL gateway (no client DB access)', result: 'Pass' },
-      { name: 'Period integrity',     method: 'Hardcoded date literals (' + FY_START + ' to ' + FY_END + '); no DECLARE', result: 'Pass' },
+      { name: 'Period integrity',     method: 'Date literals from the selected period (' + period.start + ' to ' + period.end + '); no DECLARE', result: 'Pass' },
       { name: 'No manual overrides',  method: 'Only the sample list and the period bound the query', result: 'Pass' },
       { name: 'De-duplication',       method: 'Sample document numbers de-duplicated before extraction', result: 'Pass' },
       { name: 'Completeness',         method: 'Resolved ' + foundCount + ' of ' + requested + ' requested document numbers', result: notFound === 0 ? 'Pass' : 'Flag' },
