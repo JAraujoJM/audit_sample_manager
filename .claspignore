@@ -1,0 +1,7 @@
+# Push only the Apps Script sources to the project.
+# Ignore everything, then allow the manifest + server (.js) + client (.html) files.
+**/**
+
+!appsscript.json
+!*.js
+!*.html
