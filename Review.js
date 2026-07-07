@@ -22,11 +22,15 @@ function stageRoles_(stage) {
 
 /* ---------- read ---------- */
 function reviewQueue(stage) {
-  requireRole_(stageRoles_(stage));
+  var me = requireRole_(stageRoles_(stage));
   var want = STAGE_STATUS[stage];
   var ds = dataSs_();
   var lines = readObjects_(ds, 'Sample_Lines');
-  return readObjects_(ds, 'Requests').map(function (r) {
+  return readObjects_(ds, 'Requests').filter(function (r) {
+    // The reviewer is set per request; a Reviewer sees only their own (admins see all).
+    return stage !== 'review' || me.role === ROLES.ADMIN ||
+           String(r.reviewer_email || '').toLowerCase() === me.email.toLowerCase();
+  }).map(function (r) {
     var rid = String(r.request_id);
     var rl = lines.filter(function (l) { return String(l.request_id) === rid; });
     var pending = rl.filter(function (l) { return String(l.status).toLowerCase() === want; }).length;
@@ -45,6 +49,10 @@ function reviewDetail(requestId, stage) {
   var ds = dataSs_();
   var req = readObjects_(ds, 'Requests').filter(function (r) { return String(r.request_id) === String(requestId); })[0];
   if (!req) throw new Error('Request not found.');
+  if (stage === 'review' && me.role !== ROLES.ADMIN &&
+      String(req.reviewer_email || '').toLowerCase() !== me.email.toLowerCase()) {
+    throw new Error('This request is assigned to a different reviewer.');
+  }
 
   // Evidence is served through the app (getEvidenceFile) — we no longer share
   // files on Drive, so reviewers/auditors get no "shared with you" emails.
@@ -100,8 +108,9 @@ function getEvidenceFile(evidenceId) {
 
 /* ---------- reviewer actions ---------- */
 function reviewerSubmit(lineId) {
-  requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
+  var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
   var line = requireLineStatus_(lineId, 'pending_review');
+  assertReviewer_(line.request_id, me);
   getAssignments(lineId).forEach(function (a) {
     if (String(a.status).toLowerCase() === 'submitted') {
       updateRowById_(dataSs_(), 'Assignments', 'assignment_id', a.assignment_id, { status: 'reviewed' });
@@ -113,9 +122,10 @@ function reviewerSubmit(lineId) {
 }
 
 function reviewerReturn(lineId, note) {
-  requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
+  var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
   if (!String(note || '').trim()) throw new Error('Please add a note explaining what to fix.');
   var line = requireLineStatus_(lineId, 'pending_review');
+  assertReviewer_(line.request_id, me);
   reopenLineAssignments_(lineId);
   updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'in_progress', note: 'Returned by reviewer: ' + note });
   logActivity('REVIEW_RETURN', 'line', lineId, note);
@@ -148,6 +158,14 @@ function auditorReturn(lineId, note) {
 }
 
 /* ---------- helpers ---------- */
+function assertReviewer_(requestId, me) {
+  if (me.role === ROLES.ADMIN) return;
+  var req = findRequest_(requestId);
+  if (!req || String(req.reviewer_email || '').toLowerCase() !== me.email.toLowerCase()) {
+    throw new Error('You are not the reviewer for this request.');
+  }
+}
+
 function requireLineStatus_(lineId, want) {
   var line = findLine_(lineId);
   if (!line) throw new Error('Line not found.');

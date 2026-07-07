@@ -134,14 +134,9 @@ function findPeriod_(flowId, name) {
   return null;
 }
 
-/* ---------- routing engine (config-driven) ---------- */
-/** Reduce a line to the facts routing matches on. */
-function lineFacts_(mplType, paidAt) {
-  return {
-    mpl:  /advance/i.test(String(mplType)) ? 'advance' : 'regular',
-    paid: (paidAt && String(paidAt).trim() !== '') ? 'yes' : 'no'
-  };
-}
+/* ---------- routing engine (config-driven) ----------
+ * Facts are produced by the flow module (see FlowA.js). routeLine_ matches them
+ * against the flow's Routing rows — flow-agnostic. */
 
 /** Required evidence for a line = every active Routing row whose match holds. */
 function routeLine_(facts, flowId) {

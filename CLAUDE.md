@@ -8,13 +8,23 @@ This repo currently holds the **Flow A proof of concept** (Marketplace revenues 
 paste document numbers, enrich them via the FinRec SQL gateway, and show the required action.
 
 ## Stack
-- **Google Apps Script** (synced with `clasp`). `Code.gs` = server, `Index.html` = client UI, `appsscript.json` = manifest.
+- **Google Apps Script** (synced with `clasp`). Server is split by concern (`Code.gs` engine, `Db`, `Auth`,
+  `Setup`, `Request`, `Assign`, `Prepare`, `Review`, `Flows`/`FlowA` flow modules); `Index.html` = client UI;
+  `appsscript.json` = manifest.
 - Target data plane for the full build: **Google Sheets** (state), **Drive** (evidence files), **Gmail** (notifications), time-driven triggers (reminders). Internal users live in Jumia Google Workspace.
 - **Enrichment** comes only from the **FinRec SQL gateway** (read-only, file-based). Apps Script never touches SQL Server directly.
 
 ## Core design principle
-A business flow is **configuration, not code**: expected sample columns, the enrichment query, and the
-routing rules (sample attribute → required evidence → responsible Preparer). Adding a flow should be data entry.
+A business flow's **workflow is configuration, not code**: its metadata (`Flows`), selectable periods
+(`Periods`), and routing rules (`Routing`: sample attribute → required evidence → responsible role) are all
+Config-sheet rows. The two things config can't express — the enrichment **SQL** and how to **read a result
+row** (into line fields + the routing `facts`) — live in a small per-flow **module** (see `FlowA.js`),
+registered in `Flows.js`.
+
+**Adding a flow** = add its `Flows`/`Periods`/`Routing` rows + write one module
+(`{ id, sampleKey, buildQuery(docs, p), mapRow(cell) }`) + register it in `Flows.js`. The rest of the engine
+(assignment, evidence, review/audit, storage, IPE) is flow-agnostic. (The Request view's results table in
+`Index.html` is still flow-shaped — adjust it if a new flow surfaces different columns.)
 
 ## Roles (full build)
 Administrator, Preparer, Reviewer, Auditor — assigned by email, restricted to `@jumia.com`.
@@ -52,9 +62,11 @@ De-dup key: fiscal year (`Posting Date`) + `Id_Company` + `Document No.`.
 - Gateway answers in seconds once warm; the first call after a long idle can be slow — retry resumes it.
 
 ## Query rules (do not regress)
-- `QUERY_MODE`: `lean` (routing only — fast, default) or `full` (adds PO / down-payment / statement balances).
-- Dates are **hardcoded literals** (`FY_START`/`FY_END`) — the gateway rejects stacked statements, so
-  no `DECLARE @startdate ...;`.
+- Per-flow SQL lives in the flow module (`FlowA.js`), built via `buildQuery_(flowId, docs, p)`.
+- `query_mode` (from the `Flows` row): `lean` (routing only — fast) or `full` (adds PO / down-payment /
+  statement balances).
+- Dates are **inlined literals** from the selected period (`p.fyStart`/`p.fyEnd`) — the gateway rejects
+  stacked statements, so no `DECLARE @startdate ...;`.
 - Build the `IN (...)` list with `sqlLiteral_` (doubles single quotes) — sample values are external input.
 - **Never** revert to the old derived-table shape (`LEFT JOIN (SELECT ... WHERE date >= ...)`); it scans a
   full year per join and was the >10-min slowdown. Keep raw ON-driven joins so the sample drives a seek.

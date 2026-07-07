@@ -110,6 +110,11 @@
   .seg-green{background:var(--green);} .seg-blue{background:var(--accent);} .seg-amber{background:var(--amber);}
   .seg-neutral{background:#c4c4cc;} .seg-gray{background:#e2e2e8;} .seg-red{background:var(--red);}
 
+  /* assign task table */
+  input[type=checkbox]{width:auto;}
+  .asg-table th, .asg-table td{white-space:nowrap;}
+  .asg-table td:nth-child(5){white-space:normal;}   /* evidence type may wrap */
+
   /* pills + dots */
   .pill{font-size:12px; font-weight:500; padding:2px 9px; border-radius:6px; display:inline-block; white-space:nowrap;}
   .pill.neutral{background:#F0F0F2; color:var(--text-2);}
@@ -231,8 +236,10 @@
         <div class="form-grid">
           <div><label class="fld">Flow</label><select id="flowSel"></select></div>
           <div><label class="fld">Period</label><select id="periodSel"></select></div>
-          <div><label class="fld">Auditor email</label><input id="auditorEmail" type="email" placeholder="name@auditor.com"></div>
-          <div><label class="fld">Email thread (optional)</label><input id="threadFile" type="file"></div>
+          <div><label class="fld">Auditor email(s)</label><input id="auditorEmail" type="text" placeholder="name@auditor.com, second@auditor.com"></div>
+          <div><label class="fld">Reviewer email</label><input id="reviewerEmail" type="email" placeholder="reviewer@jumia.com"></div>
+          <div><label class="fld">Due date</label><input id="dueDate" type="date"></div>
+          <div><label class="fld">Request reference (optional)</label><input id="requestRef" type="text" placeholder="Auditor's request ID / subject"></div>
         </div>
         <label class="fld" style="margin-top:14px">Document numbers</label>
         <textarea id="docs" spellcheck="false" placeholder="Paste document numbers — one per line or comma-separated"></textarea>
@@ -412,20 +419,17 @@
 
   $('run').addEventListener('click', function(){
     var docs=$('docs').value.trim(); if(!docs){ $('docs').focus(); return; }
-    var flowId=$('flowSel').value, periodName=$('periodSel').value, auditor=$('auditorEmail').value.trim();
+    var flowId=$('flowSel').value, periodName=$('periodSel').value;
+    var auditor=$('auditorEmail').value.trim(), reviewer=$('reviewerEmail').value.trim();
+    var dueDate=$('dueDate').value, requestRef=$('requestRef').value.trim();
     if(!flowId){ setStatus('Choose a flow.','warn'); return; }
     if(!periodName){ setStatus('Choose a period.','warn'); return; }
-    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(auditor)){ setStatus('Enter a valid auditor email.','warn'); return; }
-    var file=$('threadFile').files && $('threadFile').files[0];
-    if(file && file.size>20*1024*1024){ setStatus('Attachment too large (max 20 MB).','warn'); return; }
+    if(!auditor){ setStatus('Enter auditor email(s).','warn'); return; }
     $('run').disabled=true; clearStatus(); startLoader();
-    function go(attachment){
-      google.script.run.withSuccessHandler(handleEnrich)
-        .withFailureHandler(function(e){ stopLoader(); $('run').disabled=false; setStatus('Error: '+e.message,'warn'); })
-        .enrich({ docs:docs, flowId:flowId, periodName:periodName, auditorEmail:auditor, attachment:attachment });
-    }
-    if(file){ var r=new FileReader(); r.onload=function(){ go({ fileName:file.name, mimeType:file.type, base64:String(r.result).split(',')[1] }); }; r.onerror=function(){ stopLoader(); $('run').disabled=false; setStatus('Could not read the attachment.','warn'); }; r.readAsDataURL(file); }
-    else go(null);
+    google.script.run.withSuccessHandler(handleEnrich)
+      .withFailureHandler(function(e){ stopLoader(); $('run').disabled=false; setStatus('Error: '+e.message,'warn'); })
+      .enrich({ docs:docs, flowId:flowId, periodName:periodName, auditorEmail:auditor,
+                reviewerEmail:reviewer, dueDate:dueDate, requestRef:requestRef });
   });
   function handleEnrich(res){
     stopLoader(); $('run').disabled=false;
@@ -515,15 +519,16 @@
   function renderHistDetail(rep){
     var q=rep.request;
     var dl=[];
-    if(rep.files.csv)    dl.push('<button class="btn sm dlfile" data-w="csv">Download CSV</button>');
-    if(rep.files.xlsx)   dl.push('<button class="btn sm dlfile" data-w="xlsx">Download evidence XLSX</button>');
-    if(rep.files.thread) dl.push('<button class="btn sm dlfile" data-w="thread">Email thread</button>');
+    if(rep.files.csv)  dl.push('<button class="btn sm dlfile" data-w="csv">Download CSV</button>');
+    if(rep.files.xlsx) dl.push('<button class="btn sm dlfile" data-w="xlsx">Download evidence XLSX</button>');
     var head='<div class="card"><div class="line-head"><h2 style="font-size:16px;margin:0">'+esc(q.title)+'</h2><span class="grow"></span>'+statusPill(q.status)+'</div>'
       +'<div class="task-facts" style="margin-top:10px">'
         +'<span>Period <b>'+esc(q.period||'—')+'</b></span>'
+        +'<span>Due <b>'+esc(q.due_date||'—')+'</b></span>'
         +'<span>Auditor <b>'+esc(q.auditor_email||'—')+'</b></span>'
-        +'<span>By <b>'+esc(q.created_by||'—')+'</b></span>'
-        +'<span>'+esc(fmtDate(q.created_at))+'</span></div>'
+        +'<span>Reviewer <b>'+esc(q.reviewer_email||'—')+'</b></span>'
+        +(q.request_ref?'<span>Ref <b>'+esc(q.request_ref)+'</b></span>':'')
+        +'<span>By <b>'+esc(q.created_by||'—')+'</b> · '+esc(fmtDate(q.created_at))+'</span></div>'
       +renderProgress(rep.progress, rep.lineCount)
       +(dl.length?'<div class="row" style="margin-top:6px">'+dl.join('')+'</div>':'')
       +'</div>';
@@ -573,18 +578,83 @@
     currentReqId=id;
     Array.prototype.forEach.call($('reqList').querySelectorAll('.req-item'), function(b){ b.classList.toggle('active', b.dataset.id===id); });
     $('reqDetail').innerHTML='<div class="empty">Loading…</div>';
-    google.script.run.withSuccessHandler(renderDetail).withFailureHandler(function(e){ $('reqDetail').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; }).getRequestDetail(id);
+    google.script.run.withSuccessHandler(prepAssign).withFailureHandler(function(e){ $('reqDetail').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; }).getRequestDetail(id);
   }
-  function renderDetail(d){
-    var lines = d.lines.filter(function(l){ return Number(l.required_count)>0; });
-    var head = '<div class="card"><h2 style="font-size:16px">'+esc(d.request.title)+'</h2>'
-      +'<p class="sub" style="margin:2px 0 0">'+esc(d.request.period)+' · '+d.lines.length+' lines · '+esc(fmtDate(d.request.created_at))+'</p></div>';
-    if(!lines.length){ $('reqDetail').innerHTML=head+'<div class="card"><div class="empty">No lines need evidence in this run.</div></div>'; return; }
-    var body = '<div class="card">'+lines.map(renderLineCard).join('')+'</div>';
-    $('reqDetail').innerHTML = head+body;
-    Array.prototype.forEach.call($('reqDetail').querySelectorAll('.line-card'), function(card){
-      card.querySelector('.save').addEventListener('click', function(){ saveLine(card); });
+
+  /* Assign detail: a filterable task table (one row per evidence item) with
+   * bulk assignment to the selected rows. */
+  var assignData=null, assignFilter={ mpl:'all', company:'all' };
+  function prepAssign(d){
+    var tasks=[];
+    d.lines.filter(function(l){ return Number(l.required_count)>0; }).forEach(function(l){
+      var adv=/advance/i.test(l.mpl_type);
+      l.assignments.forEach(function(a){
+        tasks.push({ assignment_id:a.assignment_id, document_no:l.document_no, company:l.company||'',
+          mpl: adv?'advance':'regular', evidence_type:a.evidence_type, assigned_to:a.assigned_to||'', status:a.status });
+      });
     });
+    assignData={ request:d.request, tasks:tasks };
+    assignFilter={ mpl:'all', company:'all' };
+    renderAssignDetail();
+  }
+  function uniq_(arr){ var s={},o=[]; arr.forEach(function(x){ if(x && !s[x]){s[x]=1;o.push(x);} }); return o; }
+  function renderAssignDetail(){
+    var d=assignData; if(!d) return;
+    var head='<div class="card"><h2 style="font-size:16px;margin:0 0 2px">'+esc(d.request.title)+'</h2>'
+      +'<p class="sub" style="margin:0">'+esc(d.request.period||'')+' · '+d.tasks.length+' tasks</p></div>';
+    if(!d.tasks.length){ $('reqDetail').innerHTML=head+'<div class="card"><div class="empty">No tasks need a preparer in this run.</div></div>'; return; }
+    var companies=uniq_(d.tasks.map(function(t){ return t.company; }));
+    function tb(f,l){ return '<button data-f="'+f+'"'+(assignFilter.mpl===f?' class="active"':'')+'>'+l+'</button>'; }
+    var filters='<div class="row" style="justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">'
+      +'<div class="filter-bar">'+tb('all','All')+tb('regular','Regular')+tb('advance','MPL advance')+'</div>'
+      +'<select id="asgCompany" style="max-width:220px"><option value="all">All companies</option>'
+        +companies.map(function(c){ return '<option value="'+esc(c)+'">'+esc(c)+'</option>'; }).join('')+'</select></div>';
+    var bulk='<div class="row" style="margin-bottom:10px"><input id="bulkPrep" list="preparers" placeholder="preparer@jumia.com" style="max-width:260px">'
+      +'<button class="btn primary sm" id="bulkAssign">Assign to selected</button>'
+      +'<span class="muted" id="selCount" style="font-size:12.5px"></span></div>';
+    var table='<table class="asg-table"><thead><tr><th style="width:24px"><input type="checkbox" id="selAll"></th>'
+      +'<th>Document</th><th>Company</th><th>Type</th><th>Evidence</th><th>Preparer</th><th>Status</th></tr></thead>'
+      +'<tbody id="asgRows"></tbody></table>';
+    $('reqDetail').innerHTML=head+'<div class="card">'+filters+bulk+table+'</div>';
+    wireAssign();
+    renderAsgRows();
+  }
+  function visibleTasks_(){
+    return assignData.tasks.filter(function(t){
+      return (assignFilter.mpl==='all'||t.mpl===assignFilter.mpl) && (assignFilter.company==='all'||t.company===assignFilter.company);
+    });
+  }
+  function renderAsgRows(){
+    $('asgRows').innerHTML = visibleTasks_().map(function(t){
+      var typePill = t.mpl==='advance' ? '<span class="pill blue">MPL advance</span>' : '<span class="pill neutral">Regular</span>';
+      return '<tr><td><input type="checkbox" class="asg-chk" data-aid="'+esc(t.assignment_id)+'" checked></td>'
+        +'<td class="mono">'+esc(t.document_no)+'</td><td>'+esc(t.company||'—')+'</td><td>'+typePill+'</td>'
+        +'<td>'+esc(t.evidence_type)+'</td><td>'+(t.assigned_to?esc(t.assigned_to):'<span class="muted">—</span>')+'</td>'
+        +'<td>'+statusPill(t.status)+'</td></tr>';
+    }).join('') || '<tr><td colspan="7" class="empty">No tasks match the filter.</td></tr>';
+    if($('selAll')) $('selAll').checked=true;
+    Array.prototype.forEach.call($('asgRows').querySelectorAll('.asg-chk'), function(c){ c.addEventListener('change', updateSelCount_); });
+    updateSelCount_();
+  }
+  function updateSelCount_(){ if($('selCount')) $('selCount').textContent=$('asgRows').querySelectorAll('.asg-chk:checked').length+' selected'; }
+  function wireAssign(){
+    Array.prototype.forEach.call($('reqDetail').querySelectorAll('.filter-bar button'), function(b){
+      b.addEventListener('click', function(){ assignFilter.mpl=b.dataset.f; Array.prototype.forEach.call(b.parentNode.children,function(x){x.classList.toggle('active',x===b);}); renderAsgRows(); });
+    });
+    $('asgCompany').addEventListener('change', function(){ assignFilter.company=$('asgCompany').value; renderAsgRows(); });
+    $('selAll').addEventListener('change', function(){ var on=$('selAll').checked; Array.prototype.forEach.call($('asgRows').querySelectorAll('.asg-chk'),function(c){c.checked=on;}); updateSelCount_(); });
+    $('bulkAssign').addEventListener('click', bulkAssign);
+  }
+  function bulkAssign(){
+    var email=$('bulkPrep').value.trim();
+    if(email && !/@jumia\.com$/i.test(email)){ alert('Preparer must be a @jumia.com email.'); return; }
+    var ids=[]; Array.prototype.forEach.call($('asgRows').querySelectorAll('.asg-chk:checked'), function(c){ ids.push(c.dataset.aid); });
+    if(!ids.length){ alert('Select at least one task.'); return; }
+    var updates=ids.map(function(id){ return { assignment_id:id, assigned_to:email }; });
+    var btn=$('bulkAssign'); btn.disabled=true; btn.textContent='Assigning…';
+    google.script.run.withSuccessHandler(function(){ btn.disabled=false; btn.textContent='Assign to selected'; if(currentReqId) selectRequest(currentReqId); refreshRequests(); })
+      .withFailureHandler(function(e){ btn.disabled=false; btn.textContent='Assign to selected'; alert(e.message); })
+      .assignBatch(updates);
   }
   function statusPill(s){
     s=String(s||'pending').toLowerCase();
@@ -593,40 +663,6 @@
             : (s==='pending_review'||s==='submitted'||s==='returned') ? 'amber'
             : (s==='rejected') ? 'red' : 'neutral';
     return '<span class="pill '+cls+'">'+esc(s.replace(/_/g,' '))+'</span>';
-  }
-  function renderLineCard(l){
-    var adv=/advance/i.test(l.mpl_type);
-    var mpl=adv?'<span class="pill blue">MPL advance</span>':'<span class="pill neutral">Regular</span>';
-    var paid = l.paid_status?('<span class="pill '+(/unpaid/i.test(l.paid_status)?'amber':'green')+'">'+esc(l.paid_status)+'</span>'):'';
-    var asgs = l.assignments.map(function(a){
-      return '<div class="asg">'
-        +'<div class="etype">'+esc(a.evidence_type)+' '+statusPill(a.status)+'</div>'
-        +'<div><label class="fld">Preparer</label><input class="assignee" list="preparers" data-aid="'+esc(a.assignment_id)+'" value="'+esc(a.assigned_to||'')+'" placeholder="name@jumia.com"></div>'
-        +'<div><label class="fld">Due</label><input type="date" class="due" data-aid="'+esc(a.assignment_id)+'" value="'+esc(a.due_date||'')+'"></div>'
-        +'</div>';
-    }).join('');
-    return '<div class="line-card">'
-      +'<div class="line-head"><span class="doc">'+esc(l.document_no)+'</span><span class="ven">'+esc(l.vendor||'')+'</span>'
-        +'<span class="grow"></span>'+mpl+' '+paid+' '+statusPill(l.status)+'</div>'
-      +asgs
-      +'<div class="line-foot"><button class="btn primary sm save">Save</button><span class="saved">Saved ✓</span></div>'
-      +'</div>';
-  }
-  function saveLine(card){
-    var updates=[]; var dues={};
-    Array.prototype.forEach.call(card.querySelectorAll('.due'), function(d){ dues[d.dataset.aid]=d.value; });
-    Array.prototype.forEach.call(card.querySelectorAll('.assignee'), function(inp){
-      updates.push({ assignment_id:inp.dataset.aid, assigned_to:inp.value.trim(), due_date:dues[inp.dataset.aid]||'' });
-    });
-    var btn=card.querySelector('.save'), saved=card.querySelector('.saved');
-    btn.disabled=true; btn.textContent='Saving…';
-    google.script.run.withSuccessHandler(function(){
-      btn.disabled=false; btn.textContent='Save'; saved.classList.add('on'); setTimeout(function(){ saved.classList.remove('on'); },1600);
-      if(currentReqId) selectRequest(currentReqId);
-      refreshRequests();
-    }).withFailureHandler(function(e){
-      btn.disabled=false; btn.textContent='Save'; alert(e.message);
-    }).assignBatch(updates);
   }
 
   /* ---------- my tasks (preparer) ---------- */

@@ -28,7 +28,7 @@ function requestOverview() {
     var rl = lines.filter(function (l) { return String(l.request_id) === rid; });
     return {
       request_id: r.request_id, flow_id: r.flow_id, title: r.title,
-      period: r.period, auditor_email: r.auditor_email || '',
+      period: r.period, auditor_email: r.auditor_email || '', reviewer_email: r.reviewer_email || '',
       status: r.status, created_at: r.created_at, created_by: r.created_by,
       lineCount: rl.length, progress: progressOf_(rl)
     };
@@ -47,23 +47,23 @@ function requestReport(requestId) {
     request: {
       request_id: r.request_id, flow_id: r.flow_id, title: r.title,
       period: r.period, period_start: r.period_start, period_end: r.period_end,
-      auditor_email: r.auditor_email || '', status: r.status,
-      created_at: r.created_at, created_by: r.created_by
+      auditor_email: r.auditor_email || '', reviewer_email: r.reviewer_email || '',
+      request_ref: r.request_ref || '', due_date: r.due_date || '',
+      status: r.status, created_at: r.created_at, created_by: r.created_by
     },
     lineCount: lines.length,
     progress: progressOf_(lines),
-    files: { csv: !!r.csv_file_id, xlsx: !!r.xlsx_file_id, thread: !!r.thread_file_id },
+    files: { csv: !!r.csv_file_id, xlsx: !!r.xlsx_file_id },
     ipe: ipe
   };
 }
 
-/** Download a stored request file (which = 'csv' | 'xlsx' | 'thread') as a data URL. */
+/** Download a stored request file (which = 'csv' | 'xlsx') as a data URL. */
 function getRequestFile(requestId, which) {
-  var me = requireRole_([ROLES.ADMIN, ROLES.REVIEWER, ROLES.AUDITOR]);
-  if (which === 'thread' && me.role !== ROLES.ADMIN) throw new Error('Not allowed.');
+  requireRole_([ROLES.ADMIN, ROLES.REVIEWER, ROLES.AUDITOR]);
   var r = findRequest_(requestId);
   if (!r) throw new Error('Request not found.');
-  var fid = { csv: r.csv_file_id, xlsx: r.xlsx_file_id, thread: r.thread_file_id }[which];
+  var fid = { csv: r.csv_file_id, xlsx: r.xlsx_file_id }[which];
   if (!fid) throw new Error('That file was not stored for this request.');
   var blob = DriveApp.getFileById(fid).getBlob();
   var bytes = blob.getBytes();

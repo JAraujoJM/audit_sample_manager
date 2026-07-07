@@ -35,146 +35,38 @@ function sub_(name) {
   return DriveApp.getFolderById(BASE_FOLDER_ID).getFoldersByName(name).next();
 }
 
-/* ---------- SQL building (the part we own) ---------- */
+/* ---------- SQL building (flow-agnostic helpers) ---------- */
 function sqlLiteral_(v) {                       // escape + quote a value for an IN list
   return "'" + String(v).replace(/'/g, "''") + "'";
 }
-/**
- * buildQuery_ — parameterised by flow + period. `p` carries:
- *   { database, queryMode, fyStart, fyEnd }
- * The flow supplies database/queryMode; the selected period supplies the dates.
- */
-function buildQuery_(docs, p) {
-  return p.queryMode === 'full' ? buildQueryFull_(docs, p) : buildQueryLean_(docs, p);
-}
 
 /**
- * LEAN — routing only. The sample filters the base table first; the two joins
- * needed for the decision (insured = MPL type, payout = Paid_At_Date) are RAW
- * tables with their conditions in the ON clause, so the join key drives an index
- * seek instead of materialising a full year per join.
+ * Build the enrichment query for a flow. The flow module (FlowA.js, …) owns the
+ * SQL; `p` carries { database, queryMode, fyStart, fyEnd } from the flow config +
+ * the selected period.
  */
-function buildQueryLean_(docs, p) {
-  var inList = docs.map(sqlLiteral_).join(',');
-  var DATABASE = p.database, FY_START = p.fyStart, FY_END = p.fyEnd;
-  return [
-"SELECT t.[ID_Company]",
-"      ,t.[Transaction_No]",
-"      ,t.[Created_Date]",
-"      ,t.[Vendor_Short_Code]",
-"      ,t.[Vendor_Name]",
-"      ,CASE WHEN insured.Target_code IS NOT NULL THEN 'MPL advance' ELSE 'Regular' END AS [MPL type]",
-"      ,t.[Transaction_Type]",
-"      ,t.[Transaction_Amount]",
-"      ,t.[Payout_Statement_Code]",
-"      ,CONVERT(date, payouts.[Paid_At_Date]) AS [Paid_At_Date]",
-"      ,payouts.[Payout_Method]",
-"      ,payouts.[Payment_Reference]",
-"  FROM [" + DATABASE + "].[dbo].[RPT_TRANSACTIONS_SELLER] t",
-"  LEFT JOIN [" + DATABASE + "].[RING].[RPT_TARGET_VARIABLE] insured",
-"         ON insured.Company_ID  = t.ID_Company",
-"        AND insured.Target_code = t.Vendor_Short_Code",
-"        AND insured.[type]      = 'SELLER'",
-"        AND insured.Variable    = 'Damaged Items Insurance - Active'",
-"  LEFT JOIN [" + DATABASE + "].[dbo].[RPT_PAYOUT] payouts",
-"         ON payouts.ID_Company              = t.ID_Company",
-"        AND payouts.Account_Statement_Number = t.Payout_Statement_Code",
-"        AND payouts.Partner_Type            = 'SELLER'",
-"        AND payouts.Paid_At_Date           >= '" + FY_START + "'",
-"  WHERE t.[Created_Date] >= '" + FY_START + "'",
-"    AND t.[Created_Date] <  '" + FY_END + "'",
-"    AND t.[Transaction_No] IN (" + inList + ")"
-  ].join('\n');
+function buildQuery_(flowId, docs, p) {
+  var mod = flowModule_(flowId);
+  if (!mod || !mod.buildQuery) throw new Error('Flow "' + flowId + '" has no enrichment module.');
+  return mod.buildQuery(docs, p);
 }
 
+/* ---------- routing (config-driven) ---------- */
 /**
- * FULL — adds PO number, down-payment and statement balances for the evidence
- * pack, in the same fast ON-driven shape. The down-payment join is on a text
- * `notes` column (dp.notes = soi.PO_NUMBER); if it's unindexed this is the join
- * to watch, so keep this mode for when you actually need those columns.
+ * Required evidence for a line, from its routing `facts` (produced by the flow
+ * module): every active Routing row of the flow whose match holds. One entry per
+ * required document, so e.g. an advance line returns two.
  */
-function buildQueryFull_(docs, p) {
-  var inList = docs.map(sqlLiteral_).join(',');
-  var DATABASE = p.database, FY_START = p.fyStart, FY_END = p.fyEnd;
-  return [
-"SELECT t.[ID_Company]",
-"      ,t.[Transaction_No]",
-"      ,t.[Created_Date]",
-"      ,t.[Vendor_Short_Code]",
-"      ,t.[Vendor_Name]",
-"      ,CASE WHEN insured.Target_code IS NOT NULL THEN 'MPL advance' ELSE 'Regular' END AS [MPL type]",
-"      ,t.[Transaction_Type]",
-"      ,t.[Transaction_Amount]",
-"      ,t.[Payout_Statement_Code]",
-"      ,CONVERT(date, payouts.[Paid_At_Date]) AS [Paid_At_Date]",
-"      ,payouts.[Payout_Method]",
-"      ,payouts.[Payment_Reference]",
-"      ,soi.[PO_NUMBER]",
-"      ,st.[Start_Date]      AS [Statement Start Date]",
-"      ,st.[End_Date]        AS [Statement End Date]",
-"      ,st.[Opening_Balance] AS [Statement Opening Balance]",
-"      ,st.[Closing_Balance] AS [Statement Closing Balance]",
-"      ,dp.[Transaction_No]     AS [Down Payment Transaction]",
-"      ,dp.[Transaction_Amount] AS [Down Payment Amount]",
-"  FROM [" + DATABASE + "].[dbo].[RPT_TRANSACTIONS_SELLER] t",
-"  LEFT JOIN [" + DATABASE + "].[RING].[RPT_TARGET_VARIABLE] insured",
-"         ON insured.Company_ID  = t.ID_Company",
-"        AND insured.Target_code = t.Vendor_Short_Code",
-"        AND insured.[type]      = 'SELLER'",
-"        AND insured.Variable    = 'Damaged Items Insurance - Active'",
-"  LEFT JOIN [" + DATABASE + "].[dbo].[RPT_PAYOUT] payouts",
-"         ON payouts.ID_Company              = t.ID_Company",
-"        AND payouts.Account_Statement_Number = t.Payout_Statement_Code",
-"        AND payouts.Partner_Type            = 'SELLER'",
-"        AND payouts.Paid_At_Date           >= '" + FY_START + "'",
-"  LEFT JOIN [" + DATABASE + "].[dbo].[RPT_SOI] soi",
-"         ON soi.ID_COMPANY              = t.ID_Company",
-"        AND soi.COD_OMS_SALES_ORDER_ITEM = t.OMS_ID_Sales_Order_Item",
-"        AND soi.DELIVERED_DATE          >= '" + FY_START + "'",
-"  LEFT JOIN [" + DATABASE + "].[dbo].[RPT_TRANSACTIONS_SELLER] dp",
-"         ON dp.ID_Company       = t.ID_Company",
-"        AND dp.[notes]          = soi.[PO_NUMBER]",
-"        AND dp.Transaction_Type = 'Down Payment'",
-"        AND dp.[Created_Date]  >= '" + FY_START + "'",
-"  LEFT JOIN [" + DATABASE + "].[dbo].[RPT_SELLER_STATEMENTS_PAYOUT] st",
-"         ON st.ID_Company             = t.ID_Company",
-"        AND st.ID_Transaction_Statement = t.ID_Account_Statement",
-"        AND st.[Start_Date]         >= '" + FY_START + "'",
-"  WHERE t.[Created_Date] >= '" + FY_START + "'",
-"    AND t.[Created_Date] <  '" + FY_END + "'",
-"    AND t.[Transaction_No] IN (" + inList + ")"
-  ].join('\n');
-}
-
-/* ---------- routing rules (Flow A) ---------- */
-function routeAction_(mplType, paidAt) {
-  if (String(mplType).indexOf('advance') !== -1) {
-    return { key: 'adv', label: 'Contract + down-payment proof' };
+function routeFacts_(flowId, facts) {
+  var matched = routeLine_(facts, flowId);
+  if (matched.length) {
+    return {
+      key:     styleKey_(matched),
+      label:   matched.map(function (m) { return m.required_evidence; }).join(' + '),
+      matched: matched
+    };
   }
-  if (paidAt && String(paidAt).trim() !== '') {
-    return { key: 'pop', label: 'Proof of payment' };
-  }
-  return { key: 'vc', label: 'VC screenshot (Unpaid)' };
-}
-
-/**
- * Required evidence for a line. Prefers the Flow A Routing config (one entry per
- * required document, so advance returns two), falling back to the hardcoded rule
- * above when the config layer isn't available yet (app not set up).
- */
-function resolveAction_(mplType, paidAt) {
-  if (isSetupDone_()) {
-    var matched = routeLine_(lineFacts_(mplType, paidAt), 'flowA');
-    if (matched.length) {
-      return {
-        key:     styleKey_(matched),
-        label:   matched.map(function (m) { return m.required_evidence; }).join(' + '),
-        matched: matched
-      };
-    }
-  }
-  var a = routeAction_(mplType, paidAt);
-  return { key: a.key, label: a.label, matched: [] };
+  return { key: '', label: 'No routing rule matched', matched: [] };
 }
 
 /** Map matched routing rules to the UI's colour key (a-pop / a-vc / a-adv). */
@@ -226,10 +118,10 @@ function props_() { return PropertiesService.getUserProperties(); }
  */
 /**
  * Entry point from the New request form. `payload`:
- *   { docs, flowId, periodName, auditorEmail, attachment? }
- * attachment (optional): { fileName, mimeType, base64 } — the email thread.
- * The flow + period select the database and date window; the rest is captured on
- * the persisted Request. Single-phase submit+poll with the same safe-retry rule.
+ *   { docs, flowId, periodName, auditorEmail, reviewerEmail, dueDate, requestRef }
+ * auditorEmail may be several comma-separated addresses. The flow + period select
+ * the database and date window; the rest is captured on the persisted Request.
+ * Single-phase submit+poll with the same safe-retry rule.
  */
 function enrich(payload) {
   if (isSetupDone_()) requireRole_([ROLES.ADMIN]);   // SoD: only the Administrator runs enrichment
@@ -241,12 +133,22 @@ function enrich(payload) {
   if (!flow) throw new Error('Choose a flow.');
   var period = findPeriod_(payload.flowId, payload.periodName);
   if (!period) throw new Error('Choose a period.');
-  var auditor = String(payload.auditorEmail || '').trim();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(auditor)) throw new Error('Enter a valid auditor email.');
+
+  var EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  var auditors = String(payload.auditorEmail || '').split(/[;,]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+  if (!auditors.length || !auditors.every(function (e) { return EMAIL.test(e); })) {
+    throw new Error('Enter valid auditor email(s), comma-separated.');
+  }
+  var reviewer = String(payload.reviewerEmail || '').trim();
+  if (reviewer && !EMAIL.test(reviewer)) throw new Error('Enter a valid reviewer email.');
 
   var qp = { database: flow.database || DATABASE, queryMode: flow.query_mode || QUERY_MODE, fyStart: period.start, fyEnd: period.end };
-  var query = buildQuery_(docs, qp);
-  var ctx = { flow: flow, period: period, auditor: auditor, qp: qp, attachment: payload.attachment || null };
+  var query = buildQuery_(flow.flow_id, docs, qp);   // throws if the flow has no module yet
+  var ctx = {
+    flow: flow, period: period, qp: qp,
+    auditor: auditors.join(', '), reviewer: reviewer,
+    requestRef: String(payload.requestRef || '').trim(), dueDate: String(payload.dueDate || '').trim()
+  };
 
   var signature = sig_(docs) + '|' + flow.flow_id + '|' + period.start + '|' + period.end + '|' + qp.queryMode;
   var p = props_();
@@ -276,43 +178,36 @@ function enrich(payload) {
 }
 
 function buildResults_(csv, docs, requestId, query, file, ctx) {
-  if (!csv || !csv.length) {                       // empty result → everything not found
+  ctx = ctx || {};
+  var flowId = (ctx.flow && ctx.flow.flow_id) || 'flowA';
+  var mod = flowModule_(flowId);
+
+  if (!mod || !csv || !csv.length) {               // no module / empty result → everything not found
     var empty = docs.map(function (d) { return { doc: d, found: false, _matched: [] }; });
     return finalizeRun_(empty, docs, 0, requestId, query, file, ctx);
   }
   var header = csv[0];
   var idx = {};
   header.forEach(function (h, i) { idx[String(h).trim()] = i; });
-  function cell(row, name) { return idx[name] === undefined ? '' : row[idx[name]]; }
+  function cellFor(row) { return function (name) { return idx[name] === undefined ? '' : row[idx[name]]; }; }
 
+  var keyCol = mod.sampleKey || 'Transaction_No';
   var byDoc = {};
   for (var r = 1; r < csv.length; r++) {
     var row = csv[r];
     if (!row || row.length < 2) continue;          // skip blank trailing line
-    var d = String(cell(row, 'Transaction_No')).toUpperCase();
+    var d = String(cellFor(row)(keyCol)).toUpperCase();
     if (d && !byDoc[d]) byDoc[d] = row;            // first row per doc
   }
 
   var results = docs.map(function (d) {
     var row = byDoc[d.toUpperCase()];
     if (!row) return { doc: d, found: false, _matched: [] };
-    var mpl = cell(row, 'MPL type');
-    var paid = cell(row, 'Paid_At_Date');
-    var routed = resolveAction_(mpl, paid);
-    return {
-      doc: d, found: true,
-      company: cell(row, 'ID_Company'),
-      vendor: cell(row, 'Vendor_Name'),
-      mpl: mpl,
-      paid_at: paid,
-      statement: cell(row, 'Payout_Statement_Code'),
-      amount: cell(row, 'Transaction_Amount'),
-      closing_balance: cell(row, 'Statement Closing Balance'),
-      po: cell(row, 'PO_NUMBER'),
-      downpay: cell(row, 'Down Payment Amount'),
-      action: routed.key, action_label: routed.label,
-      _matched: routed.matched                     // internal: routing rows → assignments
-    };
+    var m = mod.mapRow(cellFor(row));              // flow-specific: fields + routing facts
+    var routed = routeFacts_(flowId, m.facts || {});
+    var out = { doc: d, found: true, action: routed.key, action_label: routed.label, _matched: routed.matched };
+    Object.keys(m).forEach(function (k) { if (k !== 'facts') out[k] = m[k]; });
+    return out;
   });
   var foundCount = results.filter(function (x) { return x.found; }).length;
   return finalizeRun_(results, docs, foundCount, requestId, query, file, ctx);
@@ -356,15 +251,16 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
   var ts     = nowIso_();
 
   var stored = {};
-  try { stored = storeRequestFiles_(reqId, gatewayRequestId, file, ctx.attachment); }
+  try { stored = storeRequestFiles_(reqId, gatewayRequestId, file); }
   catch (e) { logActivity('STORE_FILES_FAILED', 'request', reqId, String(e)); }
 
   appendObject_(ds, 'Requests', {
     request_id: reqId, flow_id: flow.flow_id, title: flow.name,
     period: period.name, period_start: period.start, period_end: period.end,
-    auditor_email: ctx.auditor || '', status: 'enriched',
-    created_by: actor, created_at: ts, updated_at: ts,
-    csv_file_id: stored.csvId || '', xlsx_file_id: stored.xlsxId || '', thread_file_id: stored.threadId || '',
+    auditor_email: ctx.auditor || '', reviewer_email: ctx.reviewer || '',
+    request_ref: ctx.requestRef || '', due_date: ctx.dueDate || '',
+    status: 'enriched', created_by: actor, created_at: ts, updated_at: ts,
+    csv_file_id: stored.csvId || '', xlsx_file_id: stored.xlsxId || '',
     ipe_json: ipe ? JSON.stringify(ipe) : ''
   });
 
@@ -411,12 +307,12 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
 function newId_(prefix) { return prefix + '_' + Utilities.getUuid().slice(0, 8); }
 
 /**
- * Copy the gateway outputs (result CSV + SOX evidence XLSX) and the optional
- * email-thread attachment into Exports/{reqId}/ so we keep our own copy to hand
- * to the audit team. The XLSX can land a few seconds after the CSV, so wait a
- * short while for it. Files are COPIED (the gateway's Responses/ is shared).
+ * Copy the gateway outputs (result CSV + SOX evidence XLSX) into Exports/{reqId}/
+ * so we keep our own copy to hand to the audit team. The XLSX can land a few
+ * seconds after the CSV, so wait a short while for it. Files are COPIED (the
+ * gateway's Responses/ is shared).
  */
-function storeRequestFiles_(reqId, gatewayRequestId, csvFile, attachment) {
+function storeRequestFiles_(reqId, gatewayRequestId, csvFile) {
   var exportsId = PropertiesService.getScriptProperties().getProperty(PROP.EXPORTS);
   if (!exportsId) return {};
   var folder = getOrCreateFolder_(DriveApp.getFolderById(exportsId), reqId);
@@ -431,14 +327,6 @@ function storeRequestFiles_(reqId, gatewayRequestId, csvFile, attachment) {
     Utilities.sleep(2500);
   }
   if (xlsx) { try { out.xlsxId = xlsx.makeCopy(xlsx.getName(), folder).getId(); } catch (e) {} }
-
-  if (attachment && attachment.base64) {
-    try {
-      var blob = Utilities.newBlob(Utilities.base64Decode(attachment.base64),
-        attachment.mimeType || 'application/octet-stream', sanitizeName_(attachment.fileName || 'request_thread'));
-      out.threadId = folder.createFile(blob).getId();
-    } catch (e) {}
-  }
   return out;
 }
 

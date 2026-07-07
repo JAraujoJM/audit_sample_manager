@@ -33,7 +33,7 @@ function listMyAssignments() {
         request_title: req.title || '', document_no: line.document_no || '', vendor: line.vendor || '',
         statement_code: line.statement_code || '', statement_amount: line.closing_balance || '',
         paid_at: toDateStr_(line.paid_at, tz),
-        evidence_type: a.evidence_type, status: a.status, due_date: toDateStr_(a.due_date, tz),
+        evidence_type: a.evidence_type, status: a.status, due_date: toDateStr_(req.due_date, tz),
         note: line.note || '', files: files
       };
     })

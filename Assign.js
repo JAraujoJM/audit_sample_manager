@@ -44,7 +44,7 @@ function getRequestDetail(requestId) {
     .filter(function (l) { return String(l.request_id) === String(requestId); })
     .map(function (l) {
       return {
-        line_id: l.line_id, document_no: l.document_no, vendor: l.vendor,
+        line_id: l.line_id, document_no: l.document_no, company: l.company, vendor: l.vendor,
         mpl_type: l.mpl_type, paid_status: l.paid_status, status: l.status,
         required_count: l.required_count,
         assignments: (byLine[l.line_id] || []).map(function (a) {
@@ -91,7 +91,7 @@ function assignBatch(updates) {
     if (!cur) return;
     requestId = cur.request_id;
     var email = String(u.assigned_to || '').trim();
-    var patch = { assigned_to: email, due_date: u.due_date || '' };
+    var patch = { assigned_to: email };   // due date is set at request level, not per task
     if (['pending', 'assigned'].indexOf(String(cur.status).toLowerCase()) !== -1) {
       patch.status = email ? 'assigned' : 'pending';
     }
