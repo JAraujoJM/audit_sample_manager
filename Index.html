@@ -122,11 +122,15 @@
   .actions{display:flex; align-items:center; gap:6px;}
   .mini-prog{display:flex; align-items:center; gap:8px;}
   .mp-lbl{font-size:11.5px; color:var(--text-2); font-family:var(--mono);}
-  .dd{position:relative; display:inline-block;}
-  .dd-menu{position:absolute; right:0; top:calc(100% + 4px); background:var(--surface); border:1px solid var(--sep-strong);
-           border-radius:var(--radius-sm); box-shadow:var(--shadow); z-index:30; min-width:150px; overflow:hidden;}
-  .dd-menu .menu-item{display:block; width:100%; text-align:left; border:0; background:none; padding:8px 12px; font:inherit; font-size:13px; cursor:pointer; color:var(--text);}
-  .dd-menu .menu-item:hover{background:var(--accent-tint);}
+  /* download menu — fixed-position portal so it is never clipped by the table's overflow */
+  .dd-menu-fixed{position:fixed; z-index:200; background:var(--surface); border:1px solid var(--sep-strong); border-radius:var(--radius-sm); box-shadow:var(--shadow); min-width:160px; overflow:hidden;}
+  .dd-menu-fixed .menu-item{display:block; width:100%; text-align:left; border:0; background:none; padding:8px 12px; font:inherit; font-size:13px; cursor:pointer; color:var(--text);}
+  .dd-menu-fixed .menu-item:hover{background:var(--accent-tint);}
+  .icon-btn{min-width:34px; text-align:center;}
+  /* slide transition between the requests table and the assign detail */
+  @keyframes slideInR{ from{opacity:0; transform:translateX(40px);} to{opacity:1; transform:none;} }
+  @keyframes slideInL{ from{opacity:0; transform:translateX(-40px);} to{opacity:1; transform:none;} }
+  .slide-r{ animation:slideInR .24s ease; } .slide-l{ animation:slideInL .24s ease; }
   .overlay{position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex; align-items:flex-start; justify-content:center; padding:44px 16px; z-index:100; overflow-y:auto;}
   .modal{background:var(--surface); border-radius:var(--radius); box-shadow:0 24px 64px rgba(0,0,0,.28); width:100%; max-width:600px; max-height:calc(100vh - 88px); overflow-y:auto;}
   .modal.wide{max-width:820px;}
@@ -248,24 +252,25 @@
   <main class="wrap">
     <div class="gate" id="gate" hidden></div>
 
-    <!-- REQUEST ---------------------------------------------------------- -->
+    <!-- REQUEST (+ inline Assign detail) --------------------------------- -->
     <section class="view" id="view-enrich" hidden>
-      <div class="view-head">
-        <h2>Requests</h2>
-        <button class="btn primary" id="newReqBtn">+ New request</button>
+      <!-- list pane: the requests table -->
+      <div id="reqListPane">
+        <div class="view-head">
+          <h2>Requests</h2>
+          <button class="btn primary" id="newReqBtn">+ New request</button>
+        </div>
+        <p class="sub">Every request logged here — open a row to assign preparers, view the IPE, or download the gateway files.</p>
+        <div class="status" id="reqMsg"></div>
+        <div id="reqTableWrap"><div class="card"><div class="empty">Loading…</div></div></div>
       </div>
-      <p class="sub">Every auditor sampling request logged here — open the IPE or download the gateway files per row.</p>
-      <div class="status" id="reqMsg"></div>
-      <div id="reqTableWrap"><div class="card"><div class="empty">Loading…</div></div></div>
-    </section>
-
-    <!-- ASSIGN ----------------------------------------------------------- -->
-    <section class="view" id="view-assign" hidden>
-      <h2>Assign preparers</h2>
-      <p class="sub">Pick a run, then route each required document to a preparer. A line can need several documents from different people — assign each one independently.</p>
-      <div class="assign-grid">
-        <aside class="req-list" id="reqList"><div class="empty">Loading…</div></aside>
-        <div class="req-detail" id="reqDetail"><div class="empty">Select a run to assign its evidence.</div></div>
+      <!-- detail pane: assign preparers for the selected request -->
+      <div id="reqDetailPane" hidden>
+        <div class="view-head" style="justify-content:flex-start; gap:12px">
+          <button class="btn sm" id="backToReqs">← Requests</button>
+          <h2 style="margin:0">Assign preparers</h2>
+        </div>
+        <div id="assignWrap"></div>
       </div>
     </section>
 
@@ -305,7 +310,7 @@
     </section>
     <!-- MODALS ----------------------------------------------------------- -->
     <div class="overlay" id="overlay" hidden>
-      <div class="modal" id="newReqModal" hidden>
+      <div class="modal wide" id="newReqModal" hidden>
         <div class="modal-head"><h3>New request</h3><button class="modal-x" id="newReqX" title="Close">&times;</button></div>
         <div class="modal-body">
           <p class="sub" style="margin-top:0">Choose the flow and period, add the request details, then drop the document numbers.</p>
@@ -338,6 +343,7 @@
   </main>
 
   <datalist id="preparers"></datalist>
+  <div id="ddMenu" class="dd-menu-fixed" hidden></div>
 
 <script>
   function $(id){ return document.getElementById(id); }
@@ -347,7 +353,7 @@
 
   var VIEW_LABELS={enrich:'Request', assign:'Assign', tasks:'My tasks', review:'Review', audit:'Audit'};
   var ROLE_VIEWS={
-    'Administrator':['enrich','assign','tasks','review','audit'],
+    'Administrator':['enrich','tasks','review','audit'],
     'Preparer':['tasks'],
     'Reviewer':['review'],
     'Auditor':['audit']
@@ -387,12 +393,10 @@
     $('gate').hidden=true;
     Array.prototype.forEach.call($('nav').querySelectorAll('.seg'), function(b){ b.classList.toggle('active', b.dataset.view===name); });
     $('view-enrich').hidden = name!=='enrich';
-    $('view-assign').hidden = name!=='assign';
     $('view-tasks').hidden  = name!=='tasks';
     $('view-review').hidden = name!=='review';
     $('view-audit').hidden  = name!=='audit';
     if(name==='enrich') loadRequest();
-    if(name==='assign') loadAssign();
     if(name==='tasks')  refreshTasks();
     if(name==='review') loadStage('review');
     if(name==='audit')  loadStage('audit');
@@ -421,10 +425,15 @@
         $('flowSel').innerHTML = formFlows.length ? formFlows.map(function(f){ return '<option value="'+esc(f.flow_id)+'">'+esc(f.name)+'</option>'; }).join('') : '<option value="">No flows configured</option>';
         populatePeriods();
       }).withFailureHandler(function(e){ setStatus(e.message,'warn'); }).requestFormConfig();
+      google.script.run.withSuccessHandler(fillPreparers).withFailureHandler(function(){}).listPreparers();
       $('flowSel').addEventListener('change', populatePeriods);
     }
+    showListPane();
     refreshHistory();
   }
+  function fillPreparers(emails){ $('preparers').innerHTML = (emails||[]).map(function(e){ return '<option value="'+esc(e)+'">'; }).join(''); }
+  function showListPane(){ $('reqDetailPane').hidden=true; $('reqListPane').hidden=false; $('reqListPane').classList.remove('slide-l'); void $('reqListPane').offsetWidth; $('reqListPane').classList.add('slide-l'); }
+  function showDetailPane(){ $('reqListPane').hidden=true; $('reqDetailPane').hidden=false; $('reqDetailPane').classList.remove('slide-r'); void $('reqDetailPane').offsetWidth; $('reqDetailPane').classList.add('slide-r'); }
   function populatePeriods(){
     var f=formFlows.filter(function(x){ return x.flow_id===$('flowSel').value; })[0];
     var ps=(f&&f.periods)||[];
@@ -433,7 +442,7 @@
 
   /* ---- modal plumbing ---- */
   function openModal(which){ $('overlay').hidden=false; $('newReqModal').hidden=which!=='newreq'; $('ipeModal').hidden=which!=='ipe'; }
-  function closeModal(){ $('overlay').hidden=true; $('newReqModal').hidden=true; $('ipeModal').hidden=true; closeDropdowns(); }
+  function closeModal(){ $('overlay').hidden=true; $('newReqModal').hidden=true; $('ipeModal').hidden=true; closeDdMenu(); }
   $('newReqBtn').addEventListener('click', function(){ clearStatus(); openModal('newreq'); });
   $('newReqX').addEventListener('click', closeModal);
   $('ipeX').addEventListener('click', closeModal);
@@ -514,10 +523,10 @@
     var wrap=$('reqTableWrap');
     if(!reqs.length){ wrap.innerHTML='<div class="card"><div class="empty">No requests yet. Click “New request” to add one.</div></div>'; return; }
     var rows=reqs.map(function(r){
-      var f=r.files||{}, opts='';
-      if(f.csv)  opts+='<button class="menu-item" data-id="'+esc(r.request_id)+'" data-w="csv">Result CSV</button>';
-      if(f.xlsx) opts+='<button class="menu-item" data-id="'+esc(r.request_id)+'" data-w="xlsx">Evidence XLSX</button>';
-      var dl = opts ? '<div class="dd"><button class="btn sm dd-btn">Download ▾</button><div class="dd-menu" hidden>'+opts+'</div></div>' : '<button class="btn sm" disabled>Download</button>';
+      var f=r.files||{};
+      var dl = (f.csv||f.xlsx)
+        ? '<button class="btn sm icon-btn dl-btn" data-id="'+esc(r.request_id)+'" data-csv="'+(f.csv?1:'')+'" data-xlsx="'+(f.xlsx?1:'')+'" title="Download">↓</button>'
+        : '<button class="btn sm icon-btn" disabled title="No files yet">↓</button>';
       return '<tr>'
         +'<td class="mono">'+esc(r.request_ref||'—')+'</td>'
         +'<td>'+esc(r.period||'—')+'</td>'
@@ -526,8 +535,11 @@
         +'<td class="trunc" title="'+esc(r.reviewer_email||'')+'">'+esc(r.reviewer_email||'—')+'</td>'
         +'<td>'+miniProgress(r.progress, r.lineCount)+'</td>'
         +'<td>'+statusPill(r.status)+'</td>'
-        +'<td><div class="actions"><button class="btn sm ipe-btn" data-id="'+esc(r.request_id)+'">IPE</button>'+dl+'</div></td>'
-        +'</tr>';
+        +'<td><div class="actions">'
+          +'<button class="btn sm ipe-btn" data-id="'+esc(r.request_id)+'" title="IPE / SOX">IPE</button>'
+          +dl
+          +'<button class="btn primary sm icon-btn open-btn" data-id="'+esc(r.request_id)+'" title="Open &amp; assign">→</button>'
+        +'</div></td></tr>';
     }).join('');
     wrap.innerHTML='<div class="card" style="overflow-x:auto"><table class="req-table"><thead><tr>'
       +'<th>PBC ref</th><th>Period</th><th>Due</th><th>Auditor</th><th>Reviewer</th><th>Progress</th><th>Status</th><th>Actions</th>'
@@ -536,13 +548,35 @@
   }
   function wireReqTable(){
     var wrap=$('reqTableWrap');
-    Array.prototype.forEach.call(wrap.querySelectorAll('.ipe-btn'),   function(b){ b.addEventListener('click', function(){ openIpeModal(b.dataset.id); }); });
-    Array.prototype.forEach.call(wrap.querySelectorAll('.dd-btn'),    function(b){ b.addEventListener('click', function(e){ e.stopPropagation(); toggleDropdown(b); }); });
-    Array.prototype.forEach.call(wrap.querySelectorAll('.menu-item'), function(b){ b.addEventListener('click', function(e){ e.stopPropagation(); closeDropdowns(); downloadRequestFile(b.dataset.id, b.dataset.w, b); }); });
+    Array.prototype.forEach.call(wrap.querySelectorAll('.ipe-btn'),  function(b){ b.addEventListener('click', function(){ openIpeModal(b.dataset.id); }); });
+    Array.prototype.forEach.call(wrap.querySelectorAll('.open-btn'), function(b){ b.addEventListener('click', function(){ openAssign(b.dataset.id); }); });
+    Array.prototype.forEach.call(wrap.querySelectorAll('.dl-btn'),   function(b){ b.addEventListener('click', function(e){ e.stopPropagation(); openDownloadMenu(b); }); });
   }
-  function toggleDropdown(btn){ var m=btn.nextElementSibling, willOpen=m.hidden; closeDropdowns(); if(willOpen) m.hidden=false; }
-  function closeDropdowns(){ Array.prototype.forEach.call(document.querySelectorAll('.dd-menu'), function(m){ m.hidden=true; }); }
-  document.addEventListener('click', closeDropdowns);
+  function openDownloadMenu(btn){
+    var m=$('ddMenu'), id=btn.dataset.id, opts='';
+    if(btn.dataset.csv)  opts+='<button class="menu-item" data-id="'+esc(id)+'" data-w="csv">Result CSV</button>';
+    if(btn.dataset.xlsx) opts+='<button class="menu-item" data-id="'+esc(id)+'" data-w="xlsx">Evidence XLSX</button>';
+    m.innerHTML=opts;
+    var r=btn.getBoundingClientRect();
+    m.style.top=(r.bottom+4)+'px';
+    m.style.left=Math.max(8, Math.min(r.left, window.innerWidth-176))+'px';
+    m.hidden=false;
+    Array.prototype.forEach.call(m.querySelectorAll('.menu-item'), function(b){ b.addEventListener('click', function(e){ e.stopPropagation(); closeDdMenu(); downloadRequestFile(b.dataset.id, b.dataset.w, b); }); });
+  }
+  function closeDdMenu(){ $('ddMenu').hidden=true; }
+  document.addEventListener('click', closeDdMenu);
+  window.addEventListener('resize', closeDdMenu);
+
+  /* open / leave the inline assign detail */
+  function openAssign(id){
+    currentReqId=id;
+    showDetailPane();
+    $('assignWrap').innerHTML='<div class="empty">Loading…</div>';
+    google.script.run.withSuccessHandler(prepAssign).withFailureHandler(function(e){ $('assignWrap').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; }).getRequestDetail(id);
+  }
+  function reloadAssign(){ if(currentReqId) google.script.run.withSuccessHandler(prepAssign).withFailureHandler(function(){}).getRequestDetail(currentReqId); }
+  $('backToReqs').addEventListener('click', function(){ showListPane(); refreshHistory(); });
+
   function openIpeModal(id){
     openModal('ipe');
     $('ipeModalBody').innerHTML='<div class="empty">Loading…</div>';
@@ -557,39 +591,9 @@
       .getRequestFile(id, which);
   }
 
-  /* ---------- assign ---------- */
-  function loadAssign(){
-    if(assignLoaded) return; assignLoaded=true;
-    google.script.run.withSuccessHandler(function(list){ fillPreparers(list); }).withFailureHandler(function(){}).listPreparers();
-    refreshRequests();
-  }
-  function fillPreparers(emails){ $('preparers').innerHTML = (emails||[]).map(function(e){ return '<option value="'+esc(e)+'">'; }).join(''); }
-
-  function refreshRequests(){
-    google.script.run.withSuccessHandler(renderReqList).withFailureHandler(function(e){ $('reqList').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; }).listRequests();
-  }
-  function renderReqList(reqs){
-    if(!reqs.length){ $('reqList').innerHTML='<div class="empty">No enrichment runs yet. Run one from the Enrich tab.</div>'; return; }
-    $('reqList').innerHTML = reqs.map(function(r){
-      var prog = r.assignmentCount ? (r.assignedCount+'/'+r.assignmentCount+' assigned') : 'no items';
-      return '<button class="req-item'+(r.request_id===currentReqId?' active':'')+'" data-id="'+esc(r.request_id)+'">'
-        +'<div class="rt">'+esc(r.title)+'</div>'
-        +'<div class="rm">'+esc(fmtDate(r.created_at))+' · '+r.lineCount+' lines</div>'
-        +'<div class="rm">'+esc(prog)+'</div></button>';
-    }).join('');
-    Array.prototype.forEach.call($('reqList').querySelectorAll('.req-item'), function(b){
-      b.addEventListener('click', function(){ selectRequest(b.dataset.id); });
-    });
-  }
-  function selectRequest(id){
-    currentReqId=id;
-    Array.prototype.forEach.call($('reqList').querySelectorAll('.req-item'), function(b){ b.classList.toggle('active', b.dataset.id===id); });
-    $('reqDetail').innerHTML='<div class="empty">Loading…</div>';
-    google.script.run.withSuccessHandler(prepAssign).withFailureHandler(function(e){ $('reqDetail').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; }).getRequestDetail(id);
-  }
-
-  /* Assign detail: a filterable task table (one row per evidence item) with
-   * bulk assignment to the selected rows. */
+  /* ---------- assign detail (inline in the Request view) ----------
+   * A filterable task table (one row per evidence item) with bulk assignment
+   * to the selected rows. Rendered into #assignWrap by prepAssign/openAssign. */
   var assignData=null, assignFilter={ mpl:'all', company:'all' };
   function prepAssign(d){
     var tasks=[];
@@ -609,7 +613,7 @@
     var d=assignData; if(!d) return;
     var head='<div class="card"><h2 style="font-size:16px;margin:0 0 2px">'+esc(d.request.title)+'</h2>'
       +'<p class="sub" style="margin:0">'+esc(d.request.period||'')+' · '+d.tasks.length+' tasks</p></div>';
-    if(!d.tasks.length){ $('reqDetail').innerHTML=head+'<div class="card"><div class="empty">No tasks need a preparer in this run.</div></div>'; return; }
+    if(!d.tasks.length){ $('assignWrap').innerHTML=head+'<div class="card"><div class="empty">No tasks need a preparer in this run.</div></div>'; return; }
     var companies=uniq_(d.tasks.map(function(t){ return t.company; }));
     function tb(f,l){ return '<button data-f="'+f+'"'+(assignFilter.mpl===f?' class="active"':'')+'>'+l+'</button>'; }
     var filters='<div class="row" style="justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">'
@@ -622,7 +626,7 @@
     var table='<table class="asg-table"><thead><tr><th style="width:24px"><input type="checkbox" id="selAll"></th>'
       +'<th>Document</th><th>Company</th><th>Type</th><th>Evidence</th><th>Preparer</th><th>Status</th></tr></thead>'
       +'<tbody id="asgRows"></tbody></table>';
-    $('reqDetail').innerHTML=head+'<div class="card">'+filters+bulk+table+'</div>';
+    $('assignWrap').innerHTML=head+'<div class="card">'+filters+bulk+table+'</div>';
     wireAssign();
     renderAsgRows();
   }
@@ -645,7 +649,7 @@
   }
   function updateSelCount_(){ if($('selCount')) $('selCount').textContent=$('asgRows').querySelectorAll('.asg-chk:checked').length+' selected'; }
   function wireAssign(){
-    Array.prototype.forEach.call($('reqDetail').querySelectorAll('.filter-bar button'), function(b){
+    Array.prototype.forEach.call($('assignWrap').querySelectorAll('.filter-bar button'), function(b){
       b.addEventListener('click', function(){ assignFilter.mpl=b.dataset.f; Array.prototype.forEach.call(b.parentNode.children,function(x){x.classList.toggle('active',x===b);}); renderAsgRows(); });
     });
     $('asgCompany').addEventListener('change', function(){ assignFilter.company=$('asgCompany').value; renderAsgRows(); });
@@ -659,7 +663,7 @@
     if(!ids.length){ alert('Select at least one task.'); return; }
     var updates=ids.map(function(id){ return { assignment_id:id, assigned_to:email }; });
     var btn=$('bulkAssign'); btn.disabled=true; btn.textContent='Assigning…';
-    google.script.run.withSuccessHandler(function(){ btn.disabled=false; btn.textContent='Assign to selected'; if(currentReqId) selectRequest(currentReqId); refreshRequests(); })
+    google.script.run.withSuccessHandler(function(){ btn.disabled=false; btn.textContent='Assign to selected'; reloadAssign(); })
       .withFailureHandler(function(e){ btn.disabled=false; btn.textContent='Assign to selected'; alert(e.message); })
       .assignBatch(updates);
   }
