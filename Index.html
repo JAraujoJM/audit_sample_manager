@@ -115,6 +115,27 @@
   .asg-table th, .asg-table td{white-space:nowrap;}
   .asg-table td:nth-child(5){white-space:normal;}   /* evidence type may wrap */
 
+  /* request console: header, table, dropdown, modal */
+  .view-head{display:flex; align-items:center; justify-content:space-between; gap:12px;}
+  .req-table th, .req-table td{white-space:nowrap;}
+  .req-table td.trunc{max-width:190px; overflow:hidden; text-overflow:ellipsis;}
+  .actions{display:flex; align-items:center; gap:6px;}
+  .mini-prog{display:flex; align-items:center; gap:8px;}
+  .mp-lbl{font-size:11.5px; color:var(--text-2); font-family:var(--mono);}
+  .dd{position:relative; display:inline-block;}
+  .dd-menu{position:absolute; right:0; top:calc(100% + 4px); background:var(--surface); border:1px solid var(--sep-strong);
+           border-radius:var(--radius-sm); box-shadow:var(--shadow); z-index:30; min-width:150px; overflow:hidden;}
+  .dd-menu .menu-item{display:block; width:100%; text-align:left; border:0; background:none; padding:8px 12px; font:inherit; font-size:13px; cursor:pointer; color:var(--text);}
+  .dd-menu .menu-item:hover{background:var(--accent-tint);}
+  .overlay{position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex; align-items:flex-start; justify-content:center; padding:44px 16px; z-index:100; overflow-y:auto;}
+  .modal{background:var(--surface); border-radius:var(--radius); box-shadow:0 24px 64px rgba(0,0,0,.28); width:100%; max-width:600px; max-height:calc(100vh - 88px); overflow-y:auto;}
+  .modal.wide{max-width:820px;}
+  .modal-head{display:flex; align-items:center; justify-content:space-between; padding:15px 20px; border-bottom:1px solid var(--sep); position:sticky; top:0; background:var(--surface); z-index:1;}
+  .modal-head h3{margin:0; font-size:16px; font-weight:600;}
+  .modal-x{border:0; background:none; font-size:24px; line-height:1; color:var(--text-3); cursor:pointer; padding:0 4px;}
+  .modal-x:hover{color:var(--text);}
+  .modal-body{padding:20px;}
+
   /* pills + dots */
   .pill{font-size:12px; font-weight:500; padding:2px 9px; border-radius:6px; display:inline-block; white-space:nowrap;}
   .pill.neutral{background:#F0F0F2; color:var(--text-2);}
@@ -229,52 +250,13 @@
 
     <!-- REQUEST ---------------------------------------------------------- -->
     <section class="view" id="view-enrich" hidden>
-      <h2>New request</h2>
-      <p class="sub">Log an auditor's sampling request: choose the flow and period, drop the document numbers, and enrich them through the gateway.</p>
-
-      <div class="card">
-        <div class="form-grid">
-          <div><label class="fld">Flow</label><select id="flowSel"></select></div>
-          <div><label class="fld">Period</label><select id="periodSel"></select></div>
-          <div><label class="fld">Auditor email(s)</label><input id="auditorEmail" type="text" placeholder="name@auditor.com, second@auditor.com"></div>
-          <div><label class="fld">Reviewer email</label><input id="reviewerEmail" type="email" placeholder="reviewer@jumia.com"></div>
-          <div><label class="fld">Due date</label><input id="dueDate" type="date"></div>
-          <div><label class="fld">Request reference (optional)</label><input id="requestRef" type="text" placeholder="Auditor's request ID / subject"></div>
-        </div>
-        <label class="fld" style="margin-top:14px">Document numbers</label>
-        <textarea id="docs" spellcheck="false" placeholder="Paste document numbers — one per line or comma-separated"></textarea>
-        <div class="row"><button class="btn primary" id="run">Run enrichment</button></div>
-        <div class="loader" id="loader">
-          <div class="ring"></div>
-          <div>
-            <div class="lt" id="ltext">Submitting query to the gateway<span class="dots"><span>.</span><span>.</span><span>.</span></span></div>
-            <div class="le" id="lelapsed">elapsed 0s</div>
-          </div>
-        </div>
-        <div class="status" id="status"></div>
+      <div class="view-head">
+        <h2>Requests</h2>
+        <button class="btn primary" id="newReqBtn">+ New request</button>
       </div>
-
-      <div class="card" id="out" style="display:none;">
-        <div class="counts" id="counts"></div>
-        <table>
-          <thead><tr>
-            <th>Document No.</th><th>Company</th><th>Vendor</th><th>MPL type</th>
-            <th>Statement code</th><th>Paid at</th>
-            <th class="num">Txn amount</th><th class="num">Closing balance</th><th class="num">Down payment</th>
-            <th>Action required</th>
-          </tr></thead>
-          <tbody id="rows"></tbody>
-        </table>
-      </div>
-
-      <div class="card ipe" id="ipe"></div>
-
-      <h2 style="margin-top:28px">Previous requests</h2>
-      <p class="sub">Track progress and revisit the IPE and the gateway files captured at enrichment.</p>
-      <div class="assign-grid">
-        <aside class="req-list" id="histList"><div class="empty">Loading…</div></aside>
-        <div class="req-detail" id="histDetail"><div class="empty">Select a request to see its progress, IPE and files.</div></div>
-      </div>
+      <p class="sub">Every auditor sampling request logged here — open the IPE or download the gateway files per row.</p>
+      <div class="status" id="reqMsg"></div>
+      <div id="reqTableWrap"><div class="card"><div class="empty">Loading…</div></div></div>
     </section>
 
     <!-- ASSIGN ----------------------------------------------------------- -->
@@ -321,6 +303,38 @@
         <div class="req-detail" id="auditDetail"><div class="empty">Select a request to audit.</div></div>
       </div>
     </section>
+    <!-- MODALS ----------------------------------------------------------- -->
+    <div class="overlay" id="overlay" hidden>
+      <div class="modal" id="newReqModal" hidden>
+        <div class="modal-head"><h3>New request</h3><button class="modal-x" id="newReqX" title="Close">&times;</button></div>
+        <div class="modal-body">
+          <p class="sub" style="margin-top:0">Choose the flow and period, add the request details, then drop the document numbers.</p>
+          <div class="form-grid">
+            <div><label class="fld">Flow</label><select id="flowSel"></select></div>
+            <div><label class="fld">Period</label><select id="periodSel"></select></div>
+            <div><label class="fld">Auditor email(s)</label><input id="auditorEmail" type="text" placeholder="name@auditor.com, second@auditor.com"></div>
+            <div><label class="fld">Reviewer email</label><input id="reviewerEmail" type="email" placeholder="reviewer@jumia.com"></div>
+            <div><label class="fld">Due date</label><input id="dueDate" type="date"></div>
+            <div><label class="fld">PBC request number (optional)</label><input id="requestRef" type="text" placeholder="PBC request number"></div>
+          </div>
+          <label class="fld" style="margin-top:14px">Document numbers</label>
+          <textarea id="docs" spellcheck="false" placeholder="Paste document numbers — one per line or comma-separated"></textarea>
+          <div class="row"><button class="btn primary" id="run">Run enrichment</button></div>
+          <div class="loader" id="loader">
+            <div class="ring"></div>
+            <div>
+              <div class="lt" id="ltext">Submitting query to the gateway<span class="dots"><span>.</span><span>.</span><span>.</span></span></div>
+              <div class="le" id="lelapsed">elapsed 0s</div>
+            </div>
+          </div>
+          <div class="status" id="status"></div>
+        </div>
+      </div>
+      <div class="modal wide" id="ipeModal" hidden>
+        <div class="modal-head"><h3>IPE / SOX — IT-Produced Evidence</h3><button class="modal-x" id="ipeX" title="Close">&times;</button></div>
+        <div class="modal-body ipe on" id="ipeModalBody"></div>
+      </div>
+    </div>
   </main>
 
   <datalist id="preparers"></datalist>
@@ -417,6 +431,15 @@
     $('periodSel').innerHTML = ps.length ? ps.map(function(p){ return '<option value="'+esc(p.name)+'">'+esc(p.name)+' ('+esc(p.start)+' → '+esc(p.end)+')</option>'; }).join('') : '<option value="">No periods configured</option>';
   }
 
+  /* ---- modal plumbing ---- */
+  function openModal(which){ $('overlay').hidden=false; $('newReqModal').hidden=which!=='newreq'; $('ipeModal').hidden=which!=='ipe'; }
+  function closeModal(){ $('overlay').hidden=true; $('newReqModal').hidden=true; $('ipeModal').hidden=true; closeDropdowns(); }
+  $('newReqBtn').addEventListener('click', function(){ clearStatus(); openModal('newreq'); });
+  $('newReqX').addEventListener('click', closeModal);
+  $('ipeX').addEventListener('click', closeModal);
+  $('overlay').addEventListener('click', function(e){ if(e.target===$('overlay')) closeModal(); });
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeModal(); });
+
   $('run').addEventListener('click', function(){
     var docs=$('docs').value.trim(); if(!docs){ $('docs').focus(); return; }
     var flowId=$('flowSel').value, periodName=$('periodSel').value;
@@ -436,29 +459,12 @@
     if(res.status==='empty'){ setStatus('No document numbers detected.','warn'); return; }
     if(res.status==='failed'){ setStatus('Enrichment failed — '+res.reason,'warn'); return; }
     if(res.status==='pending'){ setStatus('Still running — click Run again to resume (it will not resubmit).','info'); return; }
-    clearStatus();
-    if(res.persistError) setStatus('Results shown, but saving to the workbook failed: '+res.persistError,'warn');
-    renderRows(res.rows);
-    if(res.ipe) renderIpe(res.ipe);
+    var n=(res.rows||[]).length;
+    closeModal(); $('docs').value='';
+    reqMsg(res.persistError ? ('Enriched, but saving warned: '+res.persistError) : ('Request created — '+n+' lines enriched.'), res.persistError?'warn':'info');
     refreshHistory();
   }
-  function renderRows(rows){
-    $('out').style.display='block';
-    var c={pop:0,vc:0,adv:0,nf:0};
-    rows.forEach(function(r){ if(!r.found)c.nf++; else c[r.action]++; });
-    $('counts').textContent = rows.length+' lines · '+c.pop+' proof of payment · '+c.vc+' VC screenshot · '+c.adv+' advance · '+c.nf+' not found';
-    $('rows').innerHTML = rows.map(function(r){
-      if(!r.found) return '<tr class="nf"><td class="mono">'+esc(r.doc)+'</td><td colspan="8" class="muted">Not found in reconciliation</td><td class="muted">No action</td></tr>';
-      var adv=/advance/i.test(r.mpl);
-      var mpl=adv?'<span class="pill blue">MPL advance</span>':'<span class="pill neutral">Regular</span>';
-      var paid=adv?'<span class="pill neutral">n/a</span>':(r.paid_at?'<span class="pill green">'+esc(r.paid_at)+'</span>':'<span class="pill amber">Unpaid</span>');
-      return '<tr><td class="mono">'+esc(r.doc)+'</td><td>'+esc(r.company)+'</td><td>'+esc(r.vendor)+'</td><td>'+mpl+'</td>'
-        +'<td class="mono">'+esc(r.statement||'—')+'</td><td>'+paid+'</td>'
-        +'<td class="num">'+fmtNum(r.amount)+'</td><td class="num">'+fmtNum(r.closing_balance)+'</td><td class="num">'+fmtNum(r.downpay)+'</td>'
-        +'<td><span class="dot '+esc(r.action)+'"></span>'+esc(r.action_label)+'</td></tr>';
-    }).join('');
-  }
-  function renderIpe(ipe){ var el=$('ipe'); el.className='card ipe on'; el.innerHTML=ipeHtml(ipe); wireCopy(el); }
+  function reqMsg(msg, cls){ var s=$('reqMsg'); s.className='status on '+(cls||''); s.textContent=msg; setTimeout(function(){ s.className='status'; }, 6000); }
 
   /* reusable IPE panel markup (immediate run + history detail) */
   function ipeHtml(ipe){
@@ -491,57 +497,58 @@
   }
   function legacyCopy(txt,cb){ var ta=document.createElement('textarea'); ta.value=txt; document.body.appendChild(ta); ta.select(); try{document.execCommand('copy');cb();}catch(e){} document.body.removeChild(ta); }
 
-  /* ---- previous requests (history) ---- */
-  var histReqId=null;
+  /* ---- requests table ---- */
   function refreshHistory(){
-    google.script.run.withSuccessHandler(renderHistList)
-      .withFailureHandler(function(e){ $('histList').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
+    google.script.run.withSuccessHandler(renderReqTable)
+      .withFailureHandler(function(e){ $('reqTableWrap').innerHTML='<div class="card"><div class="empty">'+esc(e.message)+'</div></div>'; })
       .requestOverview();
   }
-  function renderHistList(reqs){
-    if(!reqs.length){ $('histList').innerHTML='<div class="empty">No requests yet.</div>'; return; }
-    $('histList').innerHTML=reqs.map(function(r){
-      return '<button class="req-item'+(r.request_id===histReqId?' active':'')+'" data-id="'+esc(r.request_id)+'">'
-        +'<div class="rt">'+esc(r.title)+'</div>'
-        +'<div class="rm">'+esc(r.period||'—')+' · '+esc(fmtDate(r.created_at))+'</div>'
-        +'<div class="rm" style="margin-top:5px">'+statusPill(r.status)+' '+r.lineCount+' lines</div></button>';
-    }).join('');
-    Array.prototype.forEach.call($('histList').querySelectorAll('.req-item'), function(b){ b.addEventListener('click', function(){ selectHist(b.dataset.id); }); });
-  }
-  function selectHist(id){
-    histReqId=id;
-    Array.prototype.forEach.call($('histList').querySelectorAll('.req-item'), function(b){ b.classList.toggle('active', b.dataset.id===id); });
-    $('histDetail').innerHTML='<div class="empty">Loading…</div>';
-    google.script.run.withSuccessHandler(renderHistDetail)
-      .withFailureHandler(function(e){ $('histDetail').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
-      .requestReport(id);
-  }
-  function renderHistDetail(rep){
-    var q=rep.request;
-    var dl=[];
-    if(rep.files.csv)  dl.push('<button class="btn sm dlfile" data-w="csv">Download CSV</button>');
-    if(rep.files.xlsx) dl.push('<button class="btn sm dlfile" data-w="xlsx">Download evidence XLSX</button>');
-    var head='<div class="card"><div class="line-head"><h2 style="font-size:16px;margin:0">'+esc(q.title)+'</h2><span class="grow"></span>'+statusPill(q.status)+'</div>'
-      +'<div class="task-facts" style="margin-top:10px">'
-        +'<span>Period <b>'+esc(q.period||'—')+'</b></span>'
-        +'<span>Due <b>'+esc(q.due_date||'—')+'</b></span>'
-        +'<span>Auditor <b>'+esc(q.auditor_email||'—')+'</b></span>'
-        +'<span>Reviewer <b>'+esc(q.reviewer_email||'—')+'</b></span>'
-        +(q.request_ref?'<span>Ref <b>'+esc(q.request_ref)+'</b></span>':'')
-        +'<span>By <b>'+esc(q.created_by||'—')+'</b> · '+esc(fmtDate(q.created_at))+'</span></div>'
-      +renderProgress(rep.progress, rep.lineCount)
-      +(dl.length?'<div class="row" style="margin-top:6px">'+dl.join('')+'</div>':'')
-      +'</div>';
-    $('histDetail').innerHTML=head+'<div class="card ipe on">'+ipeHtml(rep.ipe)+'</div>';
-    wireCopy($('histDetail'));
-    Array.prototype.forEach.call($('histDetail').querySelectorAll('.dlfile'), function(b){ b.addEventListener('click', function(){ downloadRequestFile(histReqId, b.dataset.w, b); }); });
-  }
-  function renderProgress(p, total){
-    if(!total) return '<div class="muted" style="font-size:12.5px;margin:8px 0">No lines.</div>';
+  function miniProgress(p, total){
+    if(!total) return '<span class="muted">—</span>';
     var order=[['closed','green'],['pending_audit','blue'],['pending_review','amber'],['in_progress','neutral'],['assigned','blue'],['open','gray'],['not_found','red']];
+    var title=order.filter(function(o){return p[o[0]];}).map(function(o){ return o[0].replace(/_/g,' ')+': '+p[o[0]]; }).join(' · ');
     var bar=order.map(function(o){ var n=p[o[0]]||0; return n?'<span class="seg-'+o[1]+'" style="width:'+(100*n/total)+'%"></span>':''; }).join('');
-    var lbl=order.filter(function(o){return p[o[0]];}).map(function(o){ return '<span class="prog-lbl"><i class="seg-'+o[1]+'"></i>'+esc(o[0].replace(/_/g,' '))+' '+p[o[0]]+'</span>'; }).join('');
-    return '<div class="progressbar">'+bar+'</div><div class="prog-legend">'+lbl+'</div>';
+    return '<div class="mini-prog" title="'+esc(title)+'"><div class="progressbar" style="width:88px;margin:0">'+bar+'</div><span class="mp-lbl">'+(p.closed||0)+'/'+total+'</span></div>';
+  }
+  function renderReqTable(reqs){
+    var wrap=$('reqTableWrap');
+    if(!reqs.length){ wrap.innerHTML='<div class="card"><div class="empty">No requests yet. Click “New request” to add one.</div></div>'; return; }
+    var rows=reqs.map(function(r){
+      var f=r.files||{}, opts='';
+      if(f.csv)  opts+='<button class="menu-item" data-id="'+esc(r.request_id)+'" data-w="csv">Result CSV</button>';
+      if(f.xlsx) opts+='<button class="menu-item" data-id="'+esc(r.request_id)+'" data-w="xlsx">Evidence XLSX</button>';
+      var dl = opts ? '<div class="dd"><button class="btn sm dd-btn">Download ▾</button><div class="dd-menu" hidden>'+opts+'</div></div>' : '<button class="btn sm" disabled>Download</button>';
+      return '<tr>'
+        +'<td class="mono">'+esc(r.request_ref||'—')+'</td>'
+        +'<td>'+esc(r.period||'—')+'</td>'
+        +'<td>'+esc(r.due_date||'—')+'</td>'
+        +'<td class="trunc" title="'+esc(r.auditor_email||'')+'">'+esc(r.auditor_email||'—')+'</td>'
+        +'<td class="trunc" title="'+esc(r.reviewer_email||'')+'">'+esc(r.reviewer_email||'—')+'</td>'
+        +'<td>'+miniProgress(r.progress, r.lineCount)+'</td>'
+        +'<td>'+statusPill(r.status)+'</td>'
+        +'<td><div class="actions"><button class="btn sm ipe-btn" data-id="'+esc(r.request_id)+'">IPE</button>'+dl+'</div></td>'
+        +'</tr>';
+    }).join('');
+    wrap.innerHTML='<div class="card" style="overflow-x:auto"><table class="req-table"><thead><tr>'
+      +'<th>PBC ref</th><th>Period</th><th>Due</th><th>Auditor</th><th>Reviewer</th><th>Progress</th><th>Status</th><th>Actions</th>'
+      +'</tr></thead><tbody>'+rows+'</tbody></table></div>';
+    wireReqTable();
+  }
+  function wireReqTable(){
+    var wrap=$('reqTableWrap');
+    Array.prototype.forEach.call(wrap.querySelectorAll('.ipe-btn'),   function(b){ b.addEventListener('click', function(){ openIpeModal(b.dataset.id); }); });
+    Array.prototype.forEach.call(wrap.querySelectorAll('.dd-btn'),    function(b){ b.addEventListener('click', function(e){ e.stopPropagation(); toggleDropdown(b); }); });
+    Array.prototype.forEach.call(wrap.querySelectorAll('.menu-item'), function(b){ b.addEventListener('click', function(e){ e.stopPropagation(); closeDropdowns(); downloadRequestFile(b.dataset.id, b.dataset.w, b); }); });
+  }
+  function toggleDropdown(btn){ var m=btn.nextElementSibling, willOpen=m.hidden; closeDropdowns(); if(willOpen) m.hidden=false; }
+  function closeDropdowns(){ Array.prototype.forEach.call(document.querySelectorAll('.dd-menu'), function(m){ m.hidden=true; }); }
+  document.addEventListener('click', closeDropdowns);
+  function openIpeModal(id){
+    openModal('ipe');
+    $('ipeModalBody').innerHTML='<div class="empty">Loading…</div>';
+    google.script.run.withSuccessHandler(function(rep){ $('ipeModalBody').innerHTML=ipeHtml(rep.ipe); wireCopy($('ipeModalBody')); })
+      .withFailureHandler(function(e){ $('ipeModalBody').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
+      .requestReport(id);
   }
   function downloadRequestFile(id, which, btn){
     var o=btn.textContent; btn.disabled=true; btn.textContent='Preparing…';
