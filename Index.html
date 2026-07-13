@@ -266,7 +266,7 @@
       </div>
       <!-- detail pane: assign preparers for the selected request -->
       <div id="reqDetailPane" hidden>
-        <div class="view-head" style="justify-content:flex-start; gap:12px">
+        <div class="view-head" style="justify-content:flex-start; gap:12px; margin-bottom:18px">
           <button class="btn sm" id="backToReqs">← Requests</button>
           <h2 style="margin:0">Assign preparers</h2>
         </div>
@@ -538,10 +538,14 @@
         +'<td><div class="actions">'
           +'<button class="btn sm ipe-btn" data-id="'+esc(r.request_id)+'" title="IPE / SOX">IPE</button>'
           +dl
-          +'<button class="btn primary sm icon-btn open-btn" data-id="'+esc(r.request_id)+'" title="Open &amp; assign">→</button>'
+          +'<button class="btn primary sm icon-btn open-btn" data-id="'+esc(r.request_id)+'" title="Open &amp; assign">⋯</button>'
         +'</div></td></tr>';
     }).join('');
-    wrap.innerHTML='<div class="card" style="overflow-x:auto"><table class="req-table"><thead><tr>'
+    var present={}; reqs.forEach(function(r){ Object.keys(r.progress||{}).forEach(function(k){ present[k]=1; }); });
+    var legOrder=[['closed','green','closed'],['pending_audit','blue','pending audit'],['pending_review','amber','pending review'],['in_progress','neutral','in progress'],['assigned','blue','assigned'],['open','gray','open'],['not_found','red','not found']];
+    var leg=legOrder.filter(function(o){ return present[o[0]]; }).map(function(o){ return '<span class="prog-lbl"><i class="seg-'+o[1]+'"></i>'+o[2]+'</span>'; }).join('');
+    var legendHtml = leg ? '<div class="prog-legend" style="margin:0 2px 12px">'+leg+'</div>' : '';
+    wrap.innerHTML='<div class="card" style="overflow-x:auto">'+legendHtml+'<table class="req-table"><thead><tr>'
       +'<th>PBC ref</th><th>Period</th><th>Due</th><th>Auditor</th><th>Reviewer</th><th>Progress</th><th>Status</th><th>Actions</th>'
       +'</tr></thead><tbody>'+rows+'</tbody></table></div>';
     wireReqTable();
@@ -615,11 +619,11 @@
       +'<p class="sub" style="margin:0">'+esc(d.request.period||'')+' · '+d.tasks.length+' tasks</p></div>';
     if(!d.tasks.length){ $('assignWrap').innerHTML=head+'<div class="card"><div class="empty">No tasks need a preparer in this run.</div></div>'; return; }
     var companies=uniq_(d.tasks.map(function(t){ return t.company; }));
-    function tb(f,l){ return '<button data-f="'+f+'"'+(assignFilter.mpl===f?' class="active"':'')+'>'+l+'</button>'; }
-    var filters='<div class="row" style="justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">'
-      +'<div class="filter-bar">'+tb('all','All')+tb('regular','Regular')+tb('advance','MPL advance')+'</div>'
-      +'<select id="asgCompany" style="max-width:220px"><option value="all">All companies</option>'
-        +companies.map(function(c){ return '<option value="'+esc(c)+'">'+esc(c)+'</option>'; }).join('')+'</select></div>';
+    function opt(v,l){ return '<option value="'+v+'"'+(assignFilter.mpl===v?' selected':'')+'>'+l+'</option>'; }
+    var filters='<div class="row" style="gap:10px; align-items:center; margin-bottom:12px">'
+      +'<select id="asgType" style="max-width:170px">'+opt('all','All types')+opt('regular','Regular')+opt('advance','MPL advance')+'</select>'
+      +'<select id="asgCompany" style="max-width:200px"><option value="all">All companies</option>'
+        +companies.map(function(c){ return '<option value="'+esc(c)+'"'+(assignFilter.company===c?' selected':'')+'>'+esc(c)+'</option>'; }).join('')+'</select></div>';
     var bulk='<div class="row" style="margin-bottom:10px"><input id="bulkPrep" list="preparers" placeholder="preparer@jumia.com" style="max-width:260px">'
       +'<button class="btn primary sm" id="bulkAssign">Assign to selected</button>'
       +'<span class="muted" id="selCount" style="font-size:12.5px"></span></div>';
@@ -649,9 +653,7 @@
   }
   function updateSelCount_(){ if($('selCount')) $('selCount').textContent=$('asgRows').querySelectorAll('.asg-chk:checked').length+' selected'; }
   function wireAssign(){
-    Array.prototype.forEach.call($('assignWrap').querySelectorAll('.filter-bar button'), function(b){
-      b.addEventListener('click', function(){ assignFilter.mpl=b.dataset.f; Array.prototype.forEach.call(b.parentNode.children,function(x){x.classList.toggle('active',x===b);}); renderAsgRows(); });
-    });
+    $('asgType').addEventListener('change', function(){ assignFilter.mpl=$('asgType').value; renderAsgRows(); });
     $('asgCompany').addEventListener('change', function(){ assignFilter.company=$('asgCompany').value; renderAsgRows(); });
     $('selAll').addEventListener('change', function(){ var on=$('selAll').checked; Array.prototype.forEach.call($('asgRows').querySelectorAll('.asg-chk'),function(c){c.checked=on;}); updateSelCount_(); });
     $('bulkAssign').addEventListener('click', bulkAssign);
