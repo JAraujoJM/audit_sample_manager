@@ -38,7 +38,7 @@ function reviewQueue(stage) {
     return {
       request_id: r.request_id, title: r.title, period: r.period, status: r.status,
       request_ref: r.request_ref || '', due_date: toDateStr_(r.due_date, tz),
-      created_at: r.created_at, lineCount: rl.length, pendingCount: pending
+      created_at: r.created_at, lineCount: rl.length, pendingCount: pending, progress: progressOf_(rl)
     };
   }).sort(function (a, b) {
     if (b.pendingCount !== a.pendingCount) return b.pendingCount - a.pendingCount;

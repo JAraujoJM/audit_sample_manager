@@ -127,6 +127,19 @@
   .dd-menu-fixed .menu-item{display:block; width:100%; text-align:left; border:0; background:none; padding:8px 12px; font:inherit; font-size:13px; cursor:pointer; color:var(--text);}
   .dd-menu-fixed .menu-item:hover{background:var(--accent-tint);}
   .icon-btn{min-width:34px; text-align:center;}
+  /* iOS-style toggle switch */
+  .switch{display:inline-flex; align-items:center; cursor:pointer;}
+  .switch input{position:absolute; opacity:0; width:0; height:0;}
+  .sw-track{display:inline-block; width:38px; height:22px; border-radius:11px; background:var(--sep-strong); position:relative; transition:background .18s;}
+  .sw-knob{position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.25); transition:left .18s;}
+  .switch input:checked + .sw-track{background:var(--accent);}
+  .switch input:checked + .sw-track .sw-knob{left:18px;}
+  .sw-label{font-size:13px; margin-left:9px; color:var(--text);}
+  /* toast banners */
+  .toasts{position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:300; display:flex; flex-direction:column; gap:8px; align-items:center; pointer-events:none;}
+  .toast{pointer-events:auto; color:#fff; font-size:13px; font-weight:500; padding:10px 16px; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.22); opacity:0; transform:translateY(-8px); transition:opacity .2s, transform .2s; max-width:560px; background:var(--text);}
+  .toast.on{opacity:1; transform:none;}
+  .toast.ok{background:var(--green);} .toast.warn{background:var(--red);}
   /* slide transition between the requests table and the assign detail */
   @keyframes slideInR{ from{opacity:0; transform:translateX(40px);} to{opacity:1; transform:none;} }
   @keyframes slideInL{ from{opacity:0; transform:translateX(-40px);} to{opacity:1; transform:none;} }
@@ -290,7 +303,7 @@
       </div>
       <div id="reviewDetailPane" hidden>
         <div class="view-head" style="justify-content:flex-start; gap:12px; margin-bottom:18px">
-          <button class="btn sm" data-back="review">← Review queue</button>
+          <button class="btn sm" data-back="review">← Requests</button>
           <h2 style="margin:0">Review</h2>
         </div>
         <div id="reviewTasksWrap"></div>
@@ -306,7 +319,7 @@
       </div>
       <div id="auditDetailPane" hidden>
         <div class="view-head" style="justify-content:flex-start; gap:12px; margin-bottom:18px">
-          <button class="btn sm" data-back="audit">← Audit queue</button>
+          <button class="btn sm" data-back="audit">← Requests</button>
           <h2 style="margin:0">Audit</h2>
         </div>
         <div id="auditTasksWrap"></div>
@@ -352,12 +365,18 @@
 
   <datalist id="preparers"></datalist>
   <div id="ddMenu" class="dd-menu-fixed" hidden></div>
+  <div id="toasts" class="toasts"></div>
 
 <script>
   function $(id){ return document.getElementById(id); }
   function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
   function fmtNum(v){ if(v===null||v===undefined||String(v).trim()==='') return '—'; var n=Number(v); return isNaN(n)?esc(v):n.toLocaleString(undefined,{maximumFractionDigits:2}); }
   function fmtDate(s){ if(!s) return '—'; var d=new Date(s); return isNaN(d)?esc(String(s).slice(0,10)):d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }
+  function toast(msg, type){
+    var el=document.createElement('div'); el.className='toast '+(type||'info'); el.textContent=msg;
+    $('toasts').appendChild(el); void el.offsetWidth; el.classList.add('on');
+    setTimeout(function(){ el.classList.remove('on'); setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); }, 240); }, 3600);
+  }
 
   var VIEW_LABELS={enrich:'Request', assign:'Assign', tasks:'My tasks', review:'Review', audit:'Audit'};
   var ROLE_VIEWS={
@@ -479,7 +498,7 @@
     if(res.status==='pending'){ setStatus('Still running — click Run again to resume (it will not resubmit).','info'); return; }
     var n=(res.rows||[]).length;
     closeModal(); $('docs').value='';
-    reqMsg(res.persistError ? ('Enriched, but saving warned: '+res.persistError) : ('Request created — '+n+' lines enriched.'), res.persistError?'warn':'info');
+    toast(res.persistError ? ('Enriched, but saving warned: '+res.persistError) : ('Request created — '+n+' lines enriched.'), res.persistError?'warn':'ok');
     refreshHistory();
   }
   function reqMsg(msg, cls){ var s=$('reqMsg'); s.className='status on '+(cls||''); s.textContent=msg; setTimeout(function(){ s.className='status'; }, 6000); }
@@ -669,13 +688,13 @@
   }
   function bulkAssign(){
     var email=$('bulkPrep').value.trim();
-    if(email && !/@jumia\.com$/i.test(email)){ alert('Preparer must be a @jumia.com email.'); return; }
+    if(email && !/@jumia\.com$/i.test(email)){ toast('Preparer must be a @jumia.com email.','warn'); return; }
     var ids=[]; Array.prototype.forEach.call($('asgRows').querySelectorAll('.asg-chk:checked'), function(c){ ids.push(c.dataset.aid); });
-    if(!ids.length){ alert('Select at least one task.'); return; }
+    if(!ids.length){ toast('Select at least one task.','warn'); return; }
     var updates=ids.map(function(id){ return { assignment_id:id, assigned_to:email }; });
     var btn=$('bulkAssign'); btn.disabled=true; btn.textContent='Assigning…';
-    google.script.run.withSuccessHandler(function(){ btn.disabled=false; btn.textContent='Assign to selected'; reloadAssign(); })
-      .withFailureHandler(function(e){ btn.disabled=false; btn.textContent='Assign to selected'; alert(e.message); })
+    google.script.run.withSuccessHandler(function(){ btn.disabled=false; btn.textContent='Assign to selected'; reloadAssign(); toast(ids.length+' task'+(ids.length>1?'s':'')+' '+(email?('assigned to '+email):'unassigned'),'ok'); })
+      .withFailureHandler(function(e){ btn.disabled=false; btn.textContent='Assign to selected'; toast(e.message,'warn'); })
       .assignBatch(updates);
   }
   function statusPill(s){
@@ -730,9 +749,9 @@
   function wireTasks(){
     var L=$('taskList');
     Array.prototype.forEach.call(L.querySelectorAll('.file-input'), function(inp){ inp.addEventListener('change', function(){ handleUpload(inp); }); });
-    Array.prototype.forEach.call(L.querySelectorAll('.submit'),     function(b){ b.addEventListener('click', function(){ taskCall('submitAssignment', b.dataset.aid, b); }); });
-    Array.prototype.forEach.call(L.querySelectorAll('.withdraw'),   function(b){ b.addEventListener('click', function(){ taskCall('withdrawAssignment', b.dataset.aid, b); }); });
-    Array.prototype.forEach.call(L.querySelectorAll('.rm-file'),    function(b){ b.addEventListener('click', function(){ taskCall('removeEvidence', b.dataset.eid, b); }); });
+    Array.prototype.forEach.call(L.querySelectorAll('.submit'),     function(b){ b.addEventListener('click', function(){ taskCall('submitAssignment', b.dataset.aid, b, 'Submitted for review'); }); });
+    Array.prototype.forEach.call(L.querySelectorAll('.withdraw'),   function(b){ b.addEventListener('click', function(){ taskCall('withdrawAssignment', b.dataset.aid, b, 'Withdrawn'); }); });
+    Array.prototype.forEach.call(L.querySelectorAll('.rm-file'),    function(b){ b.addEventListener('click', function(){ taskCall('removeEvidence', b.dataset.eid, b, 'File removed'); }); });
     Array.prototype.forEach.call(L.querySelectorAll('.view-doc'),   function(a){ a.addEventListener('click', function(ev){ ev.preventDefault(); viewEvidence(a.dataset.eid); }); });
   }
   function handleUpload(inp){
@@ -743,17 +762,17 @@
     var reader=new FileReader();
     reader.onload=function(){
       var b64=String(reader.result).split(',')[1];
-      google.script.run.withSuccessHandler(renderTasks)
-        .withFailureHandler(function(e){ msg.textContent=e.message; })
+      google.script.run.withSuccessHandler(function(items){ renderTasks(items); toast('File uploaded','ok'); })
+        .withFailureHandler(function(e){ msg.textContent=e.message; toast(e.message,'warn'); })
         .uploadEvidence(inp.dataset.aid, file.name, file.type, b64);
     };
     reader.onerror=function(){ msg.textContent='Could not read the file.'; };
     reader.readAsDataURL(file);
   }
-  function taskCall(method, arg, btn){
+  function taskCall(method, arg, btn, okMsg){
     if(btn){ btn.disabled=true; }
-    google.script.run.withSuccessHandler(renderTasks)
-      .withFailureHandler(function(e){ if(btn) btn.disabled=false; alert(e.message); })[method](arg);
+    google.script.run.withSuccessHandler(function(items){ renderTasks(items); if(okMsg) toast(okMsg,'ok'); })
+      .withFailureHandler(function(e){ if(btn) btn.disabled=false; toast(e.message,'warn'); })[method](arg);
   }
 
   /* ---------- review / audit (reviewer + auditor) ----------
@@ -785,13 +804,18 @@
         +'<td class="mono">'+esc(r.request_ref||'—')+'</td>'
         +'<td>'+esc(r.period||'—')+'</td>'
         +'<td>'+esc(r.due_date||'—')+'</td>'
-        +'<td>'+pend+'</td>'
         +'<td>'+r.lineCount+'</td>'
+        +'<td>'+pend+'</td>'
+        +'<td>'+miniProgress(r.progress, r.lineCount)+'</td>'
         +'<td><div class="actions"><button class="btn primary sm icon-btn stage-open" data-id="'+esc(r.request_id)+'" title="Open">⋯</button></div></td>'
         +'</tr>';
     }).join('');
-    wrap.innerHTML='<div class="card" style="overflow-x:auto"><table class="req-table"><thead><tr>'
-      +'<th>PBC ref</th><th>Period</th><th>Due</th><th>Pending</th><th>Lines</th><th>Actions</th>'
+    var present={}; reqs.forEach(function(r){ Object.keys(r.progress||{}).forEach(function(k){ present[k]=1; }); });
+    var legOrder=[['closed','green','closed'],['pending_audit','blue','pending audit'],['pending_review','amber','pending review'],['in_progress','neutral','in progress'],['assigned','blue','assigned'],['open','gray','open'],['not_found','red','not found']];
+    var leg=legOrder.filter(function(o){ return present[o[0]]; }).map(function(o){ return '<span class="prog-lbl"><i class="seg-'+o[1]+'"></i>'+o[2]+'</span>'; }).join('');
+    var legendHtml = leg ? '<div class="prog-legend" style="margin:0 2px 12px">'+leg+'</div>' : '';
+    wrap.innerHTML='<div class="card" style="overflow-x:auto">'+legendHtml+'<table class="req-table"><thead><tr>'
+      +'<th>PBC ref</th><th>Period</th><th>Due</th><th>Tasks</th><th>Pending</th><th>Progress</th><th>Actions</th>'
       +'</tr></thead><tbody>'+rows+'</tbody></table></div>';
     Array.prototype.forEach.call(wrap.querySelectorAll('.stage-open'), function(b){ b.addEventListener('click', function(){ openStageDetail(stage, b.dataset.id); }); });
   }
@@ -811,9 +835,9 @@
     var shown=pendingOnly ? lines.filter(function(l){ return String(l.status).toLowerCase()===actionable; }) : lines;
     var head='<div class="card"><h2 style="font-size:16px;margin:0 0 2px">'+esc(d.request.title)+'</h2>'
       +'<p class="sub" style="margin:0">'+esc(d.request.period||'')+' · '+lines.length+' lines</p></div>';
-    var toggle='<div class="filter-bar" style="margin-bottom:12px">'
-      +'<button data-po="1"'+(pendingOnly?' class="active"':'')+'>Pending my action</button>'
-      +'<button data-po="0"'+(!pendingOnly?' class="active"':'')+'>All lines</button></div>';
+    var toggle='<div class="row" style="margin-bottom:12px; gap:0; align-items:center">'
+      +'<label class="switch"><input type="checkbox" class="pending-toggle"'+(pendingOnly?' checked':'')+'><span class="sw-track"><span class="sw-knob"></span></span></label>'
+      +'<span class="sw-label">Pending my action</span></div>';
     var body;
     if(!shown.length){
       body='<div class="card">'+toggle+'<div class="empty">'+(pendingOnly?'No lines pending your action. Switch to “All lines” to see the rest.':'No lines.')+'</div></div>';
@@ -832,7 +856,8 @@
         +'<th>Document</th><th>Seller</th><th>Type</th><th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
     }
     $(c.tasksWrap).innerHTML=head+body;
-    Array.prototype.forEach.call($(c.tasksWrap).querySelectorAll('.filter-bar button'), function(b){ b.addEventListener('click', function(){ stageState[stage].pendingOnly=b.dataset.po==='1'; renderStageTasks(stage); }); });
+    var tog=$(c.tasksWrap).querySelector('.pending-toggle');
+    if(tog) tog.addEventListener('change', function(){ stageState[stage].pendingOnly=tog.checked; renderStageTasks(stage); });
     Array.prototype.forEach.call($(c.tasksWrap).querySelectorAll('.task-open'), function(b){ b.addEventListener('click', function(){ openTaskModal(stage, b.dataset.line); }); });
   }
   function openTaskModal(stage, lineId){
@@ -934,10 +959,11 @@
   function stageAction(stage, method, btn, needNote){
     var card=btn.closest('.line-card'), id=card.dataset.id;
     var noteEl=card.querySelector('.note-in'), note=noteEl?noteEl.value.trim():'';
-    if(needNote && !note){ alert('Please add a note explaining what to fix.'); return; }
+    if(needNote && !note){ toast('Please add a note explaining what to fix.','warn'); return; }
+    var okMsg = needNote ? 'Returned to preparer' : (stage==='review'?'Submitted to auditor':'Line closed');
     btn.disabled=true;
-    google.script.run.withSuccessHandler(function(d){ closeModal(); stageState[stage].detail=d; renderStageTasks(stage); })
-      .withFailureHandler(function(e){ btn.disabled=false; alert(e.message); })[method](id, note);
+    google.script.run.withSuccessHandler(function(d){ closeModal(); stageState[stage].detail=d; renderStageTasks(stage); toast(okMsg,'ok'); })
+      .withFailureHandler(function(e){ btn.disabled=false; toast(e.message,'warn'); })[method](id, note);
   }
 
   /* ---------- shared: open an evidence file in a new tab (app-mediated) ---------- */
