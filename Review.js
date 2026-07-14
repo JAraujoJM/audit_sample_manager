@@ -25,6 +25,7 @@ function reviewQueue(stage) {
   var me = requireRole_(stageRoles_(stage));
   var want = STAGE_STATUS[stage];
   var ds = dataSs_();
+  var tz = ds.getSpreadsheetTimeZone();
   var lines = readObjects_(ds, 'Sample_Lines');
   return readObjects_(ds, 'Requests').filter(function (r) {
     // The reviewer is set per request; a Reviewer sees only their own (admins see all).
@@ -36,6 +37,7 @@ function reviewQueue(stage) {
     var pending = rl.filter(function (l) { return String(l.status).toLowerCase() === want; }).length;
     return {
       request_id: r.request_id, title: r.title, period: r.period, status: r.status,
+      request_ref: r.request_ref || '', due_date: toDateStr_(r.due_date, tz),
       created_at: r.created_at, lineCount: rl.length, pendingCount: pending
     };
   }).sort(function (a, b) {
