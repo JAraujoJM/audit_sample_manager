@@ -81,6 +81,7 @@ function reviewDetail(requestId, stage) {
         mpl_type: l.mpl_type, paid_status: l.paid_status, statement_code: l.statement_code,
         amount: l.amount, closing_balance: l.closing_balance, paid_at: toDateStr_(l.paid_at, tz),
         status: l.status, note: l.note || '',
+        ai_verdict: l.ai_verdict || '', ai_summary: l.ai_summary || '', ai_checked_at: l.ai_checked_at || '',
         assignments: (asgByLine[l.line_id] || []).map(function (a) {
           return { evidence_type: a.evidence_type, assigned_to: a.assigned_to, status: a.status, files: evByAsg[a.assignment_id] || [] };
         })
@@ -108,18 +109,95 @@ function getEvidenceFile(evidenceId) {
   return { name: ev.file_name, mime: mime, size: bytes.length, dataUrl: 'data:' + mime + ';base64,' + Utilities.base64Encode(bytes) };
 }
 
-/* ---------- reviewer actions ---------- */
-function reviewerSubmit(lineId) {
+/* ---------- AI pre-check (review stage) ---------- */
+/**
+ * Ask Gemini to compare each of a line's submitted documents against its expected
+ * evidence type + the sampled transaction's data, and report accept / reject /
+ * uncertain. The overall verdict is the worst of the per-document verdicts. The
+ * result is persisted on the line (ai_verdict/ai_summary/ai_checked_at) and logged,
+ * so the SOX trail records what the AI said before the reviewer decided.
+ *
+ * Advisory only: it gates the *client* Submit button, but the human reviewer always
+ * decides and can override a non-accept verdict with a signed confirmation.
+ */
+function assessLine(lineId) {
   var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
   var line = requireLineStatus_(lineId, 'pending_review');
   assertReviewer_(line.request_id, me);
+  var ds = dataSs_();
+
+  var typeByAsg = {};
+  getAssignments(lineId).forEach(function (a) { typeByAsg[String(a.assignment_id)] = a.evidence_type; });
+  var docs = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.line_id) === String(lineId); });
+  if (!docs.length) throw new Error('No evidence documents to assess on this line.');
+
+  var facts = [
+    'Seller / vendor: ' + (line.vendor || '—'),
+    'Document / transaction no.: ' + (line.document_no || '—'),
+    'Statement number: ' + (line.statement_code || '—'),
+    'Transaction amount: ' + (line.amount != null && line.amount !== '' ? line.amount : '—'),
+    'Statement balance: ' + (line.closing_balance != null && line.closing_balance !== '' ? line.closing_balance : '—'),
+    'Paid-at date: ' + (line.paid_at || '(not paid)'),
+    'MPL type: ' + (/advance/i.test(String(line.mpl_type)) ? 'MPL advance' : 'Regular')
+  ].join('\n');
+
+  var system =
+    'You are a meticulous financial-audit evidence reviewer at Jumia. For each document you are given: ' +
+    'the type of evidence it is meant to be, the sampled transaction\'s known data, and the document itself (image or PDF). ' +
+    'Judge whether the document (a) is the correct KIND of evidence for that type, and (b) corroborates the transaction data. ' +
+    'Minor formatting or layout differences are fine; material mismatches (wrong party, wrong amount, wrong date, wrong document) are not. ' +
+    'Return verdict "accept" only when it is clearly valid, "reject" when it is the wrong document or contradicts the data, and ' +
+    '"uncertain" when the document is unreadable or you cannot confirm. Keep the summary under 240 characters and specific.';
+
+  var perDoc = [], worst = 'accept';
+  docs.forEach(function (e) {
+    var etype = typeByAsg[String(e.assignment_id)] || 'evidence';
+    var blob;
+    try { blob = DriveApp.getFileById(e.file_id).getBlob(); }
+    catch (err) { perDoc.push({ file: e.file_name, type: etype, verdict: 'uncertain', summary: 'Could not open the file in Drive.' }); worst = worseVerdict_(worst, 'uncertain'); return; }
+    var bytes = blob.getBytes();
+    if (bytes.length > 12 * 1024 * 1024) { perDoc.push({ file: e.file_name, type: etype, verdict: 'uncertain', summary: 'File too large to assess (' + Math.round(bytes.length / 1048576) + ' MB).' }); worst = worseVerdict_(worst, 'uncertain'); return; }
+    var prompt = 'Expected evidence type: "' + etype + '".\n\nSampled transaction data:\n' + facts + '\n\nAssess the attached document (file name: ' + e.file_name + ').';
+    var res;
+    try { res = geminiAssess_(system, prompt, { mimeType: blob.getContentType(), bytes: bytes }); }
+    catch (err) { perDoc.push({ file: e.file_name, type: etype, verdict: 'uncertain', summary: 'AI error: ' + (err.message || err) }); worst = worseVerdict_(worst, 'uncertain'); return; }
+    var v = String(res.verdict || 'uncertain').toLowerCase();
+    if (['accept', 'reject', 'uncertain'].indexOf(v) === -1) v = 'uncertain';
+    perDoc.push({ file: e.file_name, type: etype, verdict: v, summary: String(res.summary || '') });
+    worst = worseVerdict_(worst, v);
+  });
+
+  var summary = perDoc.map(function (p) { return p.file + ' → ' + p.verdict + (p.summary ? (': ' + p.summary) : ''); }).join('  |  ');
+  var at = nowIso_();
+  updateRowById_(ds, 'Sample_Lines', 'line_id', lineId, { ai_verdict: worst, ai_summary: summary.substring(0, 900), ai_checked_at: at });
+  logActivity('AI_CHECK', 'line', lineId, 'verdict=' + worst + ' :: ' + summary.substring(0, 400));
+  return { verdict: worst, perDoc: perDoc, checkedAt: at };
+}
+
+// accept < uncertain < reject — the overall verdict is the worst of the documents'.
+function worseVerdict_(a, b) {
+  var rank = { accept: 0, uncertain: 1, reject: 2 };
+  return (rank[b] > rank[a]) ? b : a;
+}
+
+/* ---------- reviewer actions ---------- */
+function reviewerSubmit(lineId, override) {
+  var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
+  var line = requireLineStatus_(lineId, 'pending_review');
+  assertReviewer_(line.request_id, me);
+  var verdict = String(line.ai_verdict || '').toLowerCase();
+  if (!verdict) throw new Error('Run the AI check before submitting this line to the auditor.');
+  if (verdict !== 'accept' && !override) {
+    throw new Error('The AI flagged this evidence (' + verdict + '). Tick the confirmation to proceed anyway.');
+  }
   getAssignments(lineId).forEach(function (a) {
     if (String(a.status).toLowerCase() === 'submitted') {
       updateRowById_(dataSs_(), 'Assignments', 'assignment_id', a.assignment_id, { status: 'reviewed' });
     }
   });
   updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'pending_audit', note: '' });
-  logActivity('REVIEW_SUBMIT', 'line', lineId, 'submitted to auditor');
+  logActivity('REVIEW_SUBMIT', 'line', lineId,
+    'to auditor (AI ' + verdict + (verdict !== 'accept' ? '; reviewer override' : '') + ')');
   return reviewDetail(line.request_id, 'review');
 }
 

@@ -250,6 +250,12 @@
   .preview .ph{color:var(--text-3); font-size:13px; text-align:center;}
   .note-line{margin-top:11px; font-size:12.5px; color:var(--amber); background:var(--amber-tint); border-radius:6px; padding:7px 10px;}
   .note-in{flex:1; min-width:170px;}
+  .ai-panel{margin-top:14px; border:1px solid var(--sep); border-radius:10px; padding:11px 13px; background:var(--surface-2, #fafafa);}
+  .ai-head{display:flex; align-items:center; gap:11px; flex-wrap:wrap;}
+  .ai-result{display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap;}
+  .ai-sum{font-size:12.5px; color:var(--text-2, var(--text-3));}
+  .ai-ovr-row{display:flex; align-items:flex-start; gap:8px; margin-top:11px; font-size:12.5px; line-height:1.45; color:var(--text);}
+  .ai-ovr-row input{margin-top:2px; flex:0 0 auto;}
 </style>
 </head>
 <body>
@@ -890,8 +896,13 @@
     var note = l.note ? '<div class="note-line">'+esc(l.note)+'</div>' : '';
     var actions='';
     if(String(l.status).toLowerCase()===actionable){
-      actions='<div class="line-foot"><input class="note-in" placeholder="Note (required to return)">'
-        +'<button class="btn primary sm stage-primary" data-id="'+esc(l.line_id)+'">'+esc(STAGE_CFG[stage].primaryLabel)+'</button>'
+      var isReview = stage==='review';
+      // Review: Submit is gated behind the AI pre-check (disabled until it runs; if the
+      // verdict isn't "accept", a signed override is required). Audit is unchanged.
+      var ai = isReview ? aiPanelHtml(l) : '';
+      var primaryDisabled = isReview ? ' disabled' : '';
+      actions=ai+'<div class="line-foot"><input class="note-in" placeholder="Note (required to return)">'
+        +'<button class="btn primary sm stage-primary" data-id="'+esc(l.line_id)+'"'+primaryDisabled+'>'+esc(STAGE_CFG[stage].primaryLabel)+'</button>'
         +'<button class="btn sm stage-return" data-id="'+esc(l.line_id)+'">Return</button></div>';
     }
     return '<div class="line-card" data-id="'+esc(l.line_id)+'" style="border:0;padding:0;margin:0">'
@@ -901,10 +912,52 @@
       +'<div class="preview" id="prev-'+esc(l.line_id)+'"><span class="ph">Select a document to preview</span></div></div>'
       +actions+'</div>';
   }
+  var AI_VERDICT={ accept:['green','AI: aligned'], reject:['red','AI: not aligned'], uncertain:['amber','AI: uncertain'] };
+  function aiVerdictPill(v){ var m=AI_VERDICT[v]; return m?'<span class="pill '+m[0]+'">'+m[1]+'</span>':''; }
+  function aiPanelHtml(l){
+    var v=String(l.ai_verdict||'').toLowerCase();
+    var result = v
+      ? aiVerdictPill(v)+' <span class="ai-sum">'+esc(l.ai_summary||'')+'</span>'
+      : '<span class="ai-sum muted">Compares the document(s) with the expected data. Run this before submitting.</span>';
+    var ovr = (v && v!=='accept')
+      ? '<label class="ai-ovr-row"><input type="checkbox" class="ai-ovr"> Despite the AI assessment, I confirm this document is aligned with what\'s expected as evidence for this task.</label>'
+      : '';
+    return '<div class="ai-panel" data-verdict="'+esc(v)+'">'
+      +'<div class="ai-head"><button class="btn sm ai-run" type="button">'+(v?'Re-run AI check':'Run AI check')+'</button>'
+      +'<span class="ai-result">'+result+'</span></div>'+ovr+'</div>';
+  }
+  function updateReviewGate(scope){
+    var panel=scope.querySelector('.ai-panel'); if(!panel) return;      // review stage only
+    var submit=scope.querySelector('.stage-primary'); if(!submit) return;
+    var v=panel.getAttribute('data-verdict'), ovr=scope.querySelector('.ai-ovr');
+    var ok = (v==='accept') || (v && v!=='accept' && ovr && ovr.checked);
+    submit.disabled=!ok;
+  }
+  function runAiCheck(stage, btn){
+    var card=btn.closest('.line-card'), lineId=card.dataset.id;
+    btn.disabled=true; var was=btn.textContent; btn.textContent='Checking…';
+    var res=card.querySelector('.ai-result'); if(res) res.innerHTML='<span class="ai-sum muted">Comparing the document(s) with the data…</span>';
+    google.script.run.withSuccessHandler(function(r){
+      // Fold the verdict into the cached line, then re-render the modal so the panel,
+      // override checkbox, and Submit gate all reflect it.
+      var d=stageState[stage].detail;
+      var ln=d&&d.lines.filter(function(x){ return String(x.line_id)===String(lineId); })[0];
+      if(ln){ ln.ai_verdict=r.verdict; ln.ai_checked_at=r.checkedAt;
+        ln.ai_summary=(r.perDoc||[]).map(function(p){ return p.file+' → '+p.verdict+(p.summary?(': '+p.summary):''); }).join('  |  '); }
+      openTaskModal(stage, lineId);
+      toast('AI check: '+r.verdict, r.verdict==='accept'?'ok':'warn');
+    }).withFailureHandler(function(e){ btn.disabled=false; btn.textContent=was; if(res) res.innerHTML='<span class="ai-sum muted">'+esc(e.message)+'</span>'; toast(e.message,'warn'); })
+      .assessLine(lineId);
+  }
   function wireStage(stage, el){
     Array.prototype.forEach.call(el.querySelectorAll('.chip'),          function(c){ c.addEventListener('click', function(){ openDoc(c.dataset.line, c.dataset.eid, c); }); });
     Array.prototype.forEach.call(el.querySelectorAll('.stage-primary'), function(b){ b.addEventListener('click', function(){ stageAction(stage, STAGE_CFG[stage].primaryFn, b, false); }); });
     Array.prototype.forEach.call(el.querySelectorAll('.stage-return'),  function(b){ b.addEventListener('click', function(){ stageAction(stage, STAGE_CFG[stage].returnFn, b, true); }); });
+    if(stage==='review'){
+      Array.prototype.forEach.call(el.querySelectorAll('.ai-run'), function(b){ b.addEventListener('click', function(){ runAiCheck(stage, b); }); });
+      var ovr=el.querySelector('.ai-ovr'); if(ovr) ovr.addEventListener('change', function(){ updateReviewGate(el); });
+      updateReviewGate(el);
+    }
     var first=el.querySelector('.chip'); if(first) openDoc(first.dataset.line, first.dataset.eid, first);
   }
   function openDoc(lineId, eid, chip){
@@ -961,9 +1014,12 @@
     var noteEl=card.querySelector('.note-in'), note=noteEl?noteEl.value.trim():'';
     if(needNote && !note){ toast('Please add a note explaining what to fix.','warn'); return; }
     var okMsg = needNote ? 'Returned to preparer' : (stage==='review'?'Submitted to auditor':'Line closed');
+    // reviewerSubmit's 2nd arg is the AI override flag; every other action takes the note.
+    var arg = note;
+    if(method==='reviewerSubmit'){ var ovr=card.querySelector('.ai-ovr'); arg = ovr?ovr.checked:false; }
     btn.disabled=true;
     google.script.run.withSuccessHandler(function(d){ closeModal(); stageState[stage].detail=d; renderStageTasks(stage); toast(okMsg,'ok'); })
-      .withFailureHandler(function(e){ btn.disabled=false; toast(e.message,'warn'); })[method](id, note);
+      .withFailureHandler(function(e){ btn.disabled=false; toast(e.message,'warn'); })[method](id, arg);
   }
 
   /* ---------- shared: open an evidence file in a new tab (app-mediated) ---------- */
