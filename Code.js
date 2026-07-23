@@ -26,7 +26,7 @@ var POLL_INTERVAL  = 4000;
 
 function doGet() {
   return HtmlService.createHtmlOutputFromFile('Index')
-    .setTitle('Flow A — Audit Request Manager')
+    .setTitle('Audit Samples Manager')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 

@@ -256,11 +256,15 @@
   .ai-sum{font-size:12.5px; color:var(--text-2, var(--text-3));}
   .ai-ovr-row{display:flex; align-items:flex-start; gap:8px; margin-top:11px; font-size:12.5px; line-height:1.45; color:var(--text);}
   .ai-ovr-row input{margin-top:2px; flex:0 0 auto;}
+  .spinner{display:inline-block; width:12px; height:12px; margin-right:7px; vertical-align:-1px;
+    border:2px solid currentColor; border-top-color:transparent; border-radius:50%;
+    opacity:.9; animation:spin .6s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
 </style>
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">Audit Requests Manager</div>
+    <div class="brand">Audit Samples Manager</div>
     <div class="who" id="who">…</div>
   </header>
 
@@ -632,7 +636,7 @@
   /* ---------- assign detail (inline in the Request view) ----------
    * A filterable task table (one row per evidence item) with bulk assignment
    * to the selected rows. Rendered into #assignWrap by prepAssign/openAssign. */
-  var assignData=null, assignFilter={ mpl:'all', company:'all' };
+  var assignData=null, assignFilter={ mpl:'all', company:'all', evidence:'all' };
   function prepAssign(d){
     var tasks=[];
     d.lines.filter(function(l){ return Number(l.required_count)>0; }).forEach(function(l){
@@ -643,7 +647,7 @@
       });
     });
     assignData={ request:d.request, tasks:tasks };
-    assignFilter={ mpl:'all', company:'all' };
+    assignFilter={ mpl:'all', company:'all', evidence:'all' };
     renderAssignDetail();
   }
   function uniq_(arr){ var s={},o=[]; arr.forEach(function(x){ if(x && !s[x]){s[x]=1;o.push(x);} }); return o; }
@@ -653,11 +657,14 @@
       +'<p class="sub" style="margin:0">'+esc(d.request.period||'')+' · '+d.tasks.length+' tasks</p></div>';
     if(!d.tasks.length){ $('assignWrap').innerHTML=head+'<div class="card"><div class="empty">No tasks need a preparer in this run.</div></div>'; return; }
     var companies=uniq_(d.tasks.map(function(t){ return t.company; }));
+    var evidences=uniq_(d.tasks.map(function(t){ return t.evidence_type; }));
     function opt(v,l){ return '<option value="'+v+'"'+(assignFilter.mpl===v?' selected':'')+'>'+l+'</option>'; }
     var filters='<div class="row" style="gap:10px; align-items:center; margin-bottom:12px">'
       +'<select id="asgType" style="max-width:170px">'+opt('all','All types')+opt('regular','Regular')+opt('advance','MPL advance')+'</select>'
       +'<select id="asgCompany" style="max-width:200px"><option value="all">All companies</option>'
-        +companies.map(function(c){ return '<option value="'+esc(c)+'"'+(assignFilter.company===c?' selected':'')+'>'+esc(c)+'</option>'; }).join('')+'</select></div>';
+        +companies.map(function(c){ return '<option value="'+esc(c)+'"'+(assignFilter.company===c?' selected':'')+'>'+esc(c)+'</option>'; }).join('')+'</select>'
+      +'<select id="asgEvidence" style="max-width:230px"><option value="all">All evidence</option>'
+        +evidences.map(function(e){ return '<option value="'+esc(e)+'"'+(assignFilter.evidence===e?' selected':'')+'>'+esc(e)+'</option>'; }).join('')+'</select></div>';
     var bulk='<div class="row" style="margin-bottom:10px"><input id="bulkPrep" list="preparers" placeholder="preparer@jumia.com" style="max-width:260px">'
       +'<button class="btn primary sm" id="bulkAssign">Assign to selected</button>'
       +'<span class="muted" id="selCount" style="font-size:12.5px"></span></div>';
@@ -670,7 +677,9 @@
   }
   function visibleTasks_(){
     return assignData.tasks.filter(function(t){
-      return (assignFilter.mpl==='all'||t.mpl===assignFilter.mpl) && (assignFilter.company==='all'||t.company===assignFilter.company);
+      return (assignFilter.mpl==='all'||t.mpl===assignFilter.mpl)
+        && (assignFilter.company==='all'||t.company===assignFilter.company)
+        && (assignFilter.evidence==='all'||t.evidence_type===assignFilter.evidence);
     });
   }
   function renderAsgRows(){
@@ -689,6 +698,7 @@
   function wireAssign(){
     $('asgType').addEventListener('change', function(){ assignFilter.mpl=$('asgType').value; renderAsgRows(); });
     $('asgCompany').addEventListener('change', function(){ assignFilter.company=$('asgCompany').value; renderAsgRows(); });
+    $('asgEvidence').addEventListener('change', function(){ assignFilter.evidence=$('asgEvidence').value; renderAsgRows(); });
     $('selAll').addEventListener('change', function(){ var on=$('selAll').checked; Array.prototype.forEach.call($('asgRows').querySelectorAll('.asg-chk'),function(c){c.checked=on;}); updateSelCount_(); });
     $('bulkAssign').addEventListener('click', bulkAssign);
   }
@@ -698,9 +708,10 @@
     var ids=[]; Array.prototype.forEach.call($('asgRows').querySelectorAll('.asg-chk:checked'), function(c){ ids.push(c.dataset.aid); });
     if(!ids.length){ toast('Select at least one task.','warn'); return; }
     var updates=ids.map(function(id){ return { assignment_id:id, assigned_to:email }; });
-    var btn=$('bulkAssign'); btn.disabled=true; btn.textContent='Assigning…';
-    google.script.run.withSuccessHandler(function(){ btn.disabled=false; btn.textContent='Assign to selected'; reloadAssign(); toast(ids.length+' task'+(ids.length>1?'s':'')+' '+(email?('assigned to '+email):'unassigned'),'ok'); })
-      .withFailureHandler(function(e){ btn.disabled=false; btn.textContent='Assign to selected'; toast(e.message,'warn'); })
+    var btn=$('bulkAssign'); btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Assigning';
+    function done(){ btn.disabled=false; btn.textContent='Assign to selected'; }
+    google.script.run.withSuccessHandler(function(){ done(); reloadAssign(); toast(ids.length+' task'+(ids.length>1?'s':'')+' '+(email?('assigned to '+email):'unassigned'),'ok'); })
+      .withFailureHandler(function(e){ done(); toast(e.message,'warn'); })
       .assignBatch(updates);
   }
   function statusPill(s){
