@@ -70,7 +70,9 @@ function listPreparers() {
 /**
  * Apply a batch of assignment edits: [{assignment_id, assigned_to, due_date}].
  * Setting an assignee moves a pending item to 'assigned'; clearing it reverts to
- * 'pending'. Downstream statuses (submitted/accepted/...) are left untouched.
+ * 'pending'. Downstream statuses (submitted/reviewed) still allow reassignment —
+ * so a preparer who leaves mid-request can be swapped out — but an 'accepted'
+ * item is a locked historical record and is never reassigned.
  */
 function assignBatch(updates) {
   var who = requireRole_([ROLES.ADMIN]);
@@ -85,11 +87,12 @@ function assignBatch(updates) {
     if (email && !/@jumia\.com$/i.test(email)) throw new Error('Assignee must be a @jumia.com email: ' + email);
   });
 
-  var touchedLines = {}, requestId = '';
+  var touchedLines = {}, requestId = '', updated = 0, locked = 0;
   updates.forEach(function (u) {
     var cur = current[String(u.assignment_id)];
     if (!cur) return;
     requestId = cur.request_id;
+    if (String(cur.status).toLowerCase() === 'accepted') { locked++; return; }   // historical record — never reassign
     var email = String(u.assigned_to || '').trim();
     var patch = { assigned_to: email };   // due date is set at request level, not per task
     if (['pending', 'assigned'].indexOf(String(cur.status).toLowerCase()) !== -1) {
@@ -97,11 +100,13 @@ function assignBatch(updates) {
     }
     updateRowById_(ds, 'Assignments', 'assignment_id', u.assignment_id, patch);
     touchedLines[cur.line_id] = true;
+    updated++;
   });
 
   Object.keys(touchedLines).forEach(updateLineAssignmentRollup_);
-  logActivity('ASSIGN', 'request', requestId, updates.length + ' assignment(s) updated by ' + who.email);
-  return { ok: true, updated: updates.length };
+  logActivity('ASSIGN', 'request', requestId, updated + ' assignment(s) updated by ' + who.email +
+    (locked ? (' (' + locked + ' accepted item(s) left unchanged)') : ''));
+  return { ok: true, updated: updated, locked: locked };
 }
 
 /** Normalise a date cell to a 'yyyy-MM-dd' string. Handles both raw Date cells

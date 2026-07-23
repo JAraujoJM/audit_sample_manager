@@ -260,6 +260,9 @@
     border:2px solid currentColor; border-top-color:transparent; border-radius:50%;
     opacity:.9; animation:spin .6s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
+  .btn.is-busy, .link-btn.is-busy{opacity:.7; cursor:default;}
+  tr.locked-row td{color:var(--text-3);}
+  tr.locked-row input[disabled]{cursor:not-allowed;}
 </style>
 </head>
 <body>
@@ -685,7 +688,12 @@
   function renderAsgRows(){
     $('asgRows').innerHTML = visibleTasks_().map(function(t){
       var typePill = t.mpl==='advance' ? '<span class="pill blue">MPL advance</span>' : '<span class="pill neutral">Regular</span>';
-      return '<tr><td><input type="checkbox" class="asg-chk" data-aid="'+esc(t.assignment_id)+'" checked></td>'
+      // 'accepted' is a locked historical record — its preparer can no longer change.
+      var locked = String(t.status).toLowerCase()==='accepted';
+      var chk = locked
+        ? '<input type="checkbox" class="asg-chk" data-aid="'+esc(t.assignment_id)+'" disabled title="Accepted — preparer locked">'
+        : '<input type="checkbox" class="asg-chk" data-aid="'+esc(t.assignment_id)+'" checked>';
+      return '<tr'+(locked?' class="locked-row"':'')+'><td>'+chk+'</td>'
         +'<td class="mono">'+esc(t.document_no)+'</td><td>'+esc(t.company||'—')+'</td><td>'+typePill+'</td>'
         +'<td>'+esc(t.evidence_type)+'</td><td>'+(t.assigned_to?esc(t.assigned_to):'<span class="muted">—</span>')+'</td>'
         +'<td>'+statusPill(t.status)+'</td></tr>';
@@ -699,7 +707,7 @@
     $('asgType').addEventListener('change', function(){ assignFilter.mpl=$('asgType').value; renderAsgRows(); });
     $('asgCompany').addEventListener('change', function(){ assignFilter.company=$('asgCompany').value; renderAsgRows(); });
     $('asgEvidence').addEventListener('change', function(){ assignFilter.evidence=$('asgEvidence').value; renderAsgRows(); });
-    $('selAll').addEventListener('change', function(){ var on=$('selAll').checked; Array.prototype.forEach.call($('asgRows').querySelectorAll('.asg-chk'),function(c){c.checked=on;}); updateSelCount_(); });
+    $('selAll').addEventListener('change', function(){ var on=$('selAll').checked; Array.prototype.forEach.call($('asgRows').querySelectorAll('.asg-chk'),function(c){ if(!c.disabled) c.checked=on; }); updateSelCount_(); });
     $('bulkAssign').addEventListener('click', bulkAssign);
   }
   function bulkAssign(){
@@ -729,9 +737,31 @@
       .withFailureHandler(function(e){ $('taskList').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
       .listMyAssignments();
   }
+  var myTasks=[], myFilter='action';
+  var ACTION_STATUSES=['pending','assigned','in_progress'];   // preparer still has something to do
+  function filterMyTasks_(all){
+    if(myFilter==='all') return all;
+    if(myFilter==='action') return all.filter(function(t){ return ACTION_STATUSES.indexOf(String(t.status).toLowerCase())!==-1; });
+    return all.filter(function(t){ return String(t.status).toLowerCase()===myFilter; });
+  }
+  function taskFilterBar_(all){
+    var present=uniq_(all.map(function(t){ return String(t.status).toLowerCase(); }));
+    var opts='<option value="action"'+(myFilter==='action'?' selected':'')+'>Needs my action</option>'
+      +'<option value="all"'+(myFilter==='all'?' selected':'')+'>All statuses</option>';
+    present.forEach(function(s){ opts+='<option value="'+esc(s)+'"'+(myFilter===s?' selected':'')+'>'+esc(s.replace(/_/g,' '))+'</option>'; });
+    return '<div class="row" style="margin-bottom:12px; align-items:center; gap:10px">'
+      +'<select id="myStatus" style="max-width:220px">'+opts+'</select>'
+      +'<span class="muted" style="font-size:12.5px">'+filterMyTasks_(all).length+' of '+all.length+'</span></div>';
+  }
   function renderTasks(items){
-    if(!items.length){ $('taskList').innerHTML='<div class="empty">No tasks assigned to you yet.</div>'; return; }
-    $('taskList').innerHTML='<div class="card">'+items.map(renderTaskCard).join('')+'</div>';
+    if(items) myTasks=items;
+    var all=myTasks;
+    if(!all.length){ $('taskList').innerHTML='<div class="empty">No tasks assigned to you yet.</div>'; return; }
+    var shown=filterMyTasks_(all);
+    var body=shown.length
+      ? '<div class="card">'+shown.map(renderTaskCard).join('')+'</div>'
+      : '<div class="card"><div class="empty">No tasks match this filter.</div></div>';
+    $('taskList').innerHTML=taskFilterBar_(all)+body;
     wireTasks();
   }
   function renderTaskCard(t){
@@ -765,31 +795,37 @@
   }
   function wireTasks(){
     var L=$('taskList');
+    var sel=$('myStatus'); if(sel) sel.addEventListener('change', function(){ myFilter=sel.value; renderTasks(); });
     Array.prototype.forEach.call(L.querySelectorAll('.file-input'), function(inp){ inp.addEventListener('change', function(){ handleUpload(inp); }); });
-    Array.prototype.forEach.call(L.querySelectorAll('.submit'),     function(b){ b.addEventListener('click', function(){ taskCall('submitAssignment', b.dataset.aid, b, 'Submitted for review'); }); });
-    Array.prototype.forEach.call(L.querySelectorAll('.withdraw'),   function(b){ b.addEventListener('click', function(){ taskCall('withdrawAssignment', b.dataset.aid, b, 'Withdrawn'); }); });
-    Array.prototype.forEach.call(L.querySelectorAll('.rm-file'),    function(b){ b.addEventListener('click', function(){ taskCall('removeEvidence', b.dataset.eid, b, 'File removed'); }); });
+    Array.prototype.forEach.call(L.querySelectorAll('.submit'),     function(b){ b.addEventListener('click', function(){ taskCall('submitAssignment', b.dataset.aid, b, 'Submitted for review', 'Submitting'); }); });
+    Array.prototype.forEach.call(L.querySelectorAll('.withdraw'),   function(b){ b.addEventListener('click', function(){ taskCall('withdrawAssignment', b.dataset.aid, b, 'Withdrawn', 'Withdrawing'); }); });
+    Array.prototype.forEach.call(L.querySelectorAll('.rm-file'),    function(b){ b.addEventListener('click', function(){ taskCall('removeEvidence', b.dataset.eid, b, 'File removed', ''); }); });
     Array.prototype.forEach.call(L.querySelectorAll('.view-doc'),   function(a){ a.addEventListener('click', function(ev){ ev.preventDefault(); viewEvidence(a.dataset.eid); }); });
   }
   function handleUpload(inp){
     var file = inp.files && inp.files[0]; if(!file) return;
-    var msg = inp.closest('.task-card').querySelector('.upmsg');
+    var card = inp.closest('.task-card'), msg = card.querySelector('.upmsg');
     if(file.size > 20*1024*1024){ msg.textContent='File too large (max 20 MB).'; inp.value=''; return; }
-    msg.textContent='Uploading '+file.name+'…';
+    msg.innerHTML='<span class="spinner"></span>Uploading '+esc(file.name)+'…';
+    // Disable the card's buttons while the upload is in flight.
+    var btns=card.querySelectorAll('.task-foot .btn, .task-foot .link-btn, .rm-file');
+    Array.prototype.forEach.call(btns, function(b){ b.disabled=true; b.classList.add('is-busy'); });
     var reader=new FileReader();
     reader.onload=function(){
       var b64=String(reader.result).split(',')[1];
       google.script.run.withSuccessHandler(function(items){ renderTasks(items); toast('File uploaded','ok'); })
-        .withFailureHandler(function(e){ msg.textContent=e.message; toast(e.message,'warn'); })
+        .withFailureHandler(function(e){ msg.innerHTML=esc(e.message); Array.prototype.forEach.call(btns, function(b){ b.disabled=false; b.classList.remove('is-busy'); }); toast(e.message,'warn'); })
         .uploadEvidence(inp.dataset.aid, file.name, file.type, b64);
     };
-    reader.onerror=function(){ msg.textContent='Could not read the file.'; };
+    reader.onerror=function(){ msg.textContent='Could not read the file.'; Array.prototype.forEach.call(btns, function(b){ b.disabled=false; b.classList.remove('is-busy'); }); };
     reader.readAsDataURL(file);
   }
-  function taskCall(method, arg, btn, okMsg){
-    if(btn){ btn.disabled=true; }
+  // On success the list re-renders (button is replaced), so we only restore on failure.
+  function taskCall(method, arg, btn, okMsg, busyLabel){
+    var orig;
+    if(btn){ orig=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>'+(busyLabel||''); }
     google.script.run.withSuccessHandler(function(items){ renderTasks(items); if(okMsg) toast(okMsg,'ok'); })
-      .withFailureHandler(function(e){ if(btn) btn.disabled=false; toast(e.message,'warn'); })[method](arg);
+      .withFailureHandler(function(e){ if(btn){ btn.disabled=false; btn.innerHTML=orig; } toast(e.message,'warn'); })[method](arg);
   }
 
   /* ---------- review / audit (reviewer + auditor) ----------
