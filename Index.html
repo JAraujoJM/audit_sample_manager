@@ -126,8 +126,8 @@
   .dd-menu-fixed{position:fixed; z-index:200; background:var(--surface); border:1px solid var(--sep-strong); border-radius:var(--radius-sm); box-shadow:var(--shadow); min-width:160px; overflow:hidden;}
   .dd-menu-fixed .menu-item{display:block; width:100%; text-align:left; border:0; background:none; padding:8px 12px; font:inherit; font-size:13px; cursor:pointer; color:var(--text);}
   .dd-menu-fixed .menu-item:hover{background:var(--accent-tint);}
-  .icon-btn{min-width:34px; text-align:center;}
-  .icon-btn svg{vertical-align:middle; display:inline-block;}
+  .icon-btn{min-width:34px; padding-left:0; padding-right:0; display:inline-flex; align-items:center; justify-content:center;}
+  .icon-btn svg{display:block;}
   /* iOS-style toggle switch */
   .switch{display:inline-flex; align-items:center; cursor:pointer;}
   .switch input{position:absolute; opacity:0; width:0; height:0;}
@@ -221,7 +221,9 @@
   .file a{color:var(--accent); text-decoration:none;} .file a:hover{text-decoration:underline;}
   .link-btn{border:0; background:none; color:var(--text-3); font:inherit; font-size:12px; cursor:pointer; text-decoration:underline; padding:0;}
   .task-foot{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
-  .upmsg{font-size:12px; min-height:1px;}
+  .task-foot .grow{flex:1;}
+  .upmsg{font-size:12.5px; min-height:1px;}
+  .upmsg:not(:empty){margin-top:14px;}
   .task-note{margin:0 0 10px; font-size:12.5px; color:var(--amber); background:var(--amber-tint); border-radius:6px; padding:7px 10px;}
   .task-facts{display:flex; flex-wrap:wrap; gap:6px 18px; font-size:12.5px; color:var(--text-2); margin:0 0 11px;}
   .task-facts b{color:var(--text); font-weight:600;}
@@ -545,7 +547,7 @@
     $('timelineBody').innerHTML='<div class="tl">'+rows+'</div>';
   }
   function fmtDateTime(s){ if(!s) return '—'; var d=new Date(s); return isNaN(d)?esc(String(s)):d.toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
-  var HIST_SVG='<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>';
+  var HIST_SVG='<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>';
   function histIconBtn(lineId, extraStyle){ return '<button class="btn sm icon-btn tl-open" data-line="'+esc(lineId)+'" title="Task history" aria-label="Task history"'+(extraStyle?' style="'+extraStyle+'"':'')+'>'+HIST_SVG+'</button>'; }
 
   $('run').addEventListener('click', function(){
@@ -973,6 +975,12 @@
     $('taskModalBody').innerHTML=renderStageLine(stage, d.actionable, line);
     openModal('task');
     wireStage(stage, $('taskModalBody'));
+    // Reliability net: if a reviewer opens a task whose AI check hasn't run yet
+    // (the background job hasn't landed), kick it off automatically so they never
+    // have to click. No-op once a verdict exists.
+    if(stage==='review' && String(line.status).toLowerCase()==='pending_review' && !String(line.ai_verdict||'').trim()){
+      var runBtn=$('taskModalBody').querySelector('.ai-run'); if(runBtn) runAiCheck(stage, runBtn);
+    }
   }
   function fact(k,v){ return '<div class="f"><span class="fk">'+k+'</span><span class="fv">'+v+'</span></div>'; }
   function renderStageLine(stage, actionable, l){
@@ -1007,9 +1015,9 @@
     }
     return '<div class="line-card" data-id="'+esc(l.line_id)+'" style="border:0;padding:0;margin:0">'
       +'<div class="line-head"><span class="doc">'+esc(l.document_no)+'</span><span class="ven">'+esc(l.vendor||'')+'</span>'
-        +'<span class="grow"></span>'+statusPill(l.status)
         // Auditors shouldn't see the interaction history between the other agents.
-        +(stage!=='audit' ? histIconBtn(l.line_id, 'margin-left:10px') : '')+'</div>'
+        +(stage!=='audit' ? histIconBtn(l.line_id) : '')
+        +'<span class="grow"></span>'+statusPill(l.status)+'</div>'
       +'<div class="rev-grid"><div>'+facts+asgs+note+'</div>'
       +'<div class="preview" id="prev-'+esc(l.line_id)+'"><span class="ph">Select a document to preview</span></div></div>'
       +actions+'</div>';
@@ -1037,7 +1045,7 @@
   }
   function runAiCheck(stage, btn){
     var card=btn.closest('.line-card'), lineId=card.dataset.id;
-    btn.disabled=true; var was=btn.textContent; btn.textContent='Checking…';
+    btn.disabled=true; var was=btn.innerHTML; btn.innerHTML='<span class="spinner"></span>Checking';
     var res=card.querySelector('.ai-result'); if(res) res.innerHTML='<span class="ai-sum muted">Comparing the document(s) with the data…</span>';
     google.script.run.withSuccessHandler(function(r){
       // Fold the verdict into the cached line, then re-render the modal so the panel,
@@ -1048,7 +1056,7 @@
         ln.ai_summary=(r.perDoc||[]).map(function(p){ return p.file+' → '+p.verdict+(p.summary?(': '+p.summary):''); }).join('  |  '); }
       openTaskModal(stage, lineId);
       toast('AI check: '+r.verdict, r.verdict==='accept'?'ok':'warn');
-    }).withFailureHandler(function(e){ btn.disabled=false; btn.textContent=was; if(res) res.innerHTML='<span class="ai-sum muted">'+esc(e.message)+'</span>'; toast(e.message,'warn'); })
+    }).withFailureHandler(function(e){ btn.disabled=false; btn.innerHTML=was; if(res) res.innerHTML='<span class="ai-sum muted">'+esc(e.message)+'</span>'; toast(e.message,'warn'); })
       .assessLine(lineId);
   }
   function wireStage(stage, el){
@@ -1117,12 +1125,16 @@
     var noteEl=card.querySelector('.note-in'), note=noteEl?noteEl.value.trim():'';
     if(needNote && !note){ toast('Please add a note explaining what to fix.','warn'); return; }
     var okMsg = needNote ? 'Returned to preparer' : (stage==='review'?'Submitted to auditor':'Line closed');
+    var busy  = needNote ? 'Returning' : (stage==='review'?'Submitting':'Closing');
     // reviewerSubmit's 2nd arg is the AI override flag; every other action takes the note.
     var arg = note;
     if(method==='reviewerSubmit'){ var ovr=card.querySelector('.ai-ovr'); arg = ovr?ovr.checked:false; }
-    btn.disabled=true;
+    // Disable both action buttons; show the spinner on the one clicked.
+    var sibs=card.querySelectorAll('.stage-primary, .stage-return');
+    Array.prototype.forEach.call(sibs, function(b){ b.disabled=true; });
+    var orig=btn.innerHTML; btn.innerHTML='<span class="spinner"></span>'+busy;
     google.script.run.withSuccessHandler(function(d){ closeModal(); stageState[stage].detail=d; renderStageTasks(stage); toast(okMsg,'ok'); })
-      .withFailureHandler(function(e){ btn.disabled=false; toast(e.message,'warn'); })[method](id, arg);
+      .withFailureHandler(function(e){ Array.prototype.forEach.call(sibs, function(b){ b.disabled=false; }); btn.innerHTML=orig; toast(e.message,'warn'); })[method](id, arg);
   }
 
   /* ---------- shared: open an evidence file in a new tab (app-mediated) ---------- */

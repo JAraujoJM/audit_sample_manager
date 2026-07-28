@@ -170,38 +170,55 @@ function assessLine(lineId) {
  * Deduped via a Script Property so rapid submits don't pile up triggers; skipped
  * entirely when no key is configured. Never allowed to break the caller's action.
  */
-var AI_CHECK_FLAG = 'AI_CHECK_SCHEDULED';
 function scheduleAiCheck_() {
   try {
-    var props = PropertiesService.getScriptProperties();
-    if (!props.getProperty(GEMINI.API_KEY_PROP)) return;      // not configured yet
-    if (props.getProperty(AI_CHECK_FLAG) === '1') return;     // a run is already queued
-    ScriptApp.newTrigger('runQueuedAiChecks_').timeBased().after(5 * 1000).create();
-    props.setProperty(AI_CHECK_FLAG, '1');
+    if (!PropertiesService.getScriptProperties().getProperty(GEMINI.API_KEY_PROP)) return;   // not configured yet
+    // Dedupe on the actual trigger list (not a flag that can get stuck): if one is
+    // already pending, let it pick up every ready line when it runs.
+    var pending = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'runQueuedAiChecks_'; });
+    if (pending) return;
+    ScriptApp.newTrigger('runQueuedAiChecks_').timeBased().after(3 * 1000).create();
   } catch (e) {
-    Logger.log('scheduleAiCheck_ failed (non-fatal): ' + e);
+    Logger.log('scheduleAiCheck_ failed (non-fatal — background AI check needs the script.scriptapp scope authorized): ' + e);
   }
 }
 
 /**
- * Trigger handler: assess every pending_review line that has no verdict yet, then
- * tidy up. Runs as the deployer, so it has the key + Drive + external_request. Idempotent
- * (skips lines already assessed), so overlapping runs are harmless.
+ * Trigger handler: assess every pending_review line with no verdict yet, then delete
+ * its own trigger(s). Runs as the deployer, so it has the key + Drive + external_request.
+ * Idempotent (skips already-assessed lines), so overlapping runs are harmless.
  */
 function runQueuedAiChecks_() {
-  var props = PropertiesService.getScriptProperties();
-  props.deleteProperty(AI_CHECK_FLAG);
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'runQueuedAiChecks_') ScriptApp.deleteTrigger(t);
-  });
-  if (!props.getProperty(GEMINI.API_KEY_PROP)) return;
-
-  readObjects_(dataSs_(), 'Sample_Lines')
-    .filter(function (l) { return String(l.status).toLowerCase() === 'pending_review' && !String(l.ai_verdict || '').trim(); })
-    .forEach(function (l) {
-      try { assessLineCore_(l.line_id, l, 'auto'); }
-      catch (e) { logActivity('AI_CHECK_ERROR', 'line', l.line_id, String(e && e.message || e)); }
+  try {
+    ScriptApp.getProjectTriggers().forEach(function (t) {
+      if (t.getHandlerFunction() === 'runQueuedAiChecks_') ScriptApp.deleteTrigger(t);
     });
+  } catch (e) { Logger.log('runQueuedAiChecks_ cleanup: ' + e); }
+  assessPendingLines_();
+}
+
+/**
+ * Assess all pending_review lines that still lack a verdict. Shared by the background
+ * trigger and by processAiChecksNow(). Skipped when no key is configured.
+ */
+function assessPendingLines_() {
+  if (!PropertiesService.getScriptProperties().getProperty(GEMINI.API_KEY_PROP)) return 0;
+  var lines = readObjects_(dataSs_(), 'Sample_Lines')
+    .filter(function (l) { return String(l.status).toLowerCase() === 'pending_review' && !String(l.ai_verdict || '').trim(); });
+  lines.forEach(function (l) {
+    try { assessLineCore_(l.line_id, l, 'auto'); }
+    catch (e) { logActivity('AI_CHECK_ERROR', 'line', l.line_id, String(e && e.message || e)); }
+  });
+  return lines.length;
+}
+
+/** Editor / admin catch-up: assess any pending_review lines missing a verdict right
+ *  now (no trigger involved — only needs the Gemini scope). Handy to backfill or test. */
+function processAiChecksNow() {
+  requireRole_([ROLES.ADMIN]);
+  var n = assessPendingLines_();
+  Logger.log('processAiChecksNow assessed ' + n + ' line(s).');
+  return { assessed: n };
 }
 
 /** The actual assessment — no role/status guards, so both the reviewer button and
@@ -219,19 +236,26 @@ function assessLineCore_(lineId, line, how) {
     'Seller / vendor: ' + (line.vendor || '—'),
     'Document / transaction no.: ' + (line.document_no || '—'),
     'Statement number: ' + (line.statement_code || '—'),
-    'Transaction amount: ' + (line.amount != null && line.amount !== '' ? line.amount : '—'),
+    'Recorded transaction amount: ' + (line.amount != null && line.amount !== '' ? line.amount : '—'),
     'Statement balance: ' + (line.closing_balance != null && line.closing_balance !== '' ? line.closing_balance : '—'),
-    'Paid-at date: ' + (line.paid_at || '(not paid)'),
+    'Paid-at date: ' + (String(line.paid_at || '').slice(0, 10) || '(not recorded as paid)'),
     'MPL type: ' + (/advance/i.test(String(line.mpl_type)) ? 'MPL advance' : 'Regular')
   ].join('\n');
 
   var system =
-    'You are a meticulous financial-audit evidence reviewer at Jumia. For each document you are given: ' +
-    'the type of evidence it is meant to be, the sampled transaction\'s known data, and the document itself (image or PDF). ' +
-    'Judge whether the document (a) is the correct KIND of evidence for that type, and (b) corroborates the transaction data. ' +
-    'Minor formatting or layout differences are fine; material mismatches (wrong party, wrong amount, wrong date, wrong document) are not. ' +
-    'Return verdict "accept" only when it is clearly valid, "reject" when it is the wrong document or contradicts the data, and ' +
-    '"uncertain" when the document is unreadable or you cannot confirm. Keep the summary under 240 characters and specific.';
+    'You are a meticulous financial-audit evidence reviewer at Jumia. You receive, per document: the type of ' +
+    'evidence it should be, the sampled transaction\'s recorded data, and the document itself (image or PDF). ' +
+    'Decide whether the document is acceptable evidence for that item, judging two things: ' +
+    '(1) TYPE — is it the right KIND of document for the expected evidence type? ' +
+    '(2) MATCH — does it plausibly correspond to the SAME transaction, using the strongest identifiers available ' +
+    '(counterparty / seller name, amount, dates, statement or reference numbers)? ' +
+    'Be strict about substance but tolerant of form: the recorded amount may be negative (an accounting sign) or in a ' +
+    'different currency or number format than the document — compare the underlying magnitude and identity, not the exact ' +
+    'sign or formatting, and do not expect every recorded field to appear on the document. ' +
+    'Return "accept" when it is clearly the right kind of document and nothing material contradicts the transaction; ' +
+    '"reject" when it is the wrong kind of document or a material detail clearly contradicts the data (wrong party, wrong ' +
+    'amount, wrong date); "uncertain" when the document is unreadable or you cannot reasonably confirm. ' +
+    'Give a specific one-sentence summary (under 240 characters) citing the key evidence for your verdict.';
 
   var perDoc = [], worst = 'accept';
   docs.forEach(function (e) {
