@@ -109,6 +109,37 @@ function getEvidenceFile(evidenceId) {
   return { name: ev.file_name, mime: mime, size: bytes.length, dataUrl: 'data:' + mime + ';base64,' + Utilities.base64Encode(bytes) };
 }
 
+/**
+ * Full history of one task (sample line): every status change, human note and AI
+ * assessment, oldest first. Pulls the line's own Activity_Log entries plus those of
+ * its assignments (uploads, submits, withdrawals). Any role that can see the task
+ * may read it; a preparer only for a line they're assigned on.
+ */
+function taskTimeline(lineId) {
+  var me = requireRole_([ROLES.PREPARER, ROLES.REVIEWER, ROLES.AUDITOR, ROLES.ADMIN]);
+  var ds = dataSs_();
+  var line = findLine_(lineId);
+  if (!line) throw new Error('Task not found.');
+  var asgs = getAssignments(lineId);
+  if (me.role === ROLES.PREPARER &&
+      !asgs.some(function (a) { return String(a.assigned_to || '').toLowerCase() === me.email.toLowerCase(); })) {
+    throw new Error('This task is not assigned to you.');
+  }
+  var typeByAsg = {}; asgs.forEach(function (a) { typeByAsg[String(a.assignment_id)] = a.evidence_type; });
+
+  var events = readObjects_(ds, 'Activity_Log').filter(function (e) {
+    return (String(e.entity_type) === 'line' && String(e.entity_id) === String(lineId)) ||
+           (String(e.entity_type) === 'assignment' && typeByAsg[String(e.entity_id)] != null);
+  }).map(function (e) {
+    return {
+      ts: e.ts, actor: e.actor, action: e.action, details: e.details,
+      evidence_type: String(e.entity_type) === 'assignment' ? (typeByAsg[String(e.entity_id)] || '') : ''
+    };
+  }).sort(function (a, b) { return String(a.ts).localeCompare(String(b.ts)); });
+
+  return { line: { line_id: line.line_id, document_no: line.document_no, vendor: line.vendor, status: line.status }, events: events };
+}
+
 /* ---------- AI pre-check (review stage) ---------- */
 /**
  * Ask Gemini to compare each of a line's submitted documents against its expected
@@ -119,12 +150,35 @@ function getEvidenceFile(evidenceId) {
  *
  * Advisory only: it gates the *client* Submit button, but the human reviewer always
  * decides and can override a non-accept verdict with a signed confirmation.
+ *
+ * Reviewer entry point: guards role + status, then runs the check.
  */
 function assessLine(lineId) {
   var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
   var line = requireLineStatus_(lineId, 'pending_review');
   assertReviewer_(line.request_id, me);
+  return assessLineCore_(lineId, line, 'reviewer');
+}
+
+/**
+ * Fire the AI check automatically when a line first reaches pending_review (every
+ * preparer has submitted), so the reviewer opens to a ready verdict. Best-effort:
+ * skipped when no key is configured, and never allowed to break the caller's action.
+ */
+function autoAiCheck_(lineId) {
+  try {
+    if (!PropertiesService.getScriptProperties().getProperty(GEMINI.API_KEY_PROP)) return;  // not configured yet
+    assessLineCore_(lineId, null, 'auto');
+  } catch (e) {
+    logActivity('AI_CHECK_ERROR', 'line', lineId, String(e && e.message || e));
+  }
+}
+
+/** The actual assessment — no role/status guards, so both the reviewer button and
+ *  the auto-on-submit path can use it. `how` labels the trail ('reviewer' | 'auto'). */
+function assessLineCore_(lineId, line, how) {
   var ds = dataSs_();
+  if (!line) { line = findLine_(lineId); if (!line) throw new Error('Line not found.'); }
 
   var typeByAsg = {};
   getAssignments(lineId).forEach(function (a) { typeByAsg[String(a.assignment_id)] = a.evidence_type; });
@@ -170,7 +224,7 @@ function assessLine(lineId) {
   var summary = perDoc.map(function (p) { return p.file + ' → ' + p.verdict + (p.summary ? (': ' + p.summary) : ''); }).join('  |  ');
   var at = nowIso_();
   updateRowById_(ds, 'Sample_Lines', 'line_id', lineId, { ai_verdict: worst, ai_summary: summary.substring(0, 900), ai_checked_at: at });
-  logActivity('AI_CHECK', 'line', lineId, 'verdict=' + worst + ' :: ' + summary.substring(0, 400));
+  logActivity('AI_CHECK', 'line', lineId, (how === 'auto' ? 'auto on submit · ' : '') + 'verdict=' + worst + ' :: ' + summary.substring(0, 400));
   return { verdict: worst, perDoc: perDoc, checkedAt: at };
 }
 

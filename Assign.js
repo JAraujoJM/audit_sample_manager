@@ -138,6 +138,17 @@ function updateLineAssignmentRollup_(lineId) {
   var allDone     = items.every(function (a) { return done.indexOf(st(a)) !== -1; });
   var anyWork     = items.some(function (a) { return ['in_progress'].concat(done).indexOf(st(a)) !== -1; });
   var allAssigned = items.every(function (a) { return String(a.assigned_to || '').trim() !== ''; });
+  var prev = String(line.status).toLowerCase();
   var next = allDone ? 'pending_review' : anyWork ? 'in_progress' : allAssigned ? 'assigned' : 'open';
-  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: next });
+  var patch = { status: next };
+  // Leaving pending_review (returned / withdrawn / file changed) invalidates the AI
+  // verdict — clear it so a fresh check runs when the line comes back.
+  if (next !== 'pending_review' && String(line.ai_verdict || '').trim()) {
+    patch.ai_verdict = ''; patch.ai_summary = ''; patch.ai_checked_at = '';
+  }
+  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, patch);
+
+  // First time a line becomes ready for the reviewer, run the AI pre-check so the
+  // verdict is waiting when they open it (best-effort; never blocks this action).
+  if (next === 'pending_review' && prev !== 'pending_review') autoAiCheck_(lineId);
 }
