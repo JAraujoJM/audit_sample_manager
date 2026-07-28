@@ -127,6 +127,7 @@
   .dd-menu-fixed .menu-item{display:block; width:100%; text-align:left; border:0; background:none; padding:8px 12px; font:inherit; font-size:13px; cursor:pointer; color:var(--text);}
   .dd-menu-fixed .menu-item:hover{background:var(--accent-tint);}
   .icon-btn{min-width:34px; text-align:center;}
+  .icon-btn svg{vertical-align:middle; display:inline-block;}
   /* iOS-style toggle switch */
   .switch{display:inline-flex; align-items:center; cursor:pointer;}
   .switch input{position:absolute; opacity:0; width:0; height:0;}
@@ -544,6 +545,8 @@
     $('timelineBody').innerHTML='<div class="tl">'+rows+'</div>';
   }
   function fmtDateTime(s){ if(!s) return '—'; var d=new Date(s); return isNaN(d)?esc(String(s)):d.toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
+  var HIST_SVG='<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>';
+  function histIconBtn(lineId, extraStyle){ return '<button class="btn sm icon-btn tl-open" data-line="'+esc(lineId)+'" title="Task history" aria-label="Task history"'+(extraStyle?' style="'+extraStyle+'"':'')+'>'+HIST_SVG+'</button>'; }
 
   $('run').addEventListener('click', function(){
     var docs=$('docs').value.trim(); if(!docs){ $('docs').focus(); return; }
@@ -839,8 +842,7 @@
       +facts
       +note
       +'<div class="files">'+files+'</div>'
-      +'<div class="task-foot">'+actions+'<span class="grow"></span>'
-        +'<button class="btn sm tl-open" data-line="'+esc(t.line_id)+'">History</button></div>'
+      +'<div class="task-foot">'+actions+'<span class="grow"></span>'+histIconBtn(t.line_id)+'</div>'
       +'<div class="upmsg muted"></div></div>';
   }
   function wireTasks(){
@@ -1006,7 +1008,8 @@
     return '<div class="line-card" data-id="'+esc(l.line_id)+'" style="border:0;padding:0;margin:0">'
       +'<div class="line-head"><span class="doc">'+esc(l.document_no)+'</span><span class="ven">'+esc(l.vendor||'')+'</span>'
         +'<span class="grow"></span>'+statusPill(l.status)
-        +'<button class="btn sm tl-open" data-line="'+esc(l.line_id)+'" style="margin-left:10px">History</button></div>'
+        // Auditors shouldn't see the interaction history between the other agents.
+        +(stage!=='audit' ? histIconBtn(l.line_id, 'margin-left:10px') : '')+'</div>'
       +'<div class="rev-grid"><div>'+facts+asgs+note+'</div>'
       +'<div class="preview" id="prev-'+esc(l.line_id)+'"><span class="ph">Select a document to preview</span></div></div>'
       +actions+'</div>';

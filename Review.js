@@ -161,17 +161,47 @@ function assessLine(lineId) {
 }
 
 /**
- * Fire the AI check automatically when a line first reaches pending_review (every
- * preparer has submitted), so the reviewer opens to a ready verdict. Best-effort:
- * skipped when no key is configured, and never allowed to break the caller's action.
+ * When a line first reaches pending_review (every preparer has submitted), the AI
+ * check should run so the reviewer opens to a ready verdict — but NOT on the
+ * preparer's submit thread. Instead we schedule a one-off, near-immediate time
+ * trigger and return at once; the preparer keeps working while the assessment lands
+ * a few moments later (Apps Script has no threads, so a trigger is the "background").
+ *
+ * Deduped via a Script Property so rapid submits don't pile up triggers; skipped
+ * entirely when no key is configured. Never allowed to break the caller's action.
  */
-function autoAiCheck_(lineId) {
+var AI_CHECK_FLAG = 'AI_CHECK_SCHEDULED';
+function scheduleAiCheck_() {
   try {
-    if (!PropertiesService.getScriptProperties().getProperty(GEMINI.API_KEY_PROP)) return;  // not configured yet
-    assessLineCore_(lineId, null, 'auto');
+    var props = PropertiesService.getScriptProperties();
+    if (!props.getProperty(GEMINI.API_KEY_PROP)) return;      // not configured yet
+    if (props.getProperty(AI_CHECK_FLAG) === '1') return;     // a run is already queued
+    ScriptApp.newTrigger('runQueuedAiChecks_').timeBased().after(5 * 1000).create();
+    props.setProperty(AI_CHECK_FLAG, '1');
   } catch (e) {
-    logActivity('AI_CHECK_ERROR', 'line', lineId, String(e && e.message || e));
+    Logger.log('scheduleAiCheck_ failed (non-fatal): ' + e);
   }
+}
+
+/**
+ * Trigger handler: assess every pending_review line that has no verdict yet, then
+ * tidy up. Runs as the deployer, so it has the key + Drive + external_request. Idempotent
+ * (skips lines already assessed), so overlapping runs are harmless.
+ */
+function runQueuedAiChecks_() {
+  var props = PropertiesService.getScriptProperties();
+  props.deleteProperty(AI_CHECK_FLAG);
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runQueuedAiChecks_') ScriptApp.deleteTrigger(t);
+  });
+  if (!props.getProperty(GEMINI.API_KEY_PROP)) return;
+
+  readObjects_(dataSs_(), 'Sample_Lines')
+    .filter(function (l) { return String(l.status).toLowerCase() === 'pending_review' && !String(l.ai_verdict || '').trim(); })
+    .forEach(function (l) {
+      try { assessLineCore_(l.line_id, l, 'auto'); }
+      catch (e) { logActivity('AI_CHECK_ERROR', 'line', l.line_id, String(e && e.message || e)); }
+    });
 }
 
 /** The actual assessment — no role/status guards, so both the reviewer button and

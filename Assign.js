@@ -148,7 +148,7 @@ function updateLineAssignmentRollup_(lineId) {
   }
   updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, patch);
 
-  // First time a line becomes ready for the reviewer, run the AI pre-check so the
-  // verdict is waiting when they open it (best-effort; never blocks this action).
-  if (next === 'pending_review' && prev !== 'pending_review') autoAiCheck_(lineId);
+  // First time a line becomes ready for the reviewer, queue the AI pre-check in the
+  // background (a time trigger) so it never delays the preparer's submit.
+  if (next === 'pending_review' && prev !== 'pending_review') scheduleAiCheck_();
 }
