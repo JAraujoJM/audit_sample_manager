@@ -20,8 +20,8 @@
  */
 function flowModule_(flowId) {
   var registry = {
-    flowA: flowA_
-    // flowB: flowB_,
+    flowA: flowA_,
+    flowB: flowB_   // Cash Anchor — two-stage (query 1 AIG_Nav_Jumia_Reconciliation → query 2 PAY_DWH)
   };
   var builder = registry[String(flowId)];
   return builder ? builder() : null;

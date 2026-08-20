@@ -22,9 +22,14 @@ row** (into line fields + the routing `facts`) — live in a small per-flow **mo
 registered in `Flows.js`.
 
 **Adding a flow** = add its `Flows`/`Periods`/`Routing` rows + write one module
-(`{ id, sampleKey, buildQuery(docs, p), mapRow(cell) }`) + register it in `Flows.js`. The rest of the engine
-(assignment, evidence, review/audit, storage, IPE) is flow-agnostic. (The Request view's results table in
-`Index.html` is still flow-shaped — adjust it if a new flow surfaces different columns.)
+(`{ id, sampleKey, buildQuery(items, p), mapRow(cell) }`) + register it in `Flows.js`. The rest of the engine
+(assignment, evidence, review/audit, storage, IPE) is flow-agnostic. Optional module hooks (used by Flow B —
+Cash Anchor): `parseSample(text)` to turn the paste box into sample items with a `.key` (default = one token
+per line), and `stage2 { database, refOf(mapped), keyCol, buildQuery(refs, p), mapRow2(cell), merge(line,row2) }`
+for a **dependent second query** (Flow B: query 1 on `AIG_Nav_Jumia_Reconciliation` → query 2 on `PAY_DWH`).
+enrich() runs both stages in one execution, resumable (persists both stage ids under one signature). Flow-specific
+line fields the standard `Sample_Lines` columns don't cover are stored as `detail_json` (+ a `subpopulation`
+column). Flow-shaped views (assign detail, review/preparer panels) still need per-flow tweaks when columns differ.
 
 ## Roles (full build)
 Administrator, Preparer, Reviewer, Auditor — assigned by email, restricted to `@jumia.com`.

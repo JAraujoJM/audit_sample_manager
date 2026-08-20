@@ -21,7 +21,8 @@ function flowA_() {
     id: 'flowA',
     sampleKey: 'Transaction_No',            // CSV column the sample document numbers match on
 
-    buildQuery: function (docs, p) {
+    buildQuery: function (items, p) {
+      var docs = items.map(function (i) { return i.key; });   // engine now passes sample items
       return p.queryMode === 'full' ? flowAQueryFull_(docs, p) : flowAQueryLean_(docs, p);
     },
 

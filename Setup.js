@@ -172,3 +172,55 @@ function reseedFlowARouting() {
   logActivity('ROUTING_RESEED', 'flow', 'flowA', 'Reseeded Flow A routing (advance split into contract + down-payment)');
   return getRouting('flowA');
 }
+
+/**
+ * Admin-run: seed Flow B (Cash Anchor) config — a Flows row, quarterly Periods, and
+ * placeholder Routing (one row per subpopulation → owning team). Idempotent: does
+ * nothing if a flowB Flows row already exists. Run once from the editor after setup()
+ * (also run setup() first so Sample_Lines gains the subpopulation/detail_json columns).
+ */
+function seedFlowB() {
+  requireRole_([ROLES.ADMIN]);
+  var cfg = configSs_();
+  if (getFlows().some(function (f) { return String(f.flow_id) === 'flowB'; })) {
+    Logger.log('Flow B already seeded.');
+    return { seeded: false };
+  }
+
+  appendObject_(cfg, 'Flows', {
+    flow_id: 'flowB', name: 'Cash Anchor',
+    database: 'AIG_Nav_Jumia_Reconciliation', query_mode: '',
+    sample_key: 'SampleKey', dedup_keys: 'ID_COMPANY+COD_OMS_SALES_ORDER_ITEM', active: true
+  });
+
+  // Quarterly delivered-date windows (end-exclusive). Add new quarters here as they open.
+  [['Q4 2025 (Oct–Dec)', '2025-10-01', '2026-01-01'],
+   ['Q3 2025 (Jul–Sep)', '2025-07-01', '2025-10-01'],
+   ['H1 2025 (Jan–Jun)', '2025-01-01', '2025-07-01']].forEach(function (q) {
+    appendObject_(cfg, 'Periods', { flow_id: 'flowB', name: q[0], start_date: q[1], end_date: q[2], active: true });
+  });
+
+  seedFlowBRouting_(cfg);
+  logActivity('FLOW_SEED', 'flow', 'flowB', 'Seeded Cash Anchor (Flows + Periods + placeholder Routing)');
+  return { seeded: true };
+}
+
+/**
+ * Placeholder Cash Anchor routing — one required evidence per subpopulation, tagged
+ * with the owning team. `responsible` is a team label (not an email), so each line is
+ * left unassigned for the admin to route to a specific person at assign time. Evidence
+ * names are provisional — refined in Phase 2 with the evidence walkthrough.
+ */
+function seedFlowBRouting_(cfg) {
+  var JP = 'JumiaPay & Banks accounting', FO = 'Shared FinOps';
+  [
+    ['prepaid_jumiapay',  'subpopulation=Prepaid - JumiaPay',              'JumiaPay payment proof',        JP],
+    ['prepaid_voucher',   'subpopulation=Prepaid - Voucher',               'Voucher evidence',              FO],
+    ['prepaid_other',     'subpopulation=Prepaid - Other methods',         'Payment evidence',              FO],
+    ['postpaid_jpay_del', 'subpopulation=Postpaid - JumiaPay on delivery', 'JumiaPay on-delivery proof',    JP],
+    ['postpaid_cash_pos', 'subpopulation=Postpaid - Cash & POS',           'Cash / POS remittance proof',   FO],
+    ['postpaid_cash_3pl', 'subpopulation=Postpaid - Cash - 3PL via JPay',  '3PL JumiaPay remittance proof', JP]
+  ].forEach(function (r) {
+    appendObject_(cfg, 'Routing', { flow_id: 'flowB', rule_name: r[0], match: r[1], required_evidence: r[2], responsible: r[3], active: true });
+  });
+}

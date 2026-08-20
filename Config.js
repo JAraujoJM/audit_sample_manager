@@ -62,7 +62,8 @@ var SCHEMA = {
     Sample_Lines: ['line_id', 'request_id', 'document_no', 'company', 'vendor', 'mpl_type', 'paid_status',
                    'statement_code', 'amount', 'paid_at', 'closing_balance', 'route_rule', 'required_count',
                    'status', 'evidence_folder_id', 'note', 'created_at',
-                   'ai_verdict', 'ai_summary', 'ai_checked_at'],
+                   'ai_verdict', 'ai_summary', 'ai_checked_at',
+                   'subpopulation', 'detail_json'],
     // One row per required evidence item per line — this is where multi-preparer lives.
     // A line can carry several Assignments (e.g. invoice + proof of payment), each owned
     // by a different preparer; the line only advances once every Assignment is satisfied.

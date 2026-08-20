@@ -46,6 +46,7 @@ function getRequestDetail(requestId) {
       return {
         line_id: l.line_id, document_no: l.document_no, company: l.company, vendor: l.vendor,
         mpl_type: l.mpl_type, paid_status: l.paid_status, status: l.status,
+        subpopulation: l.subpopulation || '',
         required_count: l.required_count,
         assignments: (byLine[l.line_id] || []).map(function (a) {
           return {

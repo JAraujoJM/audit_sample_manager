@@ -366,7 +366,7 @@
             <div><label class="fld">Due date</label><input id="dueDate" type="date"></div>
             <div><label class="fld">PBC request number (optional)</label><input id="requestRef" type="text" placeholder="PBC request number"></div>
           </div>
-          <label class="fld" style="margin-top:14px">Document numbers</label>
+          <label class="fld" style="margin-top:14px" id="docsLabel">Document numbers</label>
           <textarea id="docs" spellcheck="false" placeholder="Paste document numbers — one per line or comma-separated"></textarea>
           <div class="row"><button class="btn primary" id="run">Run enrichment</button></div>
           <div class="loader" id="loader">
@@ -499,6 +499,12 @@
     var f=formFlows.filter(function(x){ return x.flow_id===$('flowSel').value; })[0];
     var ps=(f&&f.periods)||[];
     $('periodSel').innerHTML = ps.length ? ps.map(function(p){ return '<option value="'+esc(p.name)+'">'+esc(p.name)+' ('+esc(p.start)+' → '+esc(p.end)+')</option>'; }).join('') : '<option value="">No periods configured</option>';
+    // Cash Anchor takes two columns per line (company + sales-order item); Flow A takes one token.
+    var isB = f && f.flow_id==='flowB';
+    $('docsLabel').textContent = isB ? 'Sample — ID_COMPANY + sales order item (one per line)' : 'Document numbers';
+    $('docs').placeholder = isB
+      ? 'Paste two columns per line: ID_COMPANY then COD_OMS_SALES_ORDER_ITEM\n(separated by a tab, comma or space)\n\nEC_IC   49493550\nJM_EG   90195962'
+      : 'Paste document numbers — one per line or comma-separated';
   }
 
   /* ---- modal plumbing ---- */
@@ -706,7 +712,8 @@
       var adv=/advance/i.test(l.mpl_type);
       l.assignments.forEach(function(a){
         tasks.push({ assignment_id:a.assignment_id, document_no:l.document_no, company:l.company||'',
-          mpl: adv?'advance':'regular', evidence_type:a.evidence_type, assigned_to:a.assigned_to||'', status:a.status });
+          mpl: adv?'advance':'regular', subpopulation:l.subpopulation||'',
+          evidence_type:a.evidence_type, assigned_to:a.assigned_to||'', status:a.status });
       });
     });
     assignData={ request:d.request, tasks:tasks };
@@ -747,7 +754,9 @@
   }
   function renderAsgRows(){
     $('asgRows').innerHTML = visibleTasks_().map(function(t){
-      var typePill = t.mpl==='advance' ? '<span class="pill blue">MPL advance</span>' : '<span class="pill neutral">Regular</span>';
+      var typePill = t.subpopulation
+        ? '<span class="pill neutral">'+esc(t.subpopulation)+'</span>'
+        : (t.mpl==='advance' ? '<span class="pill blue">MPL advance</span>' : '<span class="pill neutral">Regular</span>');
       // 'accepted' is a locked historical record — its preparer can no longer change.
       var locked = String(t.status).toLowerCase()==='accepted';
       var chk = locked

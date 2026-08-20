@@ -106,31 +106,50 @@ function parseCsv_(file) {
   return Utilities.parseCsv(text);
 }
 
-/* ---------- safe retry: re-poll an outstanding request before resubmitting ---------- */
-function sig_(docs) { return docs.slice().sort().join('|'); }
+/* ---------- safe retry: re-poll outstanding requests before resubmitting ---------- */
+function sigItems_(items) { return items.map(function (i) { return String(i.key); }).sort().join('|'); }
 function props_() { return PropertiesService.getUserProperties(); }
 
-/**
- * Main entry called from the client. Single-phase: submit + poll within one
- * execution. If a long-running request times out, it is NOT lost — we persist
- * its id, return {status:'pending'}, and the next call with the same docs
- * RE-POLLS that id instead of resubmitting (no duplicate jobs).
- */
+/** Parse the paste box into sample items via the flow module (or a default single-token
+ *  parser for flows without one). Every item carries a `.key` used to match result rows. */
+function parseSample_(flowId, text) {
+  var mod = flowModule_(flowId);
+  if (mod && typeof mod.parseSample === 'function') return mod.parseSample(text);
+  return parseDocs_(text).map(function (d) { return { key: d }; });
+}
+
+/** Poll Responses/ for a request's CSV until the deadline. Returns the file, the
+ *  string 'FAILED' if it landed in Requests_Failed/, or null on timeout. */
+function pollCsv_(requestId, deadline) {
+  while (Date.now() < deadline) {
+    var f = findCsv_(requestId);
+    if (f) return f;
+    if (isFailed_(requestId)) return 'FAILED';
+    Utilities.sleep(POLL_INTERVAL);
+  }
+  return null;
+}
+
 /**
  * Entry point from the New request form. `payload`:
  *   { docs, flowId, periodName, auditorEmail, reviewerEmail, dueDate, requestRef }
  * auditorEmail may be several comma-separated addresses. The flow + period select
  * the database and date window; the rest is captured on the persisted Request.
- * Single-phase submit+poll with the same safe-retry rule.
+ *
+ * Two-stage aware: query 1 (the flow's database) always runs; if the flow module
+ * declares a dependent `stage2` and query 1 yields references, query 2 runs against
+ * stage2.database and is merged in. One execution (~6-min cap). Safe-retry persists
+ * BOTH stage ids under one signature, so a timeout RESUMES (re-polls) rather than
+ * resubmitting — no duplicate jobs / orphaned results.
  */
 function enrich(payload) {
   if (isSetupDone_()) requireRole_([ROLES.ADMIN]);   // SoD: only the Administrator runs enrichment
   payload = payload || {};
-  var docs = parseDocs_(payload.docs || '');
-  if (docs.length === 0) return { status: 'empty' };
-
   var flow = getFlow(payload.flowId);
   if (!flow) throw new Error('Choose a flow.');
+  var items = parseSample_(flow.flow_id, payload.docs || '');
+  if (items.length === 0) return { status: 'empty' };
+
   var period = findPeriod_(payload.flowId, payload.periodName);
   if (!period) throw new Error('Choose a period.');
 
@@ -143,74 +162,118 @@ function enrich(payload) {
   if (reviewer && !EMAIL.test(reviewer)) throw new Error('Enter a valid reviewer email.');
 
   var qp = { database: flow.database || DATABASE, queryMode: flow.query_mode || QUERY_MODE, fyStart: period.start, fyEnd: period.end };
-  var query = buildQuery_(flow.flow_id, docs, qp);   // throws if the flow has no module yet
+  var mod = flowModule_(flow.flow_id);
+  var query = buildQuery_(flow.flow_id, items, qp);   // throws if the flow has no module yet
   var ctx = {
     flow: flow, period: period, qp: qp,
     auditor: auditors.join(', '), reviewer: reviewer,
     requestRef: String(payload.requestRef || '').trim(), dueDate: String(payload.dueDate || '').trim()
   };
 
-  var signature = sig_(docs) + '|' + flow.flow_id + '|' + period.start + '|' + period.end + '|' + qp.queryMode;
+  var signature = sigItems_(items) + '|' + flow.flow_id + '|' + period.start + '|' + period.end + '|' + qp.queryMode;
   var p = props_();
   var stored = JSON.parse(p.getProperty('outstanding') || 'null');
-
-  var requestId;
-  if (stored && stored.sig === signature) {
-    requestId = stored.requestId;            // resume polling the existing job
-  } else {
-    requestId = submitJob_(query, qp.database);
-    p.setProperty('outstanding', JSON.stringify({ requestId: requestId, sig: signature }));
-  }
-
+  var st = (stored && stored.sig === signature) ? stored : { sig: signature };
   var deadline = Date.now() + POLL_BUDGET_MS;
-  while (Date.now() < deadline) {
-    var resultFile = findCsv_(requestId);
-    if (resultFile) { p.deleteProperty('outstanding'); return buildResults_(parseCsv_(resultFile), docs, requestId, query, resultFile, ctx); }
-    if (isFailed_(requestId)) {
-      p.deleteProperty('outstanding');
-      return { status: 'failed', requestId: requestId,
-               reason: 'Job moved to Requests_Failed/ — see Logs/audit.jsonl' };
+
+  // ----- Stage 1 -----
+  if (!st.q1Id) { st.q1Id = submitJob_(query, qp.database); p.setProperty('outstanding', JSON.stringify(st)); }
+  var csv1File = pollCsv_(st.q1Id, deadline);
+  if (csv1File === 'FAILED') { p.deleteProperty('outstanding'); return { status: 'failed', requestId: st.q1Id, reason: 'Query 1 moved to Requests_Failed/ — see Logs/audit.jsonl' }; }
+  if (!csv1File) return { status: 'pending', requestId: st.q1Id };
+  var csv1 = parseCsv_(csv1File);
+  var mapped = mapStage1Rows_(mod, csv1, items);
+
+  // ----- Stage 2 (optional, dependent on stage 1's references) -----
+  var csv2 = null;
+  if (mod && mod.stage2) {
+    var refs = collectRefs_(mod, mapped);
+    if (refs.length) {
+      if (!st.q2Id) { st.q2Id = submitJob_(mod.stage2.buildQuery(refs, qp), mod.stage2.database); p.setProperty('outstanding', JSON.stringify(st)); }
+      var csv2File = pollCsv_(st.q2Id, deadline);
+      if (csv2File === 'FAILED') { p.deleteProperty('outstanding'); return { status: 'failed', requestId: st.q2Id, reason: 'Query 2 (' + mod.stage2.database + ') moved to Requests_Failed/ — see Logs/audit.jsonl' }; }
+      if (!csv2File) return { status: 'pending', requestId: st.q2Id };
+      csv2 = parseCsv_(csv2File);
     }
-    Utilities.sleep(POLL_INTERVAL);
   }
-  // timed out — keep the id so a retry resumes rather than resubmits
-  return { status: 'pending', requestId: requestId };
+
+  p.deleteProperty('outstanding');
+  return buildResults_(mapped, items, st.q1Id, query, csv1File, ctx, csv2);
 }
 
-function buildResults_(csv, docs, requestId, query, file, ctx) {
-  ctx = ctx || {};
-  var flowId = (ctx.flow && ctx.flow.flow_id) || 'flowA';
-  var mod = flowModule_(flowId);
-
-  if (!mod || !csv || !csv.length) {               // no module / empty result → everything not found
-    var empty = docs.map(function (d) { return { doc: d, found: false, _matched: [] }; });
-    return finalizeRun_(empty, docs, 0, requestId, query, file, ctx);
-  }
-  var header = csv[0];
-  var idx = {};
+/** Index stage-1 rows by the flow's sampleKey and map each sample item to its row
+ *  (mod.mapRow) — the per-row fields + routing facts. Returns [{item, found, mapped}]. */
+function mapStage1Rows_(mod, csv, items) {
+  if (!mod || !csv || !csv.length) return items.map(function (i) { return { item: i, found: false, mapped: null }; });
+  var header = csv[0], idx = {};
   header.forEach(function (h, i) { idx[String(h).trim()] = i; });
   function cellFor(row) { return function (name) { return idx[name] === undefined ? '' : row[idx[name]]; }; }
-
   var keyCol = mod.sampleKey || 'Transaction_No';
-  var byDoc = {};
+  var byKey = {};
   for (var r = 1; r < csv.length; r++) {
     var row = csv[r];
     if (!row || row.length < 2) continue;          // skip blank trailing line
     var d = String(cellFor(row)(keyCol)).toUpperCase();
-    if (d && !byDoc[d]) byDoc[d] = row;            // first row per doc
+    if (d && !byKey[d]) byKey[d] = row;            // first row per key
+  }
+  return items.map(function (i) {
+    var row = byKey[String(i.key).toUpperCase()];
+    return row ? { item: i, found: true, mapped: mod.mapRow(cellFor(row)) } : { item: i, found: false, mapped: null };
+  });
+}
+
+/** Distinct, non-null stage-2 references built from the mapped stage-1 rows. */
+function collectRefs_(mod, mapped) {
+  if (!mod.stage2 || typeof mod.stage2.refOf !== 'function') return [];
+  var seen = {}, out = [];
+  mapped.forEach(function (mr) {
+    if (!mr.found) return;
+    var ref = mod.stage2.refOf(mr.mapped);
+    if (ref && !seen[String(ref)]) { seen[String(ref)] = true; out.push(ref); }
+  });
+  return out;
+}
+
+/**
+ * Fold routing (+ any stage-2 detail) into the mapped rows and finalize. `csv2` is
+ * the parsed query-2 result (or null); when present, each line's stage-2 reference is
+ * matched against it and mod.stage2.merge folds those fields onto the line.
+ */
+function buildResults_(mapped, items, requestId, query, file, ctx, csv2) {
+  ctx = ctx || {};
+  var flowId = (ctx.flow && ctx.flow.flow_id) || 'flowA';
+  var mod = flowModule_(flowId);
+
+  var byRef = null, cell2 = null;
+  if (mod && mod.stage2 && csv2 && csv2.length) {
+    var h2 = csv2[0], idx2 = {};
+    h2.forEach(function (h, i) { idx2[String(h).trim()] = i; });
+    cell2 = function (row) { return function (name) { return idx2[name] === undefined ? '' : row[idx2[name]]; }; };
+    byRef = {};
+    var refCol = mod.stage2.keyCol;
+    for (var r = 1; r < csv2.length; r++) {
+      var row = csv2[r];
+      if (!row || !row.length) continue;
+      var k = String(cell2(row)(refCol)).toUpperCase();
+      if (k && !byRef[k]) byRef[k] = row;
+    }
   }
 
-  var results = docs.map(function (d) {
-    var row = byDoc[d.toUpperCase()];
-    if (!row) return { doc: d, found: false, _matched: [] };
-    var m = mod.mapRow(cellFor(row));              // flow-specific: fields + routing facts
+  var results = mapped.map(function (mr) {
+    var item = mr.item;
+    if (!mr.found) return { doc: item.key, item: item, found: false, _matched: [] };
+    var m = mr.mapped;
+    if (mod && mod.stage2 && byRef) {
+      var ref = mod.stage2.refOf(m);
+      if (ref) { var r2 = byRef[String(ref).toUpperCase()]; if (r2) mod.stage2.merge(m, mod.stage2.mapRow2(cell2(r2))); }
+    }
     var routed = routeFacts_(flowId, m.facts || {});
-    var out = { doc: d, found: true, action: routed.key, action_label: routed.label, _matched: routed.matched };
+    var out = { doc: item.key, item: item, found: true, action: routed.key, action_label: routed.label, _matched: routed.matched };
     Object.keys(m).forEach(function (k) { if (k !== 'facts') out[k] = m[k]; });
     return out;
   });
   var foundCount = results.filter(function (x) { return x.found; }).length;
-  return finalizeRun_(results, docs, foundCount, requestId, query, file, ctx);
+  return finalizeRun_(results, items, foundCount, requestId, query, file, ctx);
 }
 
 /* ---------- persist a successful run, then return a clean payload to the UI ---------- */
@@ -233,6 +296,23 @@ function stripInternal_(row) {
   var o = {};
   for (var k in row) if (row.hasOwnProperty(k) && k.charAt(0) !== '_') o[k] = row[k];
   return o;
+}
+
+// Flow-specific line fields (everything the mapped row carries beyond the standard
+// Sample_Lines columns) → stored as detail_json so the views can render them without
+// the engine knowing the flow's shape. Empty values are dropped to keep it compact.
+var LINE_STD_ = { doc: 1, item: 1, found: 1, action: 1, action_label: 1, company: 1, vendor: 1,
+                  mpl: 1, paid_at: 1, statement: 1, amount: 1, closing_balance: 1, po: 1, downpay: 1,
+                  document_no: 1, subpopulation: 1 };
+function lineDetail_(r) {
+  var d = {};
+  for (var k in r) {
+    if (!r.hasOwnProperty(k) || k.charAt(0) === '_' || LINE_STD_[k]) continue;
+    var v = r[k];
+    if (v === '' || v === null || v === undefined) continue;
+    d[k] = v;
+  }
+  return d;
 }
 
 /**
@@ -267,24 +347,31 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
   var lines = 0, assignments = 0;
   results.forEach(function (r) {
     var lineId = newId_('LIN');
+    var it = r.item || {};
     if (!r.found) {
       appendObject_(ds, 'Sample_Lines', {
-        line_id: lineId, request_id: reqId, document_no: r.doc,
+        line_id: lineId, request_id: reqId,
+        document_no: it.soi || r.doc, company: it.company || '',
         status: 'not_found', required_count: 0, created_at: ts
       });
       lines++;
       return;
     }
     var matched = r._matched || [];
+    var detail = lineDetail_(r);
     appendObject_(ds, 'Sample_Lines', {
-      line_id: lineId, request_id: reqId, document_no: r.doc,
-      company: r.company, vendor: r.vendor, mpl_type: r.mpl,
-      paid_status: r.paid_at ? 'Paid' : 'Unpaid',
-      statement_code: r.statement, amount: r.amount,
+      line_id: lineId, request_id: reqId,
+      document_no: r.document_no || r.doc,
+      company: r.company || it.company || '',
+      vendor: r.vendor || '', mpl_type: r.mpl || '',
+      paid_status: r.paid_at ? 'Paid' : (r.mpl ? 'Unpaid' : ''),
+      statement_code: r.statement || '', amount: r.amount || '',
       paid_at: r.paid_at || '', closing_balance: r.closing_balance || '',
       route_rule: matched.map(function (m) { return m.rule_name; }).join(','),
       required_count: matched.length, status: 'open',
-      evidence_folder_id: '', created_at: ts
+      evidence_folder_id: '', created_at: ts,
+      subpopulation: r.subpopulation || '',
+      detail_json: Object.keys(detail).length ? JSON.stringify(detail) : ''
     });
     lines++;
     matched.forEach(function (m) {
@@ -349,7 +436,7 @@ function buildIpe_(docs, foundCount, requestId, query, file, ctx) {
 
   return {
     documentRef:    'IPE-' + String(flow.flow_id || 'flow').toUpperCase() + '-' + yyyymm,
-    period:         (period.name ? period.name + ' · ' : '') + 'Created_Date window ' + period.start + ' → ' + period.end,
+    period:         (period.name ? period.name + ' · ' : '') + 'date window ' + period.start + ' → ' + period.end,
     scope:          flow.name + ' · ' + flow.flow_id,
     primaryDb:      qp.database,
     queryMode:      qp.queryMode,
