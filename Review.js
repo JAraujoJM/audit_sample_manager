@@ -81,9 +81,11 @@ function reviewDetail(requestId, stage) {
         mpl_type: l.mpl_type, paid_status: l.paid_status, statement_code: l.statement_code,
         amount: l.amount, closing_balance: l.closing_balance, paid_at: toDateStr_(l.paid_at, tz),
         status: l.status, note: l.note || '',
+        subpopulation: l.subpopulation || '', detail: parseJson_(l.detail_json),
         ai_verdict: l.ai_verdict || '', ai_summary: l.ai_summary || '', ai_checked_at: l.ai_checked_at || '',
         assignments: (asgByLine[l.line_id] || []).map(function (a) {
-          return { evidence_type: a.evidence_type, assigned_to: a.assigned_to, status: a.status, files: evByAsg[a.assignment_id] || [] };
+          return { evidence_type: a.evidence_type, assigned_to: a.assigned_to, status: a.status,
+                   optional: isOptional_(a.optional), unit: parseJson_(a.detail_json), files: evByAsg[a.assignment_id] || [] };
         })
       };
     });

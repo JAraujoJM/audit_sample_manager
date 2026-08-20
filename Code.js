@@ -202,24 +202,28 @@ function enrich(payload) {
   return buildResults_(mapped, items, st.q1Id, query, csv1File, ctx, csv2);
 }
 
-/** Index stage-1 rows by the flow's sampleKey and map each sample item to its row
- *  (mod.mapRow) — the per-row fields + routing facts. Returns [{item, found, mapped}]. */
+/** Group stage-1 rows by the flow's sampleKey and map each sample item to its group.
+ *  A key can have several rows (e.g. a packlist with several payments); the module's
+ *  mapGroup(rows, cellForFactory) folds them (line fields + facts + optional `units`
+ *  to fan evidence over). Flows without mapGroup just map the first row. */
 function mapStage1Rows_(mod, csv, items) {
   if (!mod || !csv || !csv.length) return items.map(function (i) { return { item: i, found: false, mapped: null }; });
   var header = csv[0], idx = {};
   header.forEach(function (h, i) { idx[String(h).trim()] = i; });
   function cellFor(row) { return function (name) { return idx[name] === undefined ? '' : row[idx[name]]; }; }
   var keyCol = mod.sampleKey || 'Transaction_No';
-  var byKey = {};
+  var groups = {};
   for (var r = 1; r < csv.length; r++) {
     var row = csv[r];
     if (!row || row.length < 2) continue;          // skip blank trailing line
     var d = String(cellFor(row)(keyCol)).toUpperCase();
-    if (d && !byKey[d]) byKey[d] = row;            // first row per key
+    if (d) (groups[d] = groups[d] || []).push(row);
   }
   return items.map(function (i) {
-    var row = byKey[String(i.key).toUpperCase()];
-    return row ? { item: i, found: true, mapped: mod.mapRow(cellFor(row)) } : { item: i, found: false, mapped: null };
+    var rows = groups[String(i.key).toUpperCase()];
+    if (!rows || !rows.length) return { item: i, found: false, mapped: null };
+    var mapped = (typeof mod.mapGroup === 'function') ? mod.mapGroup(rows, cellFor) : mod.mapRow(cellFor(rows[0]));
+    return { item: i, found: true, mapped: mapped };
   });
 }
 
@@ -304,7 +308,7 @@ function stripInternal_(row) {
 // the engine knowing the flow's shape. Empty values are dropped to keep it compact.
 var LINE_STD_ = { doc: 1, item: 1, found: 1, action: 1, action_label: 1, company: 1, vendor: 1,
                   mpl: 1, paid_at: 1, statement: 1, amount: 1, closing_balance: 1, po: 1, downpay: 1,
-                  document_no: 1, subpopulation: 1 };
+                  document_no: 1, subpopulation: 1, units: 1 };
 function lineDetail_(r) {
   var d = {};
   for (var k in r) {
@@ -315,6 +319,10 @@ function lineDetail_(r) {
   }
   return d;
 }
+
+/** A routing rule / assignment is optional when its flag is truthy (config cells may
+ *  arrive as boolean true or the strings 'TRUE'/'true'). Optional evidence never gates. */
+function isOptional_(v) { return v === true || String(v).toUpperCase() === 'TRUE'; }
 
 /**
  * A successful enrichment becomes a Request + one Sample_Line per document + one
@@ -360,6 +368,11 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
     }
     var matched = r._matched || [];
     var detail = lineDetail_(r);
+    // Some subpopulations fan one evidence requirement over several data units
+    // (Cash & POS: one proof of payment per payment on the transaction list).
+    var units = (r.units && r.units.length) ? r.units : [null];
+    var requiredCount = 0;
+    matched.forEach(function (m) { if (!isOptional_(m.optional)) requiredCount += units.length; });
     appendObject_(ds, 'Sample_Lines', {
       line_id: lineId, request_id: reqId,
       document_no: r.document_no || r.doc,
@@ -369,21 +382,25 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
       statement_code: r.statement || '', amount: r.amount || '',
       paid_at: r.paid_at || '', closing_balance: r.closing_balance || '',
       route_rule: matched.map(function (m) { return m.rule_name; }).join(','),
-      required_count: matched.length, status: 'open',
+      required_count: requiredCount, status: 'open',
       evidence_folder_id: '', created_at: ts,
       subpopulation: r.subpopulation || '',
       detail_json: Object.keys(detail).length ? JSON.stringify(detail) : ''
     });
     lines++;
     matched.forEach(function (m) {
-      var resp = String(m.responsible || '');
-      appendObject_(ds, 'Assignments', {
-        assignment_id: newId_('ASG'), line_id: lineId, request_id: reqId,
-        evidence_type: m.required_evidence,
-        assigned_to: /@jumia\.com$/i.test(resp) ? resp : '',
-        status: 'pending', due_date: '', submitted_at: '', notes: '', created_at: ts
+      var resp = String(m.responsible || ''), opt = isOptional_(m.optional);
+      units.forEach(function (u) {
+        appendObject_(ds, 'Assignments', {
+          assignment_id: newId_('ASG'), line_id: lineId, request_id: reqId,
+          evidence_type: m.required_evidence,
+          assigned_to: /@jumia\.com$/i.test(resp) ? resp : '',
+          status: 'pending', due_date: '', submitted_at: '', notes: '', created_at: ts,
+          optional: opt ? true : '',
+          detail_json: u ? JSON.stringify(u) : ''
+        });
+        assignments++;
       });
-      assignments++;
     });
   });
 

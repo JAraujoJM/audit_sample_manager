@@ -100,6 +100,38 @@ function flowB_() {
     },
 
     /**
+     * Fold all query-1 rows for one sample item. Line fields + facts come from the first
+     * row; for 'Postpaid - Cash & POS' the transaction list (OMS_Packlist_No) can carry
+     * several payments (OMS_Payment_No), so we fan the proof-of-payment evidence over the
+     * distinct payments — one task each (see reference EC_IC47210276 → 4 payments).
+     */
+    mapGroup: function (rows, cellForFactory) {
+      var base = this.mapRow(cellForFactory(rows[0]));
+      if (base.subpopulation === 'Postpaid - Cash & POS') {
+        var seen = {}, units = [];
+        rows.forEach(function (row) {
+          var c = cellForFactory(row);
+          var pno = String(c('OMS_Payment_No') || '').trim();
+          var k = pno || ('#' + units.length);
+          if (seen[k]) return;
+          seen[k] = true;
+          units.push({
+            payment_no:         c('OMS_Payment_No'),
+            payment_date:       c('OMS_Payment_Date'),
+            payment_ref:        c('OMS_Payment_Reference'),
+            bank_account:       c('OMS_Bank_Account'),
+            amount:             c('OMS_Payment_Amount'),
+            packlist_no:        c('OMS_Packlist_No'),
+            collection_partner: c('OMS_Collection_Partner_Name'),
+            package_number:     c('PACKAGE_NUMBER')
+          });
+        });
+        base.units = units;
+      }
+      return base;
+    },
+
+    /**
      * Stage 2 — PAY_DWH detail for the JumiaPay subpopulations. Runs only when at least
      * one stage-1 row produces a reference. `refOf(mapped)` is the master file's DAX,
      * ported: it builds concat(isocode, <order ref>) where the order ref depends on the

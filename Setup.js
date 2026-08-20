@@ -206,21 +206,53 @@ function seedFlowB() {
 }
 
 /**
- * Placeholder Cash Anchor routing — one required evidence per subpopulation, tagged
- * with the owning team. `responsible` is a team label (not an email), so each line is
- * left unassigned for the admin to route to a specific person at assign time. Evidence
- * names are provisional — refined in Phase 2 with the evidence walkthrough.
+ * Cash Anchor routing — required (and a few optional) evidence per subpopulation, each
+ * tagged with the owning team. `responsible` is a team label (not an email), so each
+ * line is left unassigned for the admin to route to a specific person at assign time.
+ * Cash & POS carries one proof of payment PER PAYMENT on the transaction list — the
+ * engine fans that single rule over the line's payment units.
  */
 function seedFlowBRouting_(cfg) {
   var JP = 'JumiaPay & Banks accounting', FO = 'Shared FinOps';
-  [
-    ['prepaid_jumiapay',  'subpopulation=Prepaid - JumiaPay',              'JumiaPay payment proof',        JP],
-    ['prepaid_voucher',   'subpopulation=Prepaid - Voucher',               'Voucher evidence',              FO],
-    ['prepaid_other',     'subpopulation=Prepaid - Other methods',         'Payment evidence',              FO],
-    ['postpaid_jpay_del', 'subpopulation=Postpaid - JumiaPay on delivery', 'JumiaPay on-delivery proof',    JP],
-    ['postpaid_cash_pos', 'subpopulation=Postpaid - Cash & POS',           'Cash / POS remittance proof',   FO],
-    ['postpaid_cash_3pl', 'subpopulation=Postpaid - Cash - 3PL via JPay',  '3PL JumiaPay remittance proof', JP]
-  ].forEach(function (r) {
-    appendObject_(cfg, 'Routing', { flow_id: 'flowB', rule_name: r[0], match: r[1], required_evidence: r[2], responsible: r[3], active: true });
+  function row(rule, sub, ev, resp, opt) {
+    appendObject_(cfg, 'Routing', { flow_id: 'flowB', rule_name: rule, match: 'subpopulation=' + sub,
+      required_evidence: ev, responsible: resp, optional: opt ? true : '', active: true });
+  }
+
+  // Voucher — prove the voucher + tie it to the sampled item; B2B proof only if applicable.
+  row('voucher_bob', 'Prepaid - Voucher', 'BOB voucher screenshot', FO, false);
+  row('voucher_oms', 'Prepaid - Voucher', 'OMS screenshot',         FO, false);
+  row('voucher_b2b', 'Prepaid - Voucher', 'B2B proof of payment',   FO, true);
+
+  // JumiaPay family — settlement report + proof of payment (ties to settlement total),
+  // plus an optional document tie-out (NAV → settlement → proof).
+  ['Prepaid - JumiaPay', 'Postpaid - JumiaPay on delivery', 'Postpaid - Cash - 3PL via JPay'].forEach(function (sub, i) {
+    var tag = ['pre_jpay', 'post_jpay', 'cash_3pl'][i];
+    row(tag + '_settlement', sub, 'Settlement report', JP, false);
+    row(tag + '_pop',        sub, 'Proof of payment',  JP, false);
+    row(tag + '_tieout',     sub, 'Document tie-out',  JP, true);
   });
+
+  // Cash & POS — one proof of payment per payment on the transaction list (fanned by units).
+  row('cash_pos_pop', 'Postpaid - Cash & POS', 'Proof of payment', FO, false);
+
+  // Residual.
+  row('prepaid_other', 'Prepaid - Other methods', 'Payment evidence', FO, false);
+}
+
+/**
+ * Admin-run: rewrite Cash Anchor routing to the set above. OVERWRITES the existing
+ * flowB rows (other flows preserved). Run once after updating the evidence rules (and
+ * after setup(), which adds the new Routing/Assignments columns).
+ */
+function reseedFlowBRouting() {
+  requireRole_([ROLES.ADMIN]);
+  var cfg = configSs_();
+  var sh = cfg.getSheetByName('Routing');
+  var kept = readObjects_(cfg, 'Routing').filter(function (r) { return String(r.flow_id) !== 'flowB'; });
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).clearContent();
+  kept.forEach(function (r) { appendObject_(cfg, 'Routing', r); });
+  seedFlowBRouting_(cfg);
+  logActivity('ROUTING_RESEED', 'flow', 'flowB', 'Reseeded Cash Anchor routing (real evidence per subpopulation)');
+  return getRouting('flowB');
 }

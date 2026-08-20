@@ -205,6 +205,12 @@ function addUser(email, role) {
   return getRole(email);
 }
 
+/** Parse a JSON cell to an object; {} on empty/invalid (detail_json is app-written). */
+function parseJson_(s) {
+  if (!s) return {};
+  try { var o = JSON.parse(s); return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
+}
+
 /* ---------- audit trail ---------- */
 function logActivity(action, entityType, entityId, details) {
   try {

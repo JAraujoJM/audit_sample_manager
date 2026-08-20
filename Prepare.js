@@ -31,9 +31,12 @@ function listMyAssignments() {
       return {
         assignment_id: a.assignment_id, request_id: a.request_id, line_id: a.line_id,
         request_title: req.title || '', document_no: line.document_no || '', vendor: line.vendor || '',
+        company: line.company || '', amount: line.amount || '',
         statement_code: line.statement_code || '', statement_amount: line.closing_balance || '',
         paid_at: toDateStr_(line.paid_at, tz),
-        evidence_type: a.evidence_type, status: a.status, due_date: toDateStr_(req.due_date, tz),
+        subpopulation: line.subpopulation || '', detail: parseJson_(line.detail_json), unit: parseJson_(a.detail_json),
+        evidence_type: a.evidence_type, optional: isOptional_(a.optional),
+        status: a.status, due_date: toDateStr_(req.due_date, tz),
         note: line.note || '', files: files
       };
     })

@@ -406,6 +406,37 @@
   function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
   function fmtNum(v){ if(v===null||v===undefined||String(v).trim()==='') return '—'; var n=Number(v); return isNaN(n)?esc(v):n.toLocaleString(undefined,{maximumFractionDigits:2}); }
   function fmtDate(s){ if(!s) return '—'; var d=new Date(s); return isNaN(d)?esc(String(s).slice(0,10)):d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }
+
+  /* ---- Cash Anchor (Flow B) subpopulation field specs ----
+   * What the preparer / reviewer sees per subpopulation. Values resolve from the
+   * assignment's per-payment `unit` first, then the line `detail`, then the line row. */
+  var CA_JP=[['Order','order_nr'],['Amount','amount'],['Payment date','jp_created'],['Gateway','jp_gateway'],['Payment provider','jp_provider'],['Retrieval ref','jp_retrieval']];
+  var CA_FIELDS={
+    'Prepaid - Voucher':[['Order','order_nr'],['Amount','amount']],
+    'Prepaid - JumiaPay':CA_JP, 'Postpaid - JumiaPay on delivery':CA_JP, 'Postpaid - Cash - 3PL via JPay':CA_JP,
+    'Postpaid - Cash & POS':[['Package no','package_number'],['Collection partner','collection_partner'],['Payment no','payment_no'],['Payment date','payment_date'],['Payment reference','payment_ref'],['Bank account','bank_account'],['Amount','amount']],
+    'Prepaid - Other methods':[['Order','order_nr'],['Amount','amount']]
+  };
+  function caVal(key, line, detail, unit){
+    if(unit && unit[key]!=null && unit[key]!=='') return unit[key];
+    if(detail && detail[key]!=null && detail[key]!=='') return detail[key];
+    if(line && line[key]!=null && line[key]!=='') return line[key];
+    return '';
+  }
+  function caFactsHtml(subpop, line, detail, unit){
+    var spec=CA_FIELDS[subpop]; if(!spec) return '';
+    return '<div class="facts">'+spec.map(function(f){
+      var v=caVal(f[1], line, detail, unit);
+      return '<div class="f"><span class="fk">'+esc(f[0])+'</span><span class="fv">'+(f[1]==='amount'?fmtNum(v):esc(v||'—'))+'</span></div>';
+    }).join('')+'</div>';
+  }
+  // Compact per-task detail for the assign table (subpopulation-relevant identifiers).
+  function caAssignDetail(subpop, detail, unit){
+    detail=detail||{}; unit=unit||{};
+    if(/JumiaPay|3PL/.test(subpop||'')){ var g=[detail.jp_gateway,detail.jp_provider].filter(Boolean).join(' · '); return g||'—'; }
+    if(subpop==='Postpaid - Cash & POS'){ var p=[unit.payment_no, unit.bank_account].filter(Boolean).join(' · '); return p||'—'; }
+    return '—';
+  }
   function toast(msg, type){
     var el=document.createElement('div'); el.className='toast '+(type||'info'); el.textContent=msg;
     $('toasts').appendChild(el); void el.offsetWidth; el.classList.add('on');
@@ -713,6 +744,7 @@
       l.assignments.forEach(function(a){
         tasks.push({ assignment_id:a.assignment_id, document_no:l.document_no, company:l.company||'',
           mpl: adv?'advance':'regular', subpopulation:l.subpopulation||'',
+          detail:l.detail||{}, unit:a.unit||{}, optional:!!a.optional,
           evidence_type:a.evidence_type, assigned_to:a.assigned_to||'', status:a.status });
       });
     });
@@ -739,7 +771,7 @@
       +'<button class="btn primary sm" id="bulkAssign">Assign to selected</button>'
       +'<span class="muted" id="selCount" style="font-size:12.5px"></span></div>';
     var table='<table class="asg-table"><thead><tr><th style="width:24px"><input type="checkbox" id="selAll"></th>'
-      +'<th>Document</th><th>Company</th><th>Type</th><th>Evidence</th><th>Preparer</th><th>Status</th></tr></thead>'
+      +'<th>Document</th><th>Company</th><th>Type</th><th>Evidence</th><th>Details</th><th>Preparer</th><th>Status</th></tr></thead>'
       +'<tbody id="asgRows"></tbody></table>';
     $('assignWrap').innerHTML=head+'<div class="card">'+filters+bulk+table+'</div>';
     wireAssign();
@@ -762,11 +794,13 @@
       var chk = locked
         ? '<input type="checkbox" class="asg-chk" data-aid="'+esc(t.assignment_id)+'" disabled title="Accepted — preparer locked">'
         : '<input type="checkbox" class="asg-chk" data-aid="'+esc(t.assignment_id)+'" checked>';
+      var ev = esc(t.evidence_type) + (t.optional ? ' <span class="pill neutral" style="font-size:10.5px">optional</span>' : '');
       return '<tr'+(locked?' class="locked-row"':'')+'><td>'+chk+'</td>'
         +'<td class="mono">'+esc(t.document_no)+'</td><td>'+esc(t.company||'—')+'</td><td>'+typePill+'</td>'
-        +'<td>'+esc(t.evidence_type)+'</td><td>'+(t.assigned_to?esc(t.assigned_to):'<span class="muted">—</span>')+'</td>'
+        +'<td>'+ev+'</td><td class="muted" style="font-size:12px">'+esc(caAssignDetail(t.subpopulation, t.detail, t.unit))+'</td>'
+        +'<td>'+(t.assigned_to?esc(t.assigned_to):'<span class="muted">—</span>')+'</td>'
         +'<td>'+statusPill(t.status)+'</td></tr>';
-    }).join('') || '<tr><td colspan="7" class="empty">No tasks match the filter.</td></tr>';
+    }).join('') || '<tr><td colspan="8" class="empty">No tasks match the filter.</td></tr>';
     if($('selAll')) $('selAll').checked=true;
     Array.prototype.forEach.call($('asgRows').querySelectorAll('.asg-chk'), function(c){ c.addEventListener('change', updateSelCount_); });
     updateSelCount_();
@@ -842,14 +876,25 @@
         ? '<button class="btn sm withdraw" data-aid="'+esc(t.assignment_id)+'">Withdraw</button>'
         : '<span class="muted" style="font-size:12.5px">Locked · '+esc(s.replace(/_/g,' '))+'</span>';
     var note = t.note ? '<div class="task-note">'+esc(t.note)+'</div>' : '';
-    var facts = '<div class="task-facts">'
-      +'<span>Statement no. <b>'+esc(t.statement_code||'—')+'</b></span>'
-      +'<span>Statement amount <b>'+fmtNum(t.statement_amount)+'</b></span>'
-      +'<span>Paid at <b>'+esc(t.paid_at||'—')+'</b></span></div>';
+    var facts;
+    if(t.subpopulation && CA_FIELDS[t.subpopulation]){
+      facts = '<div class="task-facts">'+CA_FIELDS[t.subpopulation].map(function(f){
+        var v=caVal(f[1], t, t.detail, t.unit);
+        return '<span>'+esc(f[0])+' <b>'+(f[1]==='amount'?fmtNum(v):esc(v||'—'))+'</b></span>';
+      }).join('')+'</div>';
+    } else {
+      facts = '<div class="task-facts">'
+        +'<span>Statement no. <b>'+esc(t.statement_code||'—')+'</b></span>'
+        +'<span>Statement amount <b>'+fmtNum(t.statement_amount)+'</b></span>'
+        +'<span>Paid at <b>'+esc(t.paid_at||'—')+'</b></span></div>';
+    }
+    var eviLine = esc(t.evidence_type)+(t.optional?' · optional':'')
+      +(t.due_date?' · due '+esc(t.due_date):'')
+      +(t.subpopulation?' · '+esc(t.subpopulation):'')+' · '+esc(t.request_title);
     return '<div class="task-card">'
       +'<div class="task-head"><span class="doc">'+esc(t.document_no)+'</span><span class="ven">'+esc(t.vendor||'')+'</span>'
         +'<span class="grow"></span>'+statusPill(t.status)+'</div>'
-      +'<div class="task-evi">'+esc(t.evidence_type)+(t.due_date?' · due '+esc(t.due_date):'')+' · '+esc(t.request_title)+'</div>'
+      +'<div class="task-evi">'+eviLine+'</div>'
       +facts
       +note
       +'<div class="files">'+files+'</div>'
@@ -994,20 +1039,34 @@
   function fact(k,v){ return '<div class="f"><span class="fk">'+k+'</span><span class="fv">'+v+'</span></div>'; }
   function renderStageLine(stage, actionable, l){
     var adv=/advance/i.test(l.mpl_type);
-    var facts='<div class="facts">'
-      +fact('Transaction no.', '<span class="mono">'+esc(l.document_no||'—')+'</span>')
-      +fact('Seller', esc(l.vendor||'—'))
-      +fact('Statement no.', '<span class="mono">'+esc(l.statement_code||'—')+'</span>')
-      +fact('Transaction amount', fmtNum(l.amount))
-      +fact('Statement amount', fmtNum(l.closing_balance))
-      +fact('Paid at', esc(l.paid_at||'—'))
-      +fact('MPL type', adv?'MPL advance':'Regular')+'</div>';
+    var facts;
+    if(l.subpopulation && CA_FIELDS[l.subpopulation]){
+      facts='<div class="facts">'
+        +fact('Sales order item', '<span class="mono">'+esc(l.document_no||'—')+'</span>')
+        +fact('Company', esc(l.company||'—'))
+        +fact('Subpopulation', esc(l.subpopulation))
+        +CA_FIELDS[l.subpopulation].map(function(f){ var v=caVal(f[1], l, l.detail, null); return fact(f[0], f[1]==='amount'?fmtNum(v):esc(v||'—')); }).join('')
+        +'</div>';
+    } else {
+      facts='<div class="facts">'
+        +fact('Transaction no.', '<span class="mono">'+esc(l.document_no||'—')+'</span>')
+        +fact('Seller', esc(l.vendor||'—'))
+        +fact('Statement no.', '<span class="mono">'+esc(l.statement_code||'—')+'</span>')
+        +fact('Transaction amount', fmtNum(l.amount))
+        +fact('Statement amount', fmtNum(l.closing_balance))
+        +fact('Paid at', esc(l.paid_at||'—'))
+        +fact('MPL type', adv?'MPL advance':'Regular')+'</div>';
+    }
     var asgs=l.assignments.map(function(a){
       var chips=a.files.length
         ? a.files.map(function(f){ return '<button class="chip" data-eid="'+esc(f.evidence_id)+'" data-line="'+esc(l.line_id)+'">'+esc(f.file_name)+'</button>'; }).join('')
         : '<span class="muted" style="font-size:12px">no files</span>';
-      return '<div class="asg-rev"><div class="et">'+esc(a.evidence_type)+'</div>'
+      var opt = a.optional ? ' <span class="pill neutral" style="font-size:10.5px">optional</span>' : '';
+      var u = a.unit || {};
+      var uLine = (u.payment_no||u.bank_account||u.amount) ? '<div class="who">'+esc([u.payment_no,u.bank_account,(u.amount!=null&&u.amount!==''?fmtNum(u.amount):'')].filter(Boolean).join(' · '))+'</div>' : '';
+      return '<div class="asg-rev"><div class="et">'+esc(a.evidence_type)+opt+'</div>'
         +'<div class="who">'+esc(a.assigned_to||'unassigned')+'</div>'
+        +uLine
         +'<div class="doc-chips">'+chips+'</div></div>';
     }).join('');
     var note = l.note ? '<div class="note-line">'+esc(l.note)+'</div>' : '';

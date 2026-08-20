@@ -46,12 +46,13 @@ function getRequestDetail(requestId) {
       return {
         line_id: l.line_id, document_no: l.document_no, company: l.company, vendor: l.vendor,
         mpl_type: l.mpl_type, paid_status: l.paid_status, status: l.status,
-        subpopulation: l.subpopulation || '',
+        subpopulation: l.subpopulation || '', amount: l.amount || '', detail: parseJson_(l.detail_json),
         required_count: l.required_count,
         assignments: (byLine[l.line_id] || []).map(function (a) {
           return {
             assignment_id: a.assignment_id, evidence_type: a.evidence_type,
-            assigned_to: a.assigned_to, status: a.status, due_date: toDateStr_(a.due_date, tz)
+            assigned_to: a.assigned_to, status: a.status, due_date: toDateStr_(a.due_date, tz),
+            optional: isOptional_(a.optional), unit: parseJson_(a.detail_json)
           };
         })
       };
@@ -136,9 +137,13 @@ function updateLineAssignmentRollup_(lineId) {
 
   var st = function (a) { return String(a.status).toLowerCase(); };
   var done = ['submitted', 'reviewed', 'accepted'];
-  var allDone     = items.every(function (a) { return done.indexOf(st(a)) !== -1; });
+  // Optional evidence (e.g. a B2B proof of payment, a tie-out workbook) never gates the
+  // line — only required assignments decide when it's ready for the reviewer.
+  var required = items.filter(function (a) { return !isOptional_(a.optional); });
+  var gate = required.length ? required : items;
+  var allDone     = gate.every(function (a) { return done.indexOf(st(a)) !== -1; });
   var anyWork     = items.some(function (a) { return ['in_progress'].concat(done).indexOf(st(a)) !== -1; });
-  var allAssigned = items.every(function (a) { return String(a.assigned_to || '').trim() !== ''; });
+  var allAssigned = gate.every(function (a) { return String(a.assigned_to || '').trim() !== ''; });
   var prev = String(line.status).toLowerCase();
   var next = allDone ? 'pending_review' : anyWork ? 'in_progress' : allAssigned ? 'assigned' : 'open';
   var patch = { status: next };
