@@ -324,6 +324,25 @@ function lineDetail_(r) {
  *  arrive as boolean true or the strings 'TRUE'/'true'). Optional evidence never gates. */
 function isOptional_(v) { return v === true || String(v).toUpperCase() === 'TRUE'; }
 
+function slug_(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'doc'; }
+
+/**
+ * The document slots inside one task. `documents` is a routing cell: a '|'-separated
+ * list of document labels, each with a trailing '*' to mark it optional (e.g.
+ * "BOB voucher screenshot|OMS screenshot|B2B proof of payment*"). Empty → a single
+ * slot named after the required_evidence (a plain one-document task). Returns
+ * [{ key, label, optional }].
+ */
+function parseSlots_(documents, fallbackLabel) {
+  var raw = String(documents || '').split('|').map(function (s) { return s.trim(); }).filter(Boolean);
+  if (!raw.length) return [{ key: slug_(fallbackLabel), label: String(fallbackLabel || 'Document'), optional: false }];
+  return raw.map(function (d) {
+    var optional = /\*\s*$/.test(d);
+    var label = d.replace(/\*\s*$/, '').trim();
+    return { key: slug_(label), label: label, optional: optional };
+  });
+}
+
 /**
  * A successful enrichment becomes a Request + one Sample_Line per document + one
  * Assignment per required evidence item. Assignments default to the routing
@@ -390,6 +409,11 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
     lines++;
     matched.forEach(function (m) {
       var resp = String(m.responsible || ''), opt = isOptional_(m.optional);
+      // A task may bundle several document slots (Voucher, JumiaPay = one owner, one
+      // task, several uploads). Single-document tasks (Flow A, Cash & POS) leave
+      // slots_json empty and use the free upload.
+      var slots = parseSlots_(m.documents, m.required_evidence);
+      var slotsJson = slots.length > 1 ? JSON.stringify(slots) : '';
       units.forEach(function (u) {
         appendObject_(ds, 'Assignments', {
           assignment_id: newId_('ASG'), line_id: lineId, request_id: reqId,
@@ -397,7 +421,8 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
           assigned_to: /@jumia\.com$/i.test(resp) ? resp : '',
           status: 'pending', due_date: '', submitted_at: '', notes: '', created_at: ts,
           optional: opt ? true : '',
-          detail_json: u ? JSON.stringify(u) : ''
+          detail_json: u ? JSON.stringify(u) : '',
+          slots_json: slotsJson
         });
         assignments++;
       });

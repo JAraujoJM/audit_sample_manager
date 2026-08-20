@@ -214,30 +214,30 @@ function seedFlowB() {
  */
 function seedFlowBRouting_(cfg) {
   var JP = 'JumiaPay & Banks accounting', FO = 'Shared FinOps';
-  function row(rule, sub, ev, resp, opt) {
+  // One row = one task. `documents` lists the upload slots inside that task
+  // ('|'-separated; a trailing '*' marks a slot optional). Empty = a single-document
+  // task (Cash & POS fans this over each payment).
+  function row(rule, sub, taskLabel, resp, documents) {
     appendObject_(cfg, 'Routing', { flow_id: 'flowB', rule_name: rule, match: 'subpopulation=' + sub,
-      required_evidence: ev, responsible: resp, optional: opt ? true : '', active: true });
+      required_evidence: taskLabel, documents: documents || '', responsible: resp, optional: '', active: true });
   }
 
-  // Voucher — prove the voucher + tie it to the sampled item; B2B proof only if applicable.
-  row('voucher_bob', 'Prepaid - Voucher', 'BOB voucher screenshot', FO, false);
-  row('voucher_oms', 'Prepaid - Voucher', 'OMS screenshot',         FO, false);
-  row('voucher_b2b', 'Prepaid - Voucher', 'B2B proof of payment',   FO, true);
+  // Voucher — one task: prove the voucher (BOB) + tie it to the item (OMS); B2B proof if applicable.
+  row('voucher', 'Prepaid - Voucher', 'Voucher evidence', FO,
+      'BOB voucher screenshot|OMS screenshot|B2B proof of payment*');
 
-  // JumiaPay family — settlement report + proof of payment (ties to settlement total),
-  // plus an optional document tie-out (NAV → settlement → proof).
+  // JumiaPay family — one task: settlement report + proof of payment (ties to settlement
+  // total) + optional document tie-out (NAV → settlement → proof).
   ['Prepaid - JumiaPay', 'Postpaid - JumiaPay on delivery', 'Postpaid - Cash - 3PL via JPay'].forEach(function (sub, i) {
-    var tag = ['pre_jpay', 'post_jpay', 'cash_3pl'][i];
-    row(tag + '_settlement', sub, 'Settlement report', JP, false);
-    row(tag + '_pop',        sub, 'Proof of payment',  JP, false);
-    row(tag + '_tieout',     sub, 'Document tie-out',  JP, true);
+    row(['pre_jpay', 'post_jpay', 'cash_3pl'][i], sub, 'JumiaPay evidence', JP,
+        'Settlement report|Proof of payment|Document tie-out*');
   });
 
-  // Cash & POS — one proof of payment per payment on the transaction list (fanned by units).
-  row('cash_pos_pop', 'Postpaid - Cash & POS', 'Proof of payment', FO, false);
+  // Cash & POS — one proof of payment PER payment on the transaction list (fanned by units).
+  row('cash_pos_pop', 'Postpaid - Cash & POS', 'Proof of payment', FO, '');
 
   // Residual.
-  row('prepaid_other', 'Prepaid - Other methods', 'Payment evidence', FO, false);
+  row('prepaid_other', 'Prepaid - Other methods', 'Payment evidence', FO, '');
 }
 
 /**

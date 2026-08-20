@@ -277,6 +277,13 @@
   .tl-when{margin-left:auto; font-size:12px; color:var(--text-3); white-space:nowrap;}
   .tl-meta{font-size:12px; color:var(--text-3); margin-top:1px;}
   .tl-detail{font-size:12.5px; color:var(--text-2, var(--text)); margin-top:5px; background:var(--surface-2,#fafafa); border:1px solid var(--sep); border-radius:7px; padding:6px 9px; white-space:pre-wrap; word-break:break-word;}
+  .slots{display:flex; flex-direction:column; gap:10px; margin:8px 0 2px;}
+  .slot{border:1px solid var(--sep); border-radius:8px; padding:9px 11px;}
+  .slot-h{display:flex; align-items:center; gap:8px; margin-bottom:6px;}
+  .slot-l{font-weight:600; font-size:12.5px;}
+  .slot-files{display:flex; flex-direction:column; gap:4px; margin-bottom:7px;}
+  .slot-rev{margin-top:6px; font-size:12.5px;}
+  .slot-rev .slot-l{margin-right:6px;}
 </style>
 </head>
 <body>
@@ -749,7 +756,7 @@
       });
     });
     assignData={ request:d.request, tasks:tasks };
-    assignFilter={ mpl:'all', company:'all', evidence:'all' };
+    assignFilter={ type:'all', company:'all', evidence:'all' };
     renderAssignDetail();
   }
   function uniq_(arr){ var s={},o=[]; arr.forEach(function(x){ if(x && !s[x]){s[x]=1;o.push(x);} }); return o; }
@@ -760,9 +767,13 @@
     if(!d.tasks.length){ $('assignWrap').innerHTML=head+'<div class="card"><div class="empty">No tasks need a preparer in this run.</div></div>'; return; }
     var companies=uniq_(d.tasks.map(function(t){ return t.company; }));
     var evidences=uniq_(d.tasks.map(function(t){ return t.evidence_type; }));
-    function opt(v,l){ return '<option value="'+v+'"'+(assignFilter.mpl===v?' selected':'')+'>'+l+'</option>'; }
+    // The Type filter adapts to the flow: subpopulations for Cash Anchor, else MPL type.
+    var subs=uniq_(d.tasks.map(function(t){ return t.subpopulation; }).filter(Boolean));
+    function opt(v,l){ return '<option value="'+esc(v)+'"'+(assignFilter.type===v?' selected':'')+'>'+esc(l)+'</option>'; }
+    var typeOpts = subs.length ? opt('all','All types')+subs.map(function(sp){ return opt(sp, sp); }).join('')
+                              : opt('all','All types')+opt('regular','Regular')+opt('advance','MPL advance');
     var filters='<div class="row" style="gap:10px; align-items:center; margin-bottom:12px">'
-      +'<select id="asgType" style="max-width:170px">'+opt('all','All types')+opt('regular','Regular')+opt('advance','MPL advance')+'</select>'
+      +'<select id="asgType" style="max-width:230px">'+typeOpts+'</select>'
       +'<select id="asgCompany" style="max-width:200px"><option value="all">All companies</option>'
         +companies.map(function(c){ return '<option value="'+esc(c)+'"'+(assignFilter.company===c?' selected':'')+'>'+esc(c)+'</option>'; }).join('')+'</select>'
       +'<select id="asgEvidence" style="max-width:230px"><option value="all">All evidence</option>'
@@ -779,7 +790,8 @@
   }
   function visibleTasks_(){
     return assignData.tasks.filter(function(t){
-      return (assignFilter.mpl==='all'||t.mpl===assignFilter.mpl)
+      var typeVal = t.subpopulation || t.mpl;
+      return (assignFilter.type==='all'||typeVal===assignFilter.type)
         && (assignFilter.company==='all'||t.company===assignFilter.company)
         && (assignFilter.evidence==='all'||t.evidence_type===assignFilter.evidence);
     });
@@ -807,7 +819,7 @@
   }
   function updateSelCount_(){ if($('selCount')) $('selCount').textContent=$('asgRows').querySelectorAll('.asg-chk:checked').length+' selected'; }
   function wireAssign(){
-    $('asgType').addEventListener('change', function(){ assignFilter.mpl=$('asgType').value; renderAsgRows(); });
+    $('asgType').addEventListener('change', function(){ assignFilter.type=$('asgType').value; renderAsgRows(); });
     $('asgCompany').addEventListener('change', function(){ assignFilter.company=$('asgCompany').value; renderAsgRows(); });
     $('asgEvidence').addEventListener('change', function(){ assignFilter.evidence=$('asgEvidence').value; renderAsgRows(); });
     $('selAll').addEventListener('change', function(){ var on=$('selAll').checked; Array.prototype.forEach.call($('asgRows').querySelectorAll('.asg-chk'),function(c){ if(!c.disabled) c.checked=on; }); updateSelCount_(); });
@@ -865,13 +877,28 @@
     var s=String(t.status).toLowerCase();
     var editable = ['pending','assigned','in_progress'].indexOf(s)!==-1;
     var submitted = s==='submitted';
-    var files = t.files.map(function(f){
-      return '<div class="file"><a href="#" class="view-doc" data-eid="'+esc(f.evidence_id)+'">'+esc(f.file_name)+'</a>'
-        +(editable?'<button class="link-btn rm-file" data-eid="'+esc(f.evidence_id)+'">remove</button>':'')+'</div>';
-    }).join('') || '<div class="muted" style="font-size:12.5px">No files yet.</div>';
+    var chipFile = function(f){ return '<div class="file"><a href="#" class="view-doc" data-eid="'+esc(f.evidence_id)+'">'+esc(f.file_name)+'</a>'
+      +(editable?'<button class="link-btn rm-file" data-eid="'+esc(f.evidence_id)+'">remove</button>':'')+'</div>'; };
+    // A task with named slots (Voucher, JumiaPay) shows one upload per document; a plain
+    // task keeps the single free "Add file". Submit needs every required slot filled.
+    var hasSlots = t.slots && t.slots.length, submitReady, filesBlock;
+    if(hasSlots){
+      var bySlot={}; t.files.forEach(function(f){ (bySlot[f.slot||'']=bySlot[f.slot||'']||[]).push(f); });
+      submitReady = t.slots.every(function(sl){ return sl.optional || (bySlot[sl.key]&&bySlot[sl.key].length); });
+      filesBlock = '<div class="slots">'+t.slots.map(function(sl){
+        var fh = (bySlot[sl.key]||[]).map(chipFile).join('') || '<div class="muted" style="font-size:12px">No file yet.</div>';
+        var add = editable ? '<label class="btn sm">Add file<input type="file" class="file-input" data-aid="'+esc(t.assignment_id)+'" data-slot="'+esc(sl.key)+'" hidden></label>' : '';
+        return '<div class="slot"><div class="slot-h"><span class="slot-l">'+esc(sl.label)+'</span>'
+          +(sl.optional?'<span class="pill neutral" style="font-size:10px">optional</span>':'')+'</div>'
+          +'<div class="slot-files">'+fh+'</div>'+add+'</div>';
+      }).join('')+'</div>';
+    } else {
+      filesBlock = '<div class="files">'+(t.files.map(chipFile).join('') || '<div class="muted" style="font-size:12.5px">No files yet.</div>')+'</div>';
+      submitReady = t.files.length>0;
+    }
     var actions = editable
-      ? '<label class="btn sm">Add file<input type="file" class="file-input" data-aid="'+esc(t.assignment_id)+'" hidden></label>'
-        +'<button class="btn primary sm submit" data-aid="'+esc(t.assignment_id)+'"'+(t.files.length?'':' disabled')+'>Submit for review</button>'
+      ? (hasSlots?'':'<label class="btn sm">Add file<input type="file" class="file-input" data-aid="'+esc(t.assignment_id)+'" hidden></label>')
+        +'<button class="btn primary sm submit" data-aid="'+esc(t.assignment_id)+'"'+(submitReady?'':' disabled')+'>Submit for review</button>'
       : submitted
         ? '<button class="btn sm withdraw" data-aid="'+esc(t.assignment_id)+'">Withdraw</button>'
         : '<span class="muted" style="font-size:12.5px">Locked · '+esc(s.replace(/_/g,' '))+'</span>';
@@ -897,7 +924,7 @@
       +'<div class="task-evi">'+eviLine+'</div>'
       +facts
       +note
-      +'<div class="files">'+files+'</div>'
+      +filesBlock
       +'<div class="task-foot">'+actions+'<span class="grow"></span>'+histIconBtn(t.line_id)+'</div>'
       +'<div class="upmsg muted"></div></div>';
   }
@@ -924,7 +951,7 @@
       var b64=String(reader.result).split(',')[1];
       google.script.run.withSuccessHandler(function(items){ renderTasks(items); toast('File uploaded','ok'); })
         .withFailureHandler(function(e){ msg.innerHTML=esc(e.message); Array.prototype.forEach.call(btns, function(b){ b.disabled=false; b.classList.remove('is-busy'); }); toast(e.message,'warn'); })
-        .uploadEvidence(inp.dataset.aid, file.name, file.type, b64);
+        .uploadEvidence(inp.dataset.aid, file.name, file.type, b64, inp.dataset.slot||'');
     };
     reader.onerror=function(){ msg.textContent='Could not read the file.'; Array.prototype.forEach.call(btns, function(b){ b.disabled=false; b.classList.remove('is-busy'); }); };
     reader.readAsDataURL(file);
@@ -1058,16 +1085,23 @@
         +fact('MPL type', adv?'MPL advance':'Regular')+'</div>';
     }
     var asgs=l.assignments.map(function(a){
-      var chips=a.files.length
-        ? a.files.map(function(f){ return '<button class="chip" data-eid="'+esc(f.evidence_id)+'" data-line="'+esc(l.line_id)+'">'+esc(f.file_name)+'</button>'; }).join('')
-        : '<span class="muted" style="font-size:12px">no files</span>';
+      var chip=function(f){ return '<button class="chip" data-eid="'+esc(f.evidence_id)+'" data-line="'+esc(l.line_id)+'">'+esc(f.file_name)+'</button>'; };
       var opt = a.optional ? ' <span class="pill neutral" style="font-size:10.5px">optional</span>' : '';
       var u = a.unit || {};
       var uLine = (u.payment_no||u.bank_account||u.amount) ? '<div class="who">'+esc([u.payment_no,u.bank_account,(u.amount!=null&&u.amount!==''?fmtNum(u.amount):'')].filter(Boolean).join(' · '))+'</div>' : '';
+      var body;
+      if(a.slots && a.slots.length){   // multi-document task: group chips under each slot
+        var bySlot={}; a.files.forEach(function(f){ (bySlot[f.slot||'']=bySlot[f.slot||'']||[]).push(f); });
+        body=a.slots.map(function(sl){
+          var fs=bySlot[sl.key]||[];
+          var chips=fs.length?fs.map(chip).join(''):'<span class="muted" style="font-size:12px">no file</span>';
+          return '<div class="slot-rev"><span class="slot-l">'+esc(sl.label)+(sl.optional?' (optional)':'')+'</span> '+chips+'</div>';
+        }).join('');
+      } else {
+        body='<div class="doc-chips">'+(a.files.length?a.files.map(chip).join(''):'<span class="muted" style="font-size:12px">no files</span>')+'</div>';
+      }
       return '<div class="asg-rev"><div class="et">'+esc(a.evidence_type)+opt+'</div>'
-        +'<div class="who">'+esc(a.assigned_to||'unassigned')+'</div>'
-        +uLine
-        +'<div class="doc-chips">'+chips+'</div></div>';
+        +'<div class="who">'+esc(a.assigned_to||'unassigned')+'</div>'+uLine+body+'</div>';
     }).join('');
     var note = l.note ? '<div class="note-line">'+esc(l.note)+'</div>' : '';
     var actions='';

@@ -50,7 +50,7 @@ var SCHEMA = {
   config: {
     Users:    ['email', 'role', 'status', 'added_by', 'added_at'],
     Flows:    ['flow_id', 'name', 'database', 'query_mode', 'sample_key', 'dedup_keys', 'active'],
-    Routing:  ['flow_id', 'rule_name', 'match', 'required_evidence', 'responsible', 'optional', 'active'],
+    Routing:  ['flow_id', 'rule_name', 'match', 'required_evidence', 'documents', 'responsible', 'optional', 'active'],
     Periods:  ['flow_id', 'name', 'start_date', 'end_date', 'active'],
     Settings: ['key', 'value', 'description']
   },
@@ -68,8 +68,8 @@ var SCHEMA = {
     // A line can carry several Assignments (e.g. invoice + proof of payment), each owned
     // by a different preparer; the line only advances once every Assignment is satisfied.
     Assignments:  ['assignment_id', 'line_id', 'request_id', 'evidence_type', 'assigned_to', 'status',
-                   'due_date', 'submitted_at', 'notes', 'created_at', 'optional', 'detail_json'],
-    Evidence:     ['evidence_id', 'assignment_id', 'line_id', 'request_id', 'file_id', 'file_name', 'mime', 'uploaded_by', 'uploaded_at', 'status'],
+                   'due_date', 'submitted_at', 'notes', 'created_at', 'optional', 'detail_json', 'slots_json'],
+    Evidence:     ['evidence_id', 'assignment_id', 'line_id', 'request_id', 'file_id', 'file_name', 'mime', 'uploaded_by', 'uploaded_at', 'status', 'slot'],
     Activity_Log: ['ts', 'actor', 'action', 'entity_type', 'entity_id', 'details']
   }
 };

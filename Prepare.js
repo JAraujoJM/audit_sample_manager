@@ -26,8 +26,9 @@ function listMyAssignments() {
       var files = evidence
         .filter(function (e) { return String(e.assignment_id) === String(a.assignment_id); })
         .map(function (e) {
-          return { evidence_id: e.evidence_id, file_name: e.file_name, mime: e.mime || '', uploaded_at: toDateStr_(e.uploaded_at, tz) };
+          return { evidence_id: e.evidence_id, file_name: e.file_name, mime: e.mime || '', uploaded_at: toDateStr_(e.uploaded_at, tz), slot: e.slot || '' };
         });
+      var slots = parseJson_(a.slots_json); if (!Array.isArray(slots)) slots = [];
       return {
         assignment_id: a.assignment_id, request_id: a.request_id, line_id: a.line_id,
         request_title: req.title || '', document_no: line.document_no || '', vendor: line.vendor || '',
@@ -35,7 +36,7 @@ function listMyAssignments() {
         statement_code: line.statement_code || '', statement_amount: line.closing_balance || '',
         paid_at: toDateStr_(line.paid_at, tz),
         subpopulation: line.subpopulation || '', detail: parseJson_(line.detail_json), unit: parseJson_(a.detail_json),
-        evidence_type: a.evidence_type, optional: isOptional_(a.optional),
+        evidence_type: a.evidence_type, optional: isOptional_(a.optional), slots: slots,
         status: a.status, due_date: toDateStr_(req.due_date, tz),
         note: line.note || '', files: files
       };
@@ -44,7 +45,7 @@ function listMyAssignments() {
 }
 
 /* ---------- evidence upload (app-mediated) ---------- */
-function uploadEvidence(assignmentId, fileName, mimeType, base64Data) {
+function uploadEvidence(assignmentId, fileName, mimeType, base64Data, slot) {
   var me = requireRole_([ROLES.PREPARER, ROLES.ADMIN]);
   var ds = dataSs_();
   var asg = findAssignment_(assignmentId);
@@ -70,7 +71,7 @@ function uploadEvidence(assignmentId, fileName, mimeType, base64Data) {
   appendObject_(ds, 'Evidence', {
     evidence_id: newId_('EVD'), assignment_id: assignmentId, line_id: asg.line_id, request_id: asg.request_id,
     file_id: file.getId(), file_name: fileName, mime: file.getMimeType(),
-    uploaded_by: me.email, uploaded_at: nowIso_(), status: 'uploaded'
+    uploaded_by: me.email, uploaded_at: nowIso_(), status: 'uploaded', slot: String(slot || '')
   });
 
   if (['pending', 'assigned'].indexOf(String(asg.status).toLowerCase()) !== -1) {
@@ -118,7 +119,15 @@ function submitAssignment(assignmentId) {
   assertOwner_(asg, me);
   assertEditable_(asg, me);
   var files = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.assignment_id) === String(assignmentId); });
-  if (!files.length) throw new Error('Upload at least one evidence file before submitting.');
+  var slots = parseJson_(asg.slots_json);
+  if (Array.isArray(slots) && slots.length) {
+    // Multi-slot task (e.g. Voucher, JumiaPay): every required slot needs a file.
+    var have = {}; files.forEach(function (f) { have[String(f.slot || '')] = true; });
+    var missing = slots.filter(function (s) { return !s.optional && !have[s.key]; });
+    if (missing.length) throw new Error('Upload ' + missing.map(function (s) { return s.label; }).join(', ') + ' before submitting.');
+  } else if (!files.length) {
+    throw new Error('Upload at least one evidence file before submitting.');
+  }
 
   updateRowById_(ds, 'Assignments', 'assignment_id', assignmentId, { status: 'submitted', submitted_at: nowIso_() });
   updateLineAssignmentRollup_(asg.line_id);

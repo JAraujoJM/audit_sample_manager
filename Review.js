@@ -63,7 +63,7 @@ function reviewDetail(requestId, stage) {
     .filter(function (e) { return String(e.request_id) === String(requestId); })
     .forEach(function (e) {
       (evByAsg[e.assignment_id] = evByAsg[e.assignment_id] || []).push({
-        evidence_id: e.evidence_id, file_name: e.file_name, mime: e.mime || ''
+        evidence_id: e.evidence_id, file_name: e.file_name, mime: e.mime || '', slot: e.slot || ''
       });
     });
 
@@ -84,8 +84,9 @@ function reviewDetail(requestId, stage) {
         subpopulation: l.subpopulation || '', detail: parseJson_(l.detail_json),
         ai_verdict: l.ai_verdict || '', ai_summary: l.ai_summary || '', ai_checked_at: l.ai_checked_at || '',
         assignments: (asgByLine[l.line_id] || []).map(function (a) {
+          var slts = parseJson_(a.slots_json); if (!Array.isArray(slts)) slts = [];
           return { evidence_type: a.evidence_type, assigned_to: a.assigned_to, status: a.status,
-                   optional: isOptional_(a.optional), unit: parseJson_(a.detail_json), files: evByAsg[a.assignment_id] || [] };
+                   optional: isOptional_(a.optional), unit: parseJson_(a.detail_json), slots: slts, files: evByAsg[a.assignment_id] || [] };
         })
       };
     });
