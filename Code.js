@@ -78,10 +78,11 @@ function styleKey_(matched) {
 }
 
 /* ---------- gateway round trip ---------- */
-function submitJob_(query, database) {
+function submitJob_(query, database, server) {
   var requestId = APP_ID + '_' + Utilities.getUuid();
   var job = {
     query: query, request_id: requestId, app_id: APP_ID, output_name: requestId,
+    server: server || 'finrec',          // 'finrec' (AIG_Nav_*) | 'pay' (PAY_DWH) — a db only runs on its own server
     database: database || DATABASE, evidence: true, contract_version: 1,
     description: 'Audit Request Manager enrichment', requested_by: Session.getActiveUser().getEmail()
   };
@@ -189,7 +190,7 @@ function enrich(payload) {
   if (mod && mod.stage2) {
     var refs = collectRefs_(mod, mapped);
     if (refs.length) {
-      if (!st.q2Id) { st.q2Id = submitJob_(mod.stage2.buildQuery(refs, qp), mod.stage2.database); p.setProperty('outstanding', JSON.stringify(st)); }
+      if (!st.q2Id) { st.q2Id = submitJob_(mod.stage2.buildQuery(refs, qp), mod.stage2.database, mod.stage2.server); p.setProperty('outstanding', JSON.stringify(st)); }
       var csv2File = pollCsv_(st.q2Id, deadline);
       if (csv2File === 'FAILED') { p.deleteProperty('outstanding'); return { status: 'failed', requestId: st.q2Id, reason: 'Query 2 (' + mod.stage2.database + ') moved to Requests_Failed/ — see Logs/audit.jsonl' }; }
       if (!csv2File) return { status: 'pending', requestId: st.q2Id };

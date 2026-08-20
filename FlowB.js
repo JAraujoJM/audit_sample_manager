@@ -106,6 +106,7 @@ function flowB_() {
      * subpopulation. `merge` folds the PAY_DWH fields onto the matching line.
      */
     stage2: {
+      server:   'pay',                                             // PAY_DWH lives on the 'pay' server, not 'finrec'
       database: 'PAY_DWH',
       keyCol:   'UniqueReference',                                  // query-2 column = the reference
       refOf:    function (mapped) { return flowBStage2Ref_(mapped.subpopulation, mapped.company_country, function (k) { return mapped[flowBCellAlias_(k)]; }); },

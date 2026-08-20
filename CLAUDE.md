@@ -25,8 +25,9 @@ registered in `Flows.js`.
 (`{ id, sampleKey, buildQuery(items, p), mapRow(cell) }`) + register it in `Flows.js`. The rest of the engine
 (assignment, evidence, review/audit, storage, IPE) is flow-agnostic. Optional module hooks (used by Flow B —
 Cash Anchor): `parseSample(text)` to turn the paste box into sample items with a `.key` (default = one token
-per line), and `stage2 { database, refOf(mapped), keyCol, buildQuery(refs, p), mapRow2(cell), merge(line,row2) }`
-for a **dependent second query** (Flow B: query 1 on `AIG_Nav_Jumia_Reconciliation` → query 2 on `PAY_DWH`).
+per line), and `stage2 { server, database, refOf(mapped), keyCol, buildQuery(refs, p), mapRow2(cell), merge(line,row2) }`
+for a **dependent second query** (Flow B: query 1 on `AIG_Nav_Jumia_Reconciliation`/server `finrec` → query 2 on
+`PAY_DWH`/server `pay`). The gateway job needs a `server` field (`finrec` default | `pay`); a db only runs on its own server.
 enrich() runs both stages in one execution, resumable (persists both stage ids under one signature). Flow-specific
 line fields the standard `Sample_Lines` columns don't cover are stored as `detail_json` (+ a `subpopulation`
 column). Flow-shaped views (assign detail, review/preparer panels) still need per-flow tweaks when columns differ.
@@ -54,7 +55,8 @@ De-dup key: fiscal year (`Posting Date`) + `Id_Company` + `Document No.`.
 ## Gateway contract (enrichment)
 - Shared Drive base folder ID is set in `Code.gs` (`BASE_FOLDER_ID`); `app_id = audit_request_manager`.
 - Submit: write `{requestId}.json` to `Requests_Pending/` with `query`, `request_id`, `app_id`,
-  `output_name`, `database`, `evidence`, `contract_version`, `requested_by`.
+  `output_name`, `server` (`finrec` default | `pay`), `database`, `evidence`, `contract_version`, `requested_by`.
+  Server↔db: `finrec` → `AIG_Nav_DW` / `AIG_Nav_Jumia_Reconciliation` / `STG_AIG_NAV_JUMIA_REC`; `pay` → `PAY_DWH`.
 - Poll: CSV appears in `Responses/` as `{requestId}_*.csv`; failures land in `Requests_Failed/`
   (reason in `Logs/audit.jsonl`). CSV is UTF-8 **with BOM** — strip it before parsing.
 - `evidence: true` makes the gateway also produce a SOX evidence workbook for the run.
