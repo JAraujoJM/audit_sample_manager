@@ -24,15 +24,18 @@ function requestOverview() {
   var ds = dataSs_();
   var tz = ds.getSpreadsheetTimeZone();
   var lines = readObjects_(ds, 'Sample_Lines');
+  var asg = readObjects_(ds, 'Assignments');
   return readObjects_(ds, 'Requests').map(function (r) {
     var rid = String(r.request_id);
     var rl = lines.filter(function (l) { return String(l.request_id) === rid; });
+    var ra = asg.filter(function (a) { return String(a.request_id) === rid; });
     return {
       request_id: r.request_id, flow_id: r.flow_id, title: r.title,
       period: r.period, request_ref: r.request_ref || '', due_date: toDateStr_(r.due_date, tz),
       auditor_email: r.auditor_email || '', reviewer_email: r.reviewer_email || '',
       status: r.status, created_at: r.created_at, created_by: r.created_by,
       lineCount: rl.length, progress: progressOf_(rl),
+      taskCount: ra.length, taskProgress: progressOf_(ra),
       files: { csv: !!r.csv_file_id, xlsx: !!r.xlsx_file_id, csv2: !!r.csv2_file_id, xlsx2: !!r.xlsx2_file_id }
     };
   }).sort(function (a, b) { return String(b.created_at).localeCompare(String(a.created_at)); });

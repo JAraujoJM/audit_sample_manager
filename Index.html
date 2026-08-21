@@ -124,6 +124,10 @@
   .actions{display:flex; align-items:center; gap:6px;}
   .mini-prog{display:flex; align-items:center; gap:8px;}
   .mp-lbl{font-size:11.5px; color:var(--text-2); font-family:var(--mono);}
+  .mini-prog2{display:flex; flex-direction:column; gap:4px;}
+  .mp-row{display:flex; align-items:center; gap:7px;}
+  .mp-row .progressbar{width:78px; height:7px; margin:0;}
+  .mp-tag{font-size:10px; color:var(--text-3); font-family:var(--mono); width:9px; text-align:center;}
   /* download menu — fixed-position portal so it is never clipped by the table's overflow */
   .dd-menu-fixed{position:fixed; z-index:200; background:var(--surface); border:1px solid var(--sep-strong); border-radius:var(--radius-sm); box-shadow:var(--shadow); min-width:160px; overflow:hidden;}
   .dd-menu-fixed .menu-item{display:block; width:100%; text-align:left; border:0; background:none; padding:8px 12px; font:inherit; font-size:13px; cursor:pointer; color:var(--text);}
@@ -338,7 +342,7 @@
     <section class="view" id="view-review" hidden>
       <div id="reviewListPane">
         <h2>Review</h2>
-        <p class="sub">Requests awaiting your review. Open one to check its evidence, then submit each line to the auditor or return it.</p>
+        <p class="sub">Requests awaiting your review. Open one to check its evidence, then submit each sample to the auditor or return it.</p>
         <div id="reviewQueueWrap"><div class="card"><div class="empty">Loading…</div></div></div>
       </div>
       <div id="reviewDetailPane" hidden>
@@ -354,7 +358,7 @@
     <section class="view" id="view-audit" hidden>
       <div id="auditListPane">
         <h2>Audit</h2>
-        <p class="sub">Requests awaiting audit. Open one to review the submitted evidence, then close each line or return it.</p>
+        <p class="sub">Requests awaiting audit. Open one to review the submitted evidence, then close each sample or return it.</p>
         <div id="auditQueueWrap"><div class="card"><div class="empty">Loading…</div></div></div>
       </div>
       <div id="auditDetailPane" hidden>
@@ -621,7 +625,7 @@
     if(res.status==='pending'){ setStatus('Still running — click Run again to resume (it will not resubmit).','info'); return; }
     var n=(res.rows||[]).length;
     closeModal(); $('docs').value='';
-    toast(res.persistError ? ('Enriched, but saving warned: '+res.persistError) : ('Request created — '+n+' lines enriched.'), res.persistError?'warn':'ok');
+    toast(res.persistError ? ('Enriched, but saving warned: '+res.persistError) : ('Request created — '+n+' samples enriched.'), res.persistError?'warn':'ok');
     refreshHistory();
   }
   function reqMsg(msg, cls){ var s=$('reqMsg'); s.className='status on '+(cls||''); s.textContent=msg; setTimeout(function(){ s.className='status'; }, 6000); }
@@ -667,12 +671,35 @@
       .withFailureHandler(function(e){ $('reqTableWrap').innerHTML='<div class="card"><div class="empty">'+esc(e.message)+'</div></div>'; })
       .requestOverview();
   }
-  function miniProgress(p, total){
+  /* Progress is shown on two rows — samples (top) and tasks (bottom) — mapped onto one
+   * shared set of buckets so a single legend covers both without widening the column. */
+  var PROG_BUCKETS=[['done','green','Done'],['audit','blue','In audit'],['review','amber','In review'],['todo','neutral','To do'],['notfound','red','Not found']];
+  function bucketSample(s){ s=String(s).toLowerCase();
+    return s==='closed'?'done':s==='pending_audit'?'audit':s==='pending_review'?'review':s==='not_found'?'notfound':'todo'; }
+  function bucketTask(s){ s=String(s).toLowerCase();
+    return s==='accepted'?'done':s==='reviewed'?'audit':s==='submitted'?'review':'todo'; }
+  function progBar_(counts, total, bucketFn){
+    var b={todo:0,review:0,audit:0,done:0,notfound:0};
+    Object.keys(counts||{}).forEach(function(st){ b[bucketFn(st)] += (counts[st]||0); });
+    var seg=PROG_BUCKETS.map(function(o){ var n=b[o[0]]||0; return n?'<span class="seg-'+o[1]+'" style="width:'+(100*n/total)+'%"></span>':''; }).join('');
+    return { html:'<div class="progressbar" style="margin:0">'+seg+'</div>', done:b.done };
+  }
+  function miniProgress(p, total, tp, ttotal){
     if(!total) return '<span class="muted">—</span>';
-    var order=[['closed','green'],['pending_audit','blue'],['pending_review','amber'],['in_progress','neutral'],['assigned','blue'],['open','gray'],['not_found','red']];
-    var title=order.filter(function(o){return p[o[0]];}).map(function(o){ return o[0].replace(/_/g,' ')+': '+p[o[0]]; }).join(' · ');
-    var bar=order.map(function(o){ var n=p[o[0]]||0; return n?'<span class="seg-'+o[1]+'" style="width:'+(100*n/total)+'%"></span>':''; }).join('');
-    return '<div class="mini-prog" title="'+esc(title)+'"><div class="progressbar" style="width:88px;margin:0">'+bar+'</div><span class="mp-lbl">'+(p.closed||0)+'/'+total+'</span></div>';
+    var s=progBar_(p, total, bucketSample);
+    var rows='<div class="mp-row"><span class="mp-tag" title="Samples">S</span>'+s.html+'<span class="mp-lbl">'+s.done+'/'+total+'</span></div>';
+    if(ttotal){ var t=progBar_(tp, ttotal, bucketTask);
+      rows+='<div class="mp-row"><span class="mp-tag" title="Tasks">T</span>'+t.html+'<span class="mp-lbl">'+t.done+'/'+ttotal+'</span></div>'; }
+    return '<div class="mini-prog2">'+rows+'</div>';
+  }
+  function progLegend_(reqs){
+    var present={};
+    reqs.forEach(function(r){
+      Object.keys(r.progress||{}).forEach(function(st){ present[bucketSample(st)]=1; });
+      Object.keys(r.taskProgress||{}).forEach(function(st){ present[bucketTask(st)]=1; });
+    });
+    var leg=PROG_BUCKETS.filter(function(o){ return present[o[0]]; }).map(function(o){ return '<span class="prog-lbl"><i class="seg-'+o[1]+'"></i>'+o[2]+'</span>'; }).join('');
+    return leg ? '<div class="prog-legend" style="margin:0 2px 12px">'+leg+'<span class="prog-lbl" style="color:var(--text-3)">S samples · T tasks</span></div>' : '';
   }
   function renderReqTable(reqs){
     var wrap=$('reqTableWrap');
@@ -688,7 +715,7 @@
         +'<td>'+esc(r.due_date||'—')+'</td>'
         +'<td class="trunc" title="'+esc(r.auditor_email||'')+'">'+esc(r.auditor_email||'—')+'</td>'
         +'<td class="trunc" title="'+esc(r.reviewer_email||'')+'">'+esc(r.reviewer_email||'—')+'</td>'
-        +'<td>'+miniProgress(r.progress, r.lineCount)+'</td>'
+        +'<td>'+miniProgress(r.progress, r.lineCount, r.taskProgress, r.taskCount)+'</td>'
         +'<td>'+statusPill(r.status)+'</td>'
         +'<td><div class="actions">'
           +'<button class="btn sm ipe-btn" data-id="'+esc(r.request_id)+'" title="IPE / SOX">IPE</button>'
@@ -696,10 +723,7 @@
           +'<button class="btn primary sm icon-btn open-btn" data-id="'+esc(r.request_id)+'" title="Open &amp; assign">⋯</button>'
         +'</div></td></tr>';
     }).join('');
-    var present={}; reqs.forEach(function(r){ Object.keys(r.progress||{}).forEach(function(k){ present[k]=1; }); });
-    var legOrder=[['closed','green','closed'],['pending_audit','blue','pending audit'],['pending_review','amber','pending review'],['in_progress','neutral','in progress'],['assigned','blue','assigned'],['open','gray','open'],['not_found','red','not found']];
-    var leg=legOrder.filter(function(o){ return present[o[0]]; }).map(function(o){ return '<span class="prog-lbl"><i class="seg-'+o[1]+'"></i>'+o[2]+'</span>'; }).join('');
-    var legendHtml = leg ? '<div class="prog-legend" style="margin:0 2px 12px">'+leg+'</div>' : '';
+    var legendHtml = progLegend_(reqs);
     wrap.innerHTML='<div class="card" style="overflow-x:auto">'+legendHtml+'<table class="req-table"><thead><tr>'
       +'<th>PBC ref</th><th>Period</th><th>Due</th><th>Auditor</th><th>Reviewer</th><th>Progress</th><th>Status</th><th>Actions</th>'
       +'</tr></thead><tbody>'+rows+'</tbody></table></div>';
@@ -981,9 +1005,9 @@
    * "pending my action" toggle) -> a per-task modal (facts + document + decision). */
   var STAGE_CFG={
     review:{ queueWrap:'reviewQueueWrap', tasksWrap:'reviewTasksWrap', listPane:'reviewListPane', detailPane:'reviewDetailPane',
-             primaryLabel:'Submit to auditor', primaryFn:'reviewerSubmit', returnFn:'reviewerReturn', modalTitle:'Review line' },
+             primaryLabel:'Submit to auditor', primaryFn:'reviewerSubmit', returnFn:'reviewerReturn', modalTitle:'Review sample' },
     audit: { queueWrap:'auditQueueWrap',  tasksWrap:'auditTasksWrap',  listPane:'auditListPane',  detailPane:'auditDetailPane',
-             primaryLabel:'Close',             primaryFn:'auditorClose',   returnFn:'auditorReturn', modalTitle:'Audit line' }
+             primaryLabel:'Close',             primaryFn:'auditorClose',   returnFn:'auditorReturn', modalTitle:'Audit sample' }
   };
   var stageState={ review:{reqId:null, detail:null, pendingOnly:true}, audit:{reqId:null, detail:null, pendingOnly:true} };
   function animateSlide(el, cls){ el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); }
@@ -1006,14 +1030,11 @@
         +'<td>'+esc(r.period||'—')+'</td>'
         +'<td>'+esc(r.due_date||'—')+'</td>'
         +'<td>'+pend+'</td>'
-        +'<td>'+miniProgress(r.progress, r.lineCount)+'</td>'
+        +'<td>'+miniProgress(r.progress, r.lineCount, r.taskProgress, r.taskCount)+'</td>'
         +'<td><div class="actions"><button class="btn primary sm icon-btn stage-open" data-id="'+esc(r.request_id)+'" title="Open">⋯</button></div></td>'
         +'</tr>';
     }).join('');
-    var present={}; reqs.forEach(function(r){ Object.keys(r.progress||{}).forEach(function(k){ present[k]=1; }); });
-    var legOrder=[['closed','green','closed'],['pending_audit','blue','pending audit'],['pending_review','amber','pending review'],['in_progress','neutral','in progress'],['assigned','blue','assigned'],['open','gray','open'],['not_found','red','not found']];
-    var leg=legOrder.filter(function(o){ return present[o[0]]; }).map(function(o){ return '<span class="prog-lbl"><i class="seg-'+o[1]+'"></i>'+o[2]+'</span>'; }).join('');
-    var legendHtml = leg ? '<div class="prog-legend" style="margin:0 2px 12px">'+leg+'</div>' : '';
+    var legendHtml = progLegend_(reqs);
     wrap.innerHTML='<div class="card" style="overflow-x:auto">'+legendHtml+'<table class="req-table"><thead><tr>'
       +'<th>PBC ref</th><th>Period</th><th>Due</th><th>Pending</th><th>Progress</th><th>Actions</th>'
       +'</tr></thead><tbody>'+rows+'</tbody></table></div>';
@@ -1040,13 +1061,13 @@
     var totalTasks=lines.reduce(function(n,l){ return n+((l.assignments||[]).length); }, 0);
     var DONE=['submitted','reviewed','accepted'];
     var head='<div class="card"><h2 style="font-size:16px;margin:0 0 2px">'+esc(d.request.title)+'</h2>'
-      +'<p class="sub" style="margin:0">'+esc(d.request.period||'')+' · '+lines.length+' lines'+(isB?(' · '+totalTasks+' tasks'):'')+'</p></div>';
+      +'<p class="sub" style="margin:0">'+esc(d.request.period||'')+' · '+lines.length+' samples'+(isB?(' · '+totalTasks+' tasks'):'')+'</p></div>';
     var toggle='<div class="row" style="margin-bottom:12px; gap:0; align-items:center">'
       +'<label class="switch"><input type="checkbox" class="pending-toggle"'+(pendingOnly?' checked':'')+'><span class="sw-track"><span class="sw-knob"></span></span></label>'
       +'<span class="sw-label">Pending my action</span></div>';
     var body;
     if(!shown.length){
-      body='<div class="card">'+toggle+'<div class="empty">'+(pendingOnly?'No lines pending your action. Switch to “All lines” to see the rest.':'No lines.')+'</div></div>';
+      body='<div class="card">'+toggle+'<div class="empty">'+(pendingOnly?'No samples pending your action. Switch off the toggle to see the rest.':'No samples.')+'</div></div>';
     } else {
       var rows=shown.map(function(l){
         var canAct=String(l.status).toLowerCase()===actionable;
@@ -1058,7 +1079,7 @@
             +'<td>'+esc(l.company||'—')+'</td>'
             +'<td>'+(l.subpopulation?'<span class="pill neutral">'+esc(l.subpopulation)+'</span>':'—')+'</td>'
             +'<td>'+sub+'</td>'
-            +'<td>'+(pend?'<span class="pill amber">'+pend+'</span>':pend)+'</td>'
+            +'<td>'+pend+'</td>'
             +'<td>'+statusPill(l.status)+'</td>'+openTd+'</tr>';
         }
         var adv=/advance/i.test(l.mpl_type);
@@ -1342,7 +1363,7 @@
     var card=btn.closest('.line-card'), id=card.dataset.id;
     var noteEl=card.querySelector('.note-in'), note=noteEl?noteEl.value.trim():'';
     if(needNote && !note){ toast('Please add a note explaining what to fix.','warn'); return; }
-    var okMsg = needNote ? 'Returned to preparer' : (stage==='review'?'Submitted to auditor':'Line closed');
+    var okMsg = needNote ? 'Returned to preparer' : (stage==='review'?'Submitted to auditor':'Sample closed');
     var busy  = needNote ? 'Returning' : (stage==='review'?'Submitting':'Closing');
     // reviewerSubmit's 2nd arg is the AI override flag; every other action takes the note.
     var arg = note;

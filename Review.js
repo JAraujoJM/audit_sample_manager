@@ -27,6 +27,7 @@ function reviewQueue(stage) {
   var ds = dataSs_();
   var tz = ds.getSpreadsheetTimeZone();
   var lines = readObjects_(ds, 'Sample_Lines');
+  var asg = readObjects_(ds, 'Assignments');
   return readObjects_(ds, 'Requests').filter(function (r) {
     // The reviewer is set per request; a Reviewer sees only their own (admins see all).
     return stage !== 'review' || me.role === ROLES.ADMIN ||
@@ -34,11 +35,13 @@ function reviewQueue(stage) {
   }).map(function (r) {
     var rid = String(r.request_id);
     var rl = lines.filter(function (l) { return String(l.request_id) === rid; });
+    var ra = asg.filter(function (a) { return String(a.request_id) === rid; });
     var pending = rl.filter(function (l) { return String(l.status).toLowerCase() === want; }).length;
     return {
       request_id: r.request_id, title: r.title, period: r.period, status: r.status,
       request_ref: r.request_ref || '', due_date: toDateStr_(r.due_date, tz),
-      created_at: r.created_at, lineCount: rl.length, pendingCount: pending, progress: progressOf_(rl)
+      created_at: r.created_at, lineCount: rl.length, pendingCount: pending, progress: progressOf_(rl),
+      taskCount: ra.length, taskProgress: progressOf_(ra)
     };
   }).sort(function (a, b) {
     if (b.pendingCount !== a.pendingCount) return b.pendingCount - a.pendingCount;
@@ -228,12 +231,12 @@ function processAiChecksNow() {
  *  the auto-on-submit path can use it. `how` labels the trail ('reviewer' | 'auto'). */
 function assessLineCore_(lineId, line, how) {
   var ds = dataSs_();
-  if (!line) { line = findLine_(lineId); if (!line) throw new Error('Line not found.'); }
+  if (!line) { line = findLine_(lineId); if (!line) throw new Error('Sample not found.'); }
 
   var typeByAsg = {};
   getAssignments(lineId).forEach(function (a) { typeByAsg[String(a.assignment_id)] = a.evidence_type; });
   var docs = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.line_id) === String(lineId); });
-  if (!docs.length) throw new Error('No evidence documents to assess on this line.');
+  if (!docs.length) throw new Error('No evidence documents to assess on this sample.');
 
   var facts = [
     'Seller / vendor: ' + (line.vendor || '—'),
@@ -297,7 +300,7 @@ function reviewerSubmit(lineId, override) {
   var line = requireLineStatus_(lineId, 'pending_review');
   assertReviewer_(line.request_id, me);
   var verdict = String(line.ai_verdict || '').toLowerCase();
-  if (!verdict) throw new Error('Run the AI check before submitting this line to the auditor.');
+  if (!verdict) throw new Error('Run the AI check before submitting this sample to the auditor.');
   if (verdict !== 'accept' && !override) {
     throw new Error('The AI flagged this evidence (' + verdict + '). Tick the confirmation to proceed anyway.');
   }
@@ -401,9 +404,9 @@ function assertReviewer_(requestId, me) {
 
 function requireLineStatus_(lineId, want) {
   var line = findLine_(lineId);
-  if (!line) throw new Error('Line not found.');
+  if (!line) throw new Error('Sample not found.');
   if (String(line.status).toLowerCase() !== want) {
-    throw new Error('This line is no longer in the expected state (now: ' + line.status + ').');
+    throw new Error('This sample is no longer in the expected state (now: ' + line.status + ').');
   }
   return line;
 }
