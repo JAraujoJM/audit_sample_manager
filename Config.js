@@ -68,7 +68,8 @@ var SCHEMA = {
     // A line can carry several Assignments (e.g. invoice + proof of payment), each owned
     // by a different preparer; the line only advances once every Assignment is satisfied.
     Assignments:  ['assignment_id', 'line_id', 'request_id', 'evidence_type', 'assigned_to', 'status',
-                   'due_date', 'submitted_at', 'notes', 'created_at', 'optional', 'detail_json', 'slots_json'],
+                   'due_date', 'submitted_at', 'notes', 'created_at', 'optional', 'detail_json', 'slots_json',
+                   'ai_verdict', 'ai_summary', 'ai_checked_at'],
     Evidence:     ['evidence_id', 'assignment_id', 'line_id', 'request_id', 'file_id', 'file_name', 'mime', 'uploaded_by', 'uploaded_at', 'status', 'slot'],
     Activity_Log: ['ts', 'actor', 'action', 'entity_type', 'entity_id', 'details']
   }

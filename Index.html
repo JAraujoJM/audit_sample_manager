@@ -1103,8 +1103,9 @@
   function openTaskModal(stage, lineId){
     var d=stageState[stage].detail; if(!d) return;
     var line=d.lines.filter(function(l){ return String(l.line_id)===String(lineId); })[0]; if(!line) return;
-    // Cash & POS is reviewed payment-by-payment: '...' opens the list of payment subtasks.
-    if(stage==='review' && line.subpopulation==='Postpaid - Cash & POS'){ openSubtaskTable(stage, line); return; }
+    // Cash & POS is handled payment-by-payment in both Review and Audit: '...' opens
+    // the list of payment subtasks.
+    if((stage==='review'||stage==='audit') && line.subpopulation==='Postpaid - Cash & POS'){ openSubtaskTable(stage, line); return; }
     $('taskModalTitle').textContent=STAGE_CFG[stage].modalTitle+' · '+line.document_no;
     $('taskModalBody').innerHTML=renderStageLine(stage, d.actionable, line);
     openModal('task');
@@ -1116,19 +1117,25 @@
       var runBtn=$('taskModalBody').querySelector('.ai-run'); if(runBtn) runAiCheck(stage, runBtn);
     }
   }
-  /* ---- Cash & POS: review payment subtasks one at a time ---- */
+  /* ---- Cash & POS: handle payment subtasks one at a time (Review + Audit) ---- */
+  var SUBTASK_CFG={
+    review:{ sampleStatus:'pending_review', actNeeded:'submitted', primaryLabel:'Submit to auditor', primaryFn:'reviewerSubmitTask', returnFn:'reviewerReturnTask', ai:true },
+    audit: { sampleStatus:'pending_audit',  actNeeded:'reviewed',  primaryLabel:'Close',             primaryFn:'auditorCloseTask',   returnFn:'auditorReturnTask',   ai:false }
+  };
   var curSubtaskLine=null;
   function openSubtaskTable(stage, line){
-    $('taskModalTitle').textContent='Review · '+line.document_no+' · payments';
+    var cfg=SUBTASK_CFG[stage];
+    $('taskModalTitle').textContent=(stage==='audit'?'Audit':'Review')+' · '+line.document_no+' · payments';
     var asgs=line.assignments||[];
     var rows=asgs.map(function(a,idx){
-      var u=a.unit||{}, canAct=String(a.status).toLowerCase()==='submitted';
+      var u=a.unit||{}, canAct=String(line.status).toLowerCase()===cfg.sampleStatus && String(a.status).toLowerCase()===cfg.actNeeded;
       return '<tr>'
         +'<td class="mono">'+esc(u.payment_no||('#'+(idx+1)))+'</td>'
         +'<td>'+esc(u.bank_account||'—')+'</td>'
         +'<td>'+fmtNum(u.amount)+'</td>'
+        +'<td>'+(a.ai_verdict?aiVerdictPill(String(a.ai_verdict).toLowerCase()):'<span class="muted">—</span>')+'</td>'
         +'<td>'+statusPill(a.status)+'</td>'
-        +'<td><div class="actions"><button class="btn '+(canAct?'primary ':'')+'sm icon-btn subtask-open" data-aid="'+esc(a.assignment_id)+'" title="'+(canAct?'Review':'View')+'">⋯</button></div></td>'
+        +'<td><div class="actions"><button class="btn '+(canAct?'primary ':'')+'sm icon-btn subtask-open" data-aid="'+esc(a.assignment_id)+'" title="'+(canAct?(stage==='audit'?'Audit':'Review'):'View')+'">⋯</button></div></td>'
         +'</tr>';
     }).join('');
     $('taskModalBody').innerHTML='<div class="facts" style="margin-bottom:12px">'
@@ -1136,7 +1143,7 @@
       +fact('Company', esc(line.company||'—'))
       +fact('Subpopulation', esc(line.subpopulation))
       +fact('Payments', String(asgs.length))+'</div>'
-      +'<div style="overflow-x:auto"><table class="req-table"><thead><tr><th>Payment no.</th><th>Bank</th><th>Amount</th><th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+      +'<div style="overflow-x:auto"><table class="req-table"><thead><tr><th>Payment no.</th><th>Bank</th><th>Amount</th><th>AI</th><th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
     openModal('task');
     Array.prototype.forEach.call($('taskModalBody').querySelectorAll('.subtask-open'), function(b){ b.addEventListener('click', function(){ openSubtask(stage, line.line_id, b.dataset.aid); }); });
   }
@@ -1148,12 +1155,21 @@
     var el=$('taskModalBody');
     el.querySelector('.subtask-back').addEventListener('click', function(){ openSubtaskTable(stage, line); });
     Array.prototype.forEach.call(el.querySelectorAll('.chip'), function(c){ c.addEventListener('click', function(){ openDoc(c.dataset.line, c.dataset.eid, c); }); });
-    var p=el.querySelector('.subtask-primary'); if(p) p.addEventListener('click', function(){ subtaskAction(stage,'reviewerSubmitTask', p, false); });
-    var r=el.querySelector('.subtask-return');  if(r) r.addEventListener('click', function(){ subtaskAction(stage,'reviewerReturnTask', r, true); });
+    var cfg=SUBTASK_CFG[stage];
+    var p=el.querySelector('.subtask-primary'); if(p) p.addEventListener('click', function(){ subtaskAction(stage, cfg.primaryFn, p, false); });
+    var r=el.querySelector('.subtask-return');  if(r) r.addEventListener('click', function(){ subtaskAction(stage, cfg.returnFn, r, true); });
+    if(cfg.ai){
+      var run=el.querySelector('.ai-run'); if(run) run.addEventListener('click', function(){ runSubtaskAiCheck(stage, run); });
+      var ovr=el.querySelector('.ai-ovr'); if(ovr) ovr.addEventListener('change', function(){ updateSubtaskGate(el); });
+      updateSubtaskGate(el);
+      // Auto-run the AI check on open if this payment has no verdict yet.
+      if(String(line.status).toLowerCase()===cfg.sampleStatus && String(a.status).toLowerCase()===cfg.actNeeded && !String(a.ai_verdict||'').trim() && run){ runSubtaskAiCheck(stage, run); }
+    }
     var first=el.querySelector('.chip'); if(first) openDoc(first.dataset.line, first.dataset.eid, first);
   }
   function renderSubtaskReview(stage, line, a){
-    var u=a.unit||{};
+    var cfg=SUBTASK_CFG[stage], u=a.unit||{};
+    var canAct=String(line.status).toLowerCase()===cfg.sampleStatus && String(a.status).toLowerCase()===cfg.actNeeded;
     var facts='<div class="facts">'
       +fact('Sales order item','<span class="mono">'+esc(line.document_no)+'</span>')
       +fact('Company', esc(line.company||'—'))
@@ -1166,12 +1182,15 @@
     var chips=a.files.length
       ? a.files.map(function(f){ return '<button class="chip" data-eid="'+esc(f.evidence_id)+'" data-line="'+esc(a.assignment_id)+'">'+esc(f.file_name)+'</button>'; }).join('')
       : '<span class="muted" style="font-size:12px">no files</span>';
-    var canAct=String(a.status).toLowerCase()==='submitted';
+    // Review: AI panel gates Submit. Audit: show the AI verdict read-only.
+    var aiBlock='';
+    if(cfg.ai && canAct){ aiBlock=aiPanelHtml({ai_verdict:a.ai_verdict, ai_summary:a.ai_summary}); }
+    else if(a.ai_verdict){ aiBlock='<div class="ai-panel"><div class="ai-head">'+aiVerdictPill(String(a.ai_verdict).toLowerCase())+' <span class="ai-sum">'+esc(a.ai_summary||'')+'</span></div></div>'; }
     var actions = canAct
-      ? '<div class="line-foot"><input class="note-in" placeholder="Note (required to return)">'
-        +'<button class="btn primary sm subtask-primary" data-aid="'+esc(a.assignment_id)+'">Submit to auditor</button>'
+      ? aiBlock+'<div class="line-foot"><input class="note-in" placeholder="Note (required to return)">'
+        +'<button class="btn primary sm subtask-primary" data-aid="'+esc(a.assignment_id)+'"'+(cfg.ai?' disabled':'')+'>'+esc(cfg.primaryLabel)+'</button>'
         +'<button class="btn sm subtask-return" data-aid="'+esc(a.assignment_id)+'">Return</button></div>'
-      : '<div class="muted" style="font-size:12.5px; margin-top:10px">'+esc(String(a.status).replace(/_/g,' '))+'</div>';
+      : aiBlock+'<div class="muted" style="font-size:12.5px; margin-top:10px">'+esc(String(a.status).replace(/_/g,' '))+'</div>';
     return '<div class="line-card" data-aid="'+esc(a.assignment_id)+'" style="border:0;padding:0;margin:0">'
       +'<div class="line-head"><button class="btn sm subtask-back">← Payments</button><span class="doc" style="margin-left:8px">'+esc(u.payment_no||a.evidence_type)+'</span>'
         +'<span class="grow"></span>'+statusPill(a.status)+'</div>'
@@ -1180,25 +1199,46 @@
       +'<div class="doc-chips" style="margin-top:10px">'+chips+'</div>'
       +actions+'</div>';
   }
+  function updateSubtaskGate(scope){
+    var panel=scope.querySelector('.ai-panel'); var submit=scope.querySelector('.subtask-primary'); if(!panel||!submit) return;
+    var v=panel.getAttribute('data-verdict'), ovr=scope.querySelector('.ai-ovr');
+    submit.disabled=!((v==='accept')||(v && v!=='accept' && ovr && ovr.checked));
+  }
+  function runSubtaskAiCheck(stage, btn){
+    var card=btn.closest('.line-card'), aid=card.dataset.aid, lineId=curSubtaskLine;
+    btn.disabled=true; var was=btn.innerHTML; btn.innerHTML='<span class="spinner"></span>Checking';
+    var res=card.querySelector('.ai-result'); if(res) res.innerHTML='<span class="ai-sum muted">Checking the proof of payment…</span>';
+    google.script.run.withSuccessHandler(function(r){
+      var d=stageState[stage].detail, ln=d&&d.lines.filter(function(x){ return String(x.line_id)===String(lineId); })[0];
+      var a=ln&&(ln.assignments||[]).filter(function(x){ return String(x.assignment_id)===String(aid); })[0];
+      if(a){ a.ai_verdict=r.verdict; a.ai_summary=(r.perDoc||[]).map(function(p){ return p.file+' → '+p.verdict+(p.summary?(': '+p.summary):''); }).join('  |  '); }
+      openSubtask(stage, lineId, aid);
+      toast('AI check: '+r.verdict, r.verdict==='accept'?'ok':'warn');
+    }).withFailureHandler(function(e){ btn.disabled=false; btn.innerHTML=was; if(res) res.innerHTML='<span class="ai-sum muted">'+esc(e.message)+'</span>'; toast(e.message,'warn'); })
+      .assessAssignment(aid);
+  }
   function subtaskAction(stage, method, btn, needNote){
+    var cfg=SUBTASK_CFG[stage];
     var card=btn.closest('.line-card'), aid=card.dataset.aid, lineId=curSubtaskLine;
     var noteEl=card.querySelector('.note-in'), note=noteEl?noteEl.value.trim():'';
     if(needNote && !note){ toast('Please add a note explaining what to fix.','warn'); return; }
-    var okMsg = needNote ? 'Payment returned to preparer' : 'Payment reviewed';
-    var busy  = needNote ? 'Returning' : 'Submitting';
+    var okMsg = needNote ? 'Payment returned to preparer' : (stage==='audit'?'Payment closed':'Payment reviewed');
+    var busy  = needNote ? 'Returning' : (stage==='audit'?'Closing':'Submitting');
     var sibs=card.querySelectorAll('.subtask-primary, .subtask-return');
     Array.prototype.forEach.call(sibs, function(b){ b.disabled=true; });
     var orig=btn.innerHTML; btn.innerHTML='<span class="spinner"></span>'+busy;
     var ok=function(dd){
       stageState[stage].detail=dd; renderStageTasks(stage);
       var line=(dd.lines||[]).filter(function(l){ return String(l.line_id)===String(lineId); })[0];
-      if(line && String(line.status).toLowerCase()==='pending_review'){ openSubtaskTable(stage, line); }   // more payments to review
+      if(line && String(line.status).toLowerCase()===cfg.sampleStatus){ openSubtaskTable(stage, line); }   // more payments to handle
       else { closeModal(); }
       toast(okMsg,'ok');
     };
     var fail=function(e){ Array.prototype.forEach.call(sibs, function(b){ b.disabled=false; }); btn.innerHTML=orig; toast(e.message,'warn'); };
     var api=google.script.run.withSuccessHandler(ok).withFailureHandler(fail);
-    api[method](aid, note);   // reviewerSubmitTask / reviewerReturnTask both take (id, note)
+    // reviewerSubmitTask takes (id, override, note); everything else (id, note).
+    if(method==='reviewerSubmitTask'){ var ovr=card.querySelector('.ai-ovr'); api[method](aid, ovr?ovr.checked:false, note); }
+    else { api[method](aid, note); }
   }
   function fact(k,v){ return '<div class="f"><span class="fk">'+k+'</span><span class="fv">'+v+'</span></div>'; }
   function renderStageLine(stage, actionable, l){

@@ -89,7 +89,8 @@ function reviewDetail(requestId, stage) {
         assignments: (asgByLine[l.line_id] || []).map(function (a) {
           var slts = parseJson_(a.slots_json); if (!Array.isArray(slts)) slts = [];
           return { assignment_id: a.assignment_id, evidence_type: a.evidence_type, assigned_to: a.assigned_to, status: a.status,
-                   optional: isOptional_(a.optional), unit: parseJson_(a.detail_json), slots: slts, files: evByAsg[a.assignment_id] || [] };
+                   optional: isOptional_(a.optional), unit: parseJson_(a.detail_json), slots: slts, files: evByAsg[a.assignment_id] || [],
+                   ai_verdict: a.ai_verdict || '', ai_summary: a.ai_summary || '' };
         })
       };
     });
@@ -239,9 +240,10 @@ function assessLineCore_(lineId, line, how) {
   var docs = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.line_id) === String(lineId); });
   if (!docs.length) throw new Error('No evidence documents to assess on this sample.');
 
-  // Voucher is a two-image cross-check (OMS ↔ BOB); everything else is per-document.
-  var result = (sub === 'Prepaid - Voucher')
-    ? assessVoucher_(line, detail, docs)
+  // Voucher = two-image cross-check; Cash & POS = one verdict per payment task;
+  // everything else = per-document.
+  var result = (sub === 'Prepaid - Voucher') ? assessVoucher_(line, detail, docs)
+    : (sub === 'Postpaid - Cash & POS') ? assessCashPos_(lineId, line, ds)
     : assessPerDoc_(line, detail, sub, docs, typeByAsg);
 
   var at = nowIso_();
@@ -370,6 +372,76 @@ function worseVerdict_(a, b) {
   return (rank[b] > rank[a]) ? b : a;
 }
 
+/* ---------- per-assignment (per-payment) AI check — Cash & POS ---------- */
+/** Assess one Cash & POS payment task's proof of payment against that payment's data. */
+function assessAssignmentCore_(asg, line) {
+  var ds = dataSs_();
+  var files = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.assignment_id) === String(asg.assignment_id); });
+  if (!files.length) return { verdict: 'uncertain', summary: 'No file uploaded for this task.', perDoc: [] };
+  var unit = parseJson_(asg.detail_json), ldet = parseJson_(line.detail_json);
+  var facts = [
+    'Company: ' + (line.company || '—'),
+    'Order number: ' + (ldet.order_nr || '—'),
+    'Payment number: ' + (unit.payment_no || '—'),
+    'Payment date: ' + (String(unit.payment_date || '').slice(0, 10) || '—'),
+    'Payment reference: ' + (unit.payment_ref || '—'),
+    'Bank account: ' + (unit.bank_account || '—'),
+    'Amount received: ' + (unit.amount != null && unit.amount !== '' ? unit.amount : '—')
+  ].join('\n');
+  var system =
+    'You are a meticulous financial-audit evidence reviewer at Jumia checking the proof of payment for a single cash ' +
+    'remittance. Confirm the document IS a proof of payment (bank / wallet transfer receipt or statement line) and that ' +
+    'it corroborates the payment below, matching on the strongest available identifiers (amount, bank account, value ' +
+    'date, payment reference). Tolerate formatting/currency-format differences; focus on substance. Return "accept" when ' +
+    'it is clearly a proof of payment and nothing material contradicts the recorded payment; "reject" when it is the wrong ' +
+    'kind of document or a material detail clearly contradicts it; "uncertain" when unreadable or unverifiable. Give one ' +
+    'specific sentence (<240 chars) citing the amount / reference you compared.';
+  var perDoc = [], worst = 'accept';
+  files.forEach(function (e) {
+    var d = loadEvidenceBytes_(e);
+    if (d.err) { perDoc.push({ file: e.file_name, verdict: 'uncertain', summary: d.err }); worst = worseVerdict_(worst, 'uncertain'); return; }
+    var prompt = 'Expected evidence type: "' + (asg.evidence_type || 'Proof of payment') + '".\n\nPayment data:\n' + facts + '\n\nAssess the attached document (file name: ' + e.file_name + ').';
+    var res;
+    try { res = geminiAssess_(system, prompt, { mimeType: d.mime, bytes: d.bytes }); }
+    catch (err) { perDoc.push({ file: e.file_name, verdict: 'uncertain', summary: 'AI error: ' + (err.message || err) }); worst = worseVerdict_(worst, 'uncertain'); return; }
+    var v = String(res.verdict || 'uncertain').toLowerCase(); if (['accept', 'reject', 'uncertain'].indexOf(v) === -1) v = 'uncertain';
+    perDoc.push({ file: e.file_name, verdict: v, summary: String(res.summary || '') });
+    worst = worseVerdict_(worst, v);
+  });
+  return { verdict: worst, summary: perDoc.map(function (p) { return p.file + ' → ' + p.verdict + (p.summary ? (': ' + p.summary) : ''); }).join('  |  '), perDoc: perDoc };
+}
+
+/** Cash & POS line assessment = assess each payment task that has no verdict yet; the
+ *  line's verdict is the worst of them (kept so the background sweep won't re-run). */
+function assessCashPos_(lineId, line, ds) {
+  var items = getAssignments(lineId), worst = 'accept', per = [];
+  items.forEach(function (a) {
+    var v = String(a.ai_verdict || '').toLowerCase(), sm = String(a.ai_summary || '');
+    if (!v) {
+      var r = assessAssignmentCore_(a, line);
+      v = r.verdict; sm = String(r.summary || '');
+      updateRowById_(ds, 'Assignments', 'assignment_id', a.assignment_id, { ai_verdict: v, ai_summary: sm.substring(0, 900), ai_checked_at: nowIso_() });
+    }
+    per.push({ file: (parseJson_(a.detail_json).payment_no || a.evidence_type), verdict: v, summary: sm });
+    worst = worseVerdict_(worst, v);
+  });
+  return { verdict: worst, summary: 'Per payment: ' + per.map(function (p) { return p.file + '→' + p.verdict; }).join(', '), perDoc: per };
+}
+
+/** Reviewer button: (re)assess one payment task's proof of payment and store the verdict. */
+function assessAssignment(assignmentId) {
+  var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
+  var asg = findAssignment_(assignmentId);
+  if (!asg) throw new Error('Task not found.');
+  assertReviewer_(asg.request_id, me);
+  var line = requireLineStatus_(asg.line_id, 'pending_review');
+  var r = assessAssignmentCore_(asg, line);
+  var at = nowIso_();
+  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { ai_verdict: r.verdict, ai_summary: String(r.summary || '').substring(0, 900), ai_checked_at: at });
+  logActivity('AI_CHECK', 'line', asg.line_id, 'payment ' + (parseJson_(asg.detail_json).payment_no || '') + ' → ' + r.verdict + ' :: ' + String(r.summary || '').substring(0, 300));
+  return { verdict: r.verdict, perDoc: r.perDoc, checkedAt: at };
+}
+
 /* ---------- reviewer actions ---------- */
 function reviewerSubmit(lineId, override, note) {
   var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
@@ -399,13 +471,16 @@ function reviewerSubmit(lineId, override, note) {
  * the line is reviewed, the line advances to the auditor — so the reviewer works
  * payment-by-payment instead of the whole line at once. No AI gate at this level.
  */
-function reviewerSubmitTask(assignmentId, note) {
+function reviewerSubmitTask(assignmentId, override, note) {
   var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
   var asg = findAssignment_(assignmentId);
   if (!asg) throw new Error('Task not found.');
   assertReviewer_(asg.request_id, me);
   var line = requireLineStatus_(asg.line_id, 'pending_review');
   if (String(asg.status).toLowerCase() !== 'submitted') throw new Error('Only a submitted task can be reviewed (now: ' + asg.status + ').');
+  var verdict = String(asg.ai_verdict || '').toLowerCase();
+  if (!verdict) throw new Error('Run the AI check before submitting this payment to the auditor.');
+  if (verdict !== 'accept' && !override) throw new Error('The AI flagged this payment (' + verdict + '). Tick the confirmation to proceed anyway.');
 
   updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'reviewed' });
 
@@ -416,7 +491,7 @@ function reviewerSubmitTask(assignmentId, note) {
   if (allReviewed) updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'pending_audit', note: '' });
 
   note = String(note || '').trim();
-  logActivity('REVIEW_SUBMIT_TASK', 'line', asg.line_id, 'task reviewed (' + (asg.evidence_type || '') + ')' + (allReviewed ? ' — line to auditor' : '') + (note ? ' — ' + note : ''));
+  logActivity('REVIEW_SUBMIT_TASK', 'line', asg.line_id, 'payment reviewed (' + (parseJson_(asg.detail_json).payment_no || asg.evidence_type || '') + '; AI ' + verdict + (verdict !== 'accept' ? ', override' : '') + ')' + (allReviewed ? ' — sample to auditor' : '') + (note ? ' — ' + note : ''));
   return reviewDetail(asg.request_id, 'review');
 }
 
@@ -430,10 +505,49 @@ function reviewerReturnTask(assignmentId, note) {
   assertReviewer_(asg.request_id, me);
   var line = requireLineStatus_(asg.line_id, 'pending_review');
 
-  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '' });
-  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'in_progress', note: 'Returned by reviewer (' + (asg.evidence_type || 'task') + '): ' + note });
+  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '', ai_verdict: '', ai_summary: '', ai_checked_at: '' });
+  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'in_progress', note: 'Returned by reviewer (' + (parseJson_(asg.detail_json).payment_no || asg.evidence_type || 'task') + '): ' + note });
   logActivity('REVIEW_RETURN_TASK', 'line', asg.line_id, note);
   return reviewDetail(asg.request_id, 'review');
+}
+
+/* ---------- per-subtask audit (Cash & POS: close/return one payment at a time) ---------- */
+/** Auditor accepts ONE reviewed payment. When every required payment is accepted the
+ *  sample closes (and the request may close). */
+function auditorCloseTask(assignmentId, note) {
+  requireRole_([ROLES.AUDITOR, ROLES.ADMIN]);
+  var asg = findAssignment_(assignmentId);
+  if (!asg) throw new Error('Task not found.');
+  var line = requireLineStatus_(asg.line_id, 'pending_audit');
+  if (['reviewed', 'submitted'].indexOf(String(asg.status).toLowerCase()) === -1) throw new Error('Only a reviewed task can be closed (now: ' + asg.status + ').');
+
+  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'accepted' });
+
+  var items = getAssignments(asg.line_id);
+  var required = items.filter(function (a) { return !isOptional_(a.optional); });
+  var gate = required.length ? required : items;
+  var allAccepted = gate.every(function (a) { return String(a.status).toLowerCase() === 'accepted'; });
+  note = String(note || '').trim();
+  if (allAccepted) {
+    updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'closed', note: note ? ('Closed: ' + note) : '' });
+    recomputeRequestStatus_(asg.request_id);
+  }
+  logActivity('AUDIT_CLOSE_TASK', 'line', asg.line_id, 'payment closed (' + (parseJson_(asg.detail_json).payment_no || asg.evidence_type || '') + ')' + (allAccepted ? ' — sample closed' : '') + (note ? ' — ' + note : ''));
+  return reviewDetail(asg.request_id, 'audit');
+}
+
+/** Auditor returns ONE payment; the sample drops to in_progress so it can be redone. */
+function auditorReturnTask(assignmentId, note) {
+  requireRole_([ROLES.AUDITOR, ROLES.ADMIN]);
+  if (!String(note || '').trim()) throw new Error('Please add a note explaining what to fix.');
+  var asg = findAssignment_(assignmentId);
+  if (!asg) throw new Error('Task not found.');
+  var line = requireLineStatus_(asg.line_id, 'pending_audit');
+
+  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '', ai_verdict: '', ai_summary: '', ai_checked_at: '' });
+  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'in_progress', note: 'Returned by auditor (' + (parseJson_(asg.detail_json).payment_no || asg.evidence_type || 'task') + '): ' + note });
+  logActivity('AUDIT_RETURN_TASK', 'line', asg.line_id, note);
+  return reviewDetail(asg.request_id, 'audit');
 }
 
 function reviewerReturn(lineId, note) {
