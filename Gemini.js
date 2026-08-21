@@ -30,7 +30,9 @@ function getGeminiKey_() {
 }
 
 /**
- * Assess one document. `doc` = { mimeType, bytes } (bytes from Blob.getBytes()), or null.
+ * Assess one or more documents. `doc` = { mimeType, bytes } (bytes from Blob.getBytes())
+ * or null, OR an array of such objects (each may carry a `label` string, emitted as text
+ * before the image so the model knows which is which — e.g. OMS vs BOB screenshot).
  * `system` is the instruction, `prompt` the case facts. Returns the parsed JSON verdict
  * { verdict:'accept'|'reject'|'uncertain', confidence, summary, checks:[{name,ok,note}] }.
  */
@@ -52,8 +54,13 @@ function geminiAssessOne_(model, system, prompt, doc) {
   var apiKey = getGeminiKey_();
   var url = GEMINI.API_BASE + '/models/' + model + ':generateContent';
 
+  var list = !doc ? [] : (Array.isArray(doc) ? doc : [doc]);
   var parts = [];
-  if (doc && doc.bytes) parts.push({ inlineData: { mimeType: doc.mimeType || 'application/octet-stream', data: Utilities.base64Encode(doc.bytes) } });
+  list.forEach(function (d) {
+    if (!d || !d.bytes) return;
+    if (d.label) parts.push({ text: d.label + ':' });
+    parts.push({ inlineData: { mimeType: d.mimeType || 'application/octet-stream', data: Utilities.base64Encode(d.bytes) } });
+  });
   parts.push({ text: prompt });
 
   var payload = {

@@ -232,13 +232,53 @@ function processAiChecksNow() {
 function assessLineCore_(lineId, line, how) {
   var ds = dataSs_();
   if (!line) { line = findLine_(lineId); if (!line) throw new Error('Sample not found.'); }
-
+  var detail = parseJson_(line.detail_json);
+  var sub = String(line.subpopulation || '');
   var typeByAsg = {};
   getAssignments(lineId).forEach(function (a) { typeByAsg[String(a.assignment_id)] = a.evidence_type; });
   var docs = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.line_id) === String(lineId); });
   if (!docs.length) throw new Error('No evidence documents to assess on this sample.');
 
-  var facts = [
+  // Voucher is a two-image cross-check (OMS ↔ BOB); everything else is per-document.
+  var result = (sub === 'Prepaid - Voucher')
+    ? assessVoucher_(line, detail, docs)
+    : assessPerDoc_(line, detail, sub, docs, typeByAsg);
+
+  var at = nowIso_();
+  updateRowById_(ds, 'Sample_Lines', 'line_id', lineId, { ai_verdict: result.verdict, ai_summary: String(result.summary || '').substring(0, 900), ai_checked_at: at });
+  logActivity('AI_CHECK', 'line', lineId, (how === 'auto' ? 'auto on submit · ' : '') + 'verdict=' + result.verdict + ' :: ' + String(result.summary || '').substring(0, 400));
+  return { verdict: result.verdict, perDoc: result.perDoc, checkedAt: at };
+}
+
+/** Load an evidence file's bytes (with a size guard). Returns {bytes,mime} or {err}. */
+function loadEvidenceBytes_(e) {
+  try {
+    var blob = DriveApp.getFileById(e.file_id).getBlob();
+    var bytes = blob.getBytes();
+    if (bytes.length > 12 * 1024 * 1024) return { err: 'File too large to assess (' + Math.round(bytes.length / 1048576) + ' MB).' };
+    return { bytes: bytes, mime: blob.getContentType() };
+  } catch (err) { return { err: 'Could not open the file in Drive.' }; }
+}
+
+/** Sampled data given to the model, by flow. Flow B leads with the ORDER NUMBER and
+ *  explicitly flags the sales-order-item so the model never matches on the wrong one. */
+function buildFacts_(line, detail, sub) {
+  if (sub) {
+    var f = [
+      'Subpopulation: ' + sub,
+      'Company: ' + (line.company || '—'),
+      'Order number: ' + (detail.order_nr || '—'),
+      'Sales-order-item number (an item id — NOT the order number): ' + (line.document_no || '—')
+    ];
+    if (detail.jp_gateway || detail.jp_provider) f.push('Payment gateway / provider: ' + [detail.jp_gateway, detail.jp_provider].filter(Boolean).join(' / '));
+    if (detail.jp_retrieval) f.push('Retrieval reference: ' + detail.jp_retrieval);
+    if (detail.payment_no)   f.push('Payment number: ' + detail.payment_no);
+    if (detail.payment_ref)  f.push('Payment reference: ' + detail.payment_ref);
+    if (detail.bank_account) f.push('Bank account: ' + detail.bank_account);
+    if (line.amount != null && line.amount !== '') f.push('Amount: ' + line.amount);
+    return f.join('\n');
+  }
+  return [
     'Seller / vendor: ' + (line.vendor || '—'),
     'Document / transaction no.: ' + (line.document_no || '—'),
     'Statement number: ' + (line.statement_code || '—'),
@@ -247,14 +287,18 @@ function assessLineCore_(lineId, line, how) {
     'Paid-at date: ' + (String(line.paid_at || '').slice(0, 10) || '(not recorded as paid)'),
     'MPL type: ' + (/advance/i.test(String(line.mpl_type)) ? 'MPL advance' : 'Regular')
   ].join('\n');
+}
 
+/** Generic per-document assessment (Flow A + non-voucher Cash Anchor subpopulations). */
+function assessPerDoc_(line, detail, sub, docs, typeByAsg) {
+  var facts = buildFacts_(line, detail, sub);
   var system =
     'You are a meticulous financial-audit evidence reviewer at Jumia. You receive, per document: the type of ' +
     'evidence it should be, the sampled transaction\'s recorded data, and the document itself (image or PDF). ' +
     'Decide whether the document is acceptable evidence for that item, judging two things: ' +
     '(1) TYPE — is it the right KIND of document for the expected evidence type? ' +
-    '(2) MATCH — does it plausibly correspond to the SAME transaction, using the strongest identifiers available ' +
-    '(counterparty / seller name, amount, dates, statement or reference numbers)? ' +
+    '(2) MATCH — does it plausibly correspond to the SAME transaction, using the strongest identifiers available. ' +
+    'When an order number is provided, match on the ORDER NUMBER, not the sales-order-item number (they are different). ' +
     'Be strict about substance but tolerant of form: the recorded amount may be negative (an accounting sign) or in a ' +
     'different currency or number format than the document — compare the underlying magnitude and identity, not the exact ' +
     'sign or formatting, and do not expect every recorded field to appear on the document. ' +
@@ -266,26 +310,58 @@ function assessLineCore_(lineId, line, how) {
   var perDoc = [], worst = 'accept';
   docs.forEach(function (e) {
     var etype = typeByAsg[String(e.assignment_id)] || 'evidence';
-    var blob;
-    try { blob = DriveApp.getFileById(e.file_id).getBlob(); }
-    catch (err) { perDoc.push({ file: e.file_name, type: etype, verdict: 'uncertain', summary: 'Could not open the file in Drive.' }); worst = worseVerdict_(worst, 'uncertain'); return; }
-    var bytes = blob.getBytes();
-    if (bytes.length > 12 * 1024 * 1024) { perDoc.push({ file: e.file_name, type: etype, verdict: 'uncertain', summary: 'File too large to assess (' + Math.round(bytes.length / 1048576) + ' MB).' }); worst = worseVerdict_(worst, 'uncertain'); return; }
-    var prompt = 'Expected evidence type: "' + etype + '".\n\nSampled transaction data:\n' + facts + '\n\nAssess the attached document (file name: ' + e.file_name + ').';
+    var d = loadEvidenceBytes_(e);
+    if (d.err) { perDoc.push({ file: e.file_name, type: etype, verdict: 'uncertain', summary: d.err }); worst = worseVerdict_(worst, 'uncertain'); return; }
+    var prompt = 'Expected evidence type: "' + etype + '".\n\nSampled data:\n' + facts + '\n\nAssess the attached document (file name: ' + e.file_name + ').';
     var res;
-    try { res = geminiAssess_(system, prompt, { mimeType: blob.getContentType(), bytes: bytes }); }
+    try { res = geminiAssess_(system, prompt, { mimeType: d.mime, bytes: d.bytes }); }
     catch (err) { perDoc.push({ file: e.file_name, type: etype, verdict: 'uncertain', summary: 'AI error: ' + (err.message || err) }); worst = worseVerdict_(worst, 'uncertain'); return; }
     var v = String(res.verdict || 'uncertain').toLowerCase();
     if (['accept', 'reject', 'uncertain'].indexOf(v) === -1) v = 'uncertain';
     perDoc.push({ file: e.file_name, type: etype, verdict: v, summary: String(res.summary || '') });
     worst = worseVerdict_(worst, v);
   });
+  return { verdict: worst, summary: perDoc.map(function (p) { return p.file + ' → ' + p.verdict + (p.summary ? (': ' + p.summary) : ''); }).join('  |  '), perDoc: perDoc };
+}
 
-  var summary = perDoc.map(function (p) { return p.file + ' → ' + p.verdict + (p.summary ? (': ' + p.summary) : ''); }).join('  |  ');
-  var at = nowIso_();
-  updateRowById_(ds, 'Sample_Lines', 'line_id', lineId, { ai_verdict: worst, ai_summary: summary.substring(0, 900), ai_checked_at: at });
-  logActivity('AI_CHECK', 'line', lineId, (how === 'auto' ? 'auto on submit · ' : '') + 'verdict=' + worst + ' :: ' + summary.substring(0, 400));
-  return { verdict: worst, perDoc: perDoc, checkedAt: at };
+/**
+ * Voucher: cross-check the two screenshots together.
+ *   1) the ORDER NUMBER in the OMS screenshot == the sample's order number (NOT the SOI);
+ *   2) the voucher code in the OMS screenshot == the voucher code in the BOB screenshot.
+ * Both images go in one call so the model can compare the codes across them.
+ */
+function assessVoucher_(line, detail, docs) {
+  var bob = docs.filter(function (e) { return String(e.slot) === 'bob_voucher_screenshot'; })[0];
+  var oms = docs.filter(function (e) { return String(e.slot) === 'oms_screenshot'; })[0];
+  if (!bob || !oms) return { verdict: 'uncertain', summary: 'Both the OMS and BOB screenshots are needed to cross-check the voucher.', perDoc: [] };
+  var o = loadEvidenceBytes_(oms), b = loadEvidenceBytes_(bob);
+  if (o.err || b.err) return { verdict: 'uncertain', summary: (o.err || b.err), perDoc: [] };
+
+  var system =
+    'You are a meticulous financial-audit evidence reviewer at Jumia verifying a VOUCHER sample. You are given two ' +
+    'screenshots: an OMS screenshot (Jumia\'s order management system) and a BOB screenshot (the back-office system where ' +
+    'vouchers are created). Perform exactly two cross-checks, and accept ONLY if both hold:\n' +
+    '1) ORDER NUMBER — the order number shown in the OMS screenshot must equal the sampled order number given below. ' +
+    'Match on the ORDER NUMBER only; it is DIFFERENT from the sales-order-item number — never compare against the sales-order-item.\n' +
+    '2) VOUCHER CODE — the voucher code shown in the OMS screenshot must match the voucher code shown in the BOB screenshot.\n' +
+    'Return "accept" if both checks pass; "reject" if either clearly fails (say which and cite the values); "uncertain" if a ' +
+    'screenshot is unreadable or a value cannot be located. One specific sentence (<240 chars) citing the order number and voucher code compared.';
+  var prompt =
+    'Sampled ORDER NUMBER (use this for check 1): ' + (detail.order_nr || '—') + '\n' +
+    'Sales-order-item number (reference only — do NOT use for check 1): ' + (line.document_no || '—') + '\n' +
+    'Company: ' + (line.company || '—') + '\n\n' +
+    'The first image is the OMS screenshot; the second image is the BOB screenshot.';
+  var res;
+  try {
+    res = geminiAssess_(system, prompt, [
+      { mimeType: o.mime, bytes: o.bytes, label: 'OMS screenshot (' + oms.file_name + ')' },
+      { mimeType: b.mime, bytes: b.bytes, label: 'BOB screenshot (' + bob.file_name + ')' }
+    ]);
+  } catch (err) { return { verdict: 'uncertain', summary: 'AI error: ' + (err.message || err), perDoc: [] }; }
+  var v = String(res.verdict || 'uncertain').toLowerCase();
+  if (['accept', 'reject', 'uncertain'].indexOf(v) === -1) v = 'uncertain';
+  var sm = String(res.summary || '');
+  return { verdict: v, summary: sm, perDoc: [{ file: 'OMS + BOB screenshots', type: 'Voucher evidence', verdict: v, summary: sm }] };
 }
 
 // accept < uncertain < reject — the overall verdict is the worst of the documents'.
