@@ -1077,8 +1077,12 @@
     var isB=lines.some(function(l){ return !!l.subpopulation; });
     var totalTasks=lines.reduce(function(n,l){ return n+((l.assignments||[]).length); }, 0);
     var DONE=['submitted','reviewed','accepted'];
-    var head='<div class="card"><h2 style="font-size:16px;margin:0 0 2px">'+esc(d.request.title)+'</h2>'
-      +'<p class="sub" style="margin:0">'+esc(d.request.period||'')+' · '+lines.length+' samples'+(isB?(' · '+totalTasks+' tasks'):'')+'</p></div>';
+    var head='<div class="card"><div class="row" style="align-items:flex-start; gap:10px">'
+      +'<div><h2 style="font-size:16px;margin:0 0 2px">'+esc(d.request.title)+'</h2>'
+      +'<p class="sub" style="margin:0">'+esc(d.request.period||'')+' · '+lines.length+' samples'+(isB?(' · '+totalTasks+' tasks'):'')+'</p></div>'
+      +'<span class="grow"></span>'
+      +(stage==='audit'?'<button class="btn primary sm" id="auditExportBtn" title="Excel + evidence ZIP for your working papers">Export</button>':'')
+      +'</div></div>';
     var toggle='<div class="row" style="margin-bottom:12px; gap:0; align-items:center">'
       +'<label class="switch"><input type="checkbox" class="pending-toggle"'+(pendingOnly?' checked':'')+'><span class="sw-track"><span class="sw-knob"></span></span></label>'
       +'<span class="sw-label">Pending my action</span></div>';
@@ -1116,6 +1120,20 @@
     var tog=$(c.tasksWrap).querySelector('.pending-toggle');
     if(tog) tog.addEventListener('change', function(){ stageState[stage].pendingOnly=tog.checked; renderStageTasks(stage); });
     Array.prototype.forEach.call($(c.tasksWrap).querySelectorAll('.task-open'), function(b){ b.addEventListener('click', function(){ openTaskModal(stage, b.dataset.line); }); });
+    var xb=$(c.tasksWrap).querySelector('#auditExportBtn'); if(xb) xb.addEventListener('click', function(){ runAuditExport(xb); });
+  }
+  function runAuditExport(btn){
+    var reqId=stageState.audit.reqId; if(!reqId) return;
+    var o=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Exporting';
+    toast('Building the export — this can take a moment…','info');
+    google.script.run.withSuccessHandler(function(f){ btn.disabled=false; btn.innerHTML=o; downloadBlob(f); toast('Export ready','ok'); })
+      .withFailureHandler(function(e){ btn.disabled=false; btn.innerHTML=o; toast(e.message,'warn'); })
+      .auditExport(reqId);
+  }
+  function downloadBlob(f){
+    try{ var url=toBlobUrl(f); var a=document.createElement('a'); a.href=url; a.download=f.name||'download'; document.body.appendChild(a); a.click();
+      setTimeout(function(){ if(a.parentNode) a.parentNode.removeChild(a); URL.revokeObjectURL(url); }, 2000); }
+    catch(e){ openBlob(f); }
   }
   function openTaskModal(stage, lineId){
     var d=stageState[stage].detail; if(!d) return;

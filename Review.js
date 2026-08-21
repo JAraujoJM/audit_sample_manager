@@ -619,3 +619,128 @@ function recomputeRequestStatus_(requestId) {
     updateRowById_(dataSs_(), 'Requests', 'request_id', requestId, { status: 'closed', updated_at: nowIso_() });
   }
 }
+
+/* ---------- auditor export ----------
+ * One ZIP the auditor can drop into their own working papers:
+ *   • an Excel workbook — Samples & Tasks (enriched), the IPE (queries + SHA-256 +
+ *     checks + procedure), and an Evidence index (which file is where in the zip);
+ *   • Extraction/ — the gateway result CSVs + SOX evidence workbooks (raw data + hashes);
+ *   • Evidence/<sample>/<task>/<file> — every collected evidence file, clearly named.
+ * The workbook is built in a throwaway Google Sheet, exported to .xlsx, then zipped.
+ */
+function auditExport(requestId) {
+  requireRole_([ROLES.AUDITOR, ROLES.ADMIN]);
+  var ds = dataSs_();
+  var tz = ds.getSpreadsheetTimeZone();
+  var req = findRequest_(requestId);
+  if (!req) throw new Error('Request not found.');
+  var lines = readObjects_(ds, 'Sample_Lines').filter(function (l) { return String(l.request_id) === String(requestId) && String(l.status).toLowerCase() !== 'not_found'; });
+  var asg = readObjects_(ds, 'Assignments').filter(function (a) { return String(a.request_id) === String(requestId); });
+  var evd = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.request_id) === String(requestId); });
+
+  var zipName = sanitizeName_((req.request_ref || requestId) + ' - audit export');
+  var ss = SpreadsheetApp.create('Audit export ' + (req.request_ref || requestId));
+  try {
+    // Tab 1 (Samples & Tasks) + Tab 3 rows (Evidence index) + evidence blobs, one pass.
+    var H1 = ['Sample (SOI)', 'Company', 'Subpopulation', 'Sample status', 'Task / evidence', 'Payment no', 'Amount', 'Payment date', 'Bank account', 'Payment reference', 'Order no', 'Gateway / provider', 'Assigned to', 'Task status', 'Evidence files'];
+    var R1 = [H1];
+    var H3 = ['Sample (SOI)', 'Task / evidence', 'Payment no', 'Slot', 'File name', 'Uploaded by', 'Uploaded at', 'Path in ZIP'];
+    var R3 = [H3];
+    var zipBlobs = [];
+    lines.forEach(function (l) {
+      var det = parseJson_(l.detail_json);
+      var la = asg.filter(function (a) { return String(a.line_id) === String(l.line_id); });
+      if (!la.length) { R1.push([l.document_no, l.company, l.subpopulation, l.status, '', '', l.amount, '', '', '', det.order_nr || '', '', '', '', '']); return; }
+      la.forEach(function (a) {
+        var u = parseJson_(a.detail_json);
+        var files = evd.filter(function (e) { return String(e.assignment_id) === String(a.assignment_id); });
+        var taskLabel = u.payment_no || a.evidence_type || 'task';
+        R1.push([l.document_no, l.company, l.subpopulation, l.status, a.evidence_type,
+          u.payment_no || '', (u.amount != null && u.amount !== '' ? u.amount : (l.amount || '')),
+          String(u.payment_date || '').slice(0, 10), u.bank_account || '', u.payment_ref || '', det.order_nr || '',
+          [det.jp_gateway, det.jp_provider].filter(Boolean).join(' / '), a.assigned_to || '', a.status,
+          files.map(function (e) { return e.file_name; }).join(', ')]);
+        files.forEach(function (e) {
+          var path = 'Evidence/' + sanitizeName_(l.document_no) + '/' + sanitizeName_(taskLabel) + '/' + sanitizeName_(e.file_name);
+          var ok = true;
+          try { var b = DriveApp.getFileById(e.file_id).getBlob().copyBlob(); b.setName(path); zipBlobs.push(b); } catch (err) { ok = false; }
+          R3.push([l.document_no, a.evidence_type, u.payment_no || '', e.slot || '', e.file_name, e.uploaded_by || '', toDateStr_(e.uploaded_at, tz), ok ? path : '(file missing)']);
+        });
+      });
+    });
+    var t1 = ss.getSheets()[0].setName('Samples & Tasks');
+    t1.getRange(1, 1, R1.length, H1.length).setValues(R1);
+    t1.setFrozenRows(1); t1.getRange(1, 1, 1, H1.length).setFontWeight('bold');
+
+    // Tab 2: IPE.
+    var t2 = ss.insertSheet('IPE');
+    var ipe = null; if (req.ipe_json) { try { ipe = JSON.parse(req.ipe_json); } catch (e) {} }
+    var R2 = [];
+    if (ipe) {
+      R2.push(['IPE / SOX — IT-Produced Evidence', '']);
+      R2.push(['Document ref', ipe.documentRef || '']);
+      R2.push(['Scope', ipe.scope || '']);
+      R2.push(['Period', ipe.period || '']);
+      R2.push(['Primary database', ipe.primaryDb || '']);
+      R2.push(['Generated at (UTC)', ipe.timestamp || '']);
+      R2.push(['Requested by', ipe.requestedBy || '']);
+      R2.push(['Classification', ipe.classification || '']);
+      R2.push(['Requested / Found / Not found', [ipe.requested, ipe.found, ipe.notFound].join(' / ')]);
+      R2.push(['', '']);
+      R2.push(['Query 1 result file', ipe.csvName || '']);
+      R2.push(['Query 1 SHA-256', ipe.csvSha256 || '']);
+      R2.push(['Query 1 size (bytes)', String(ipe.csvSize || '')]);
+      if (ipe.query2) {
+        R2.push(['Query 2 database', ipe.query2Db || '']);
+        R2.push(['Query 2 result file', ipe.csv2Name || '']);
+        R2.push(['Query 2 SHA-256', ipe.csv2Sha256 || '']);
+        R2.push(['Query 2 size (bytes)', String(ipe.csv2Size || '')]);
+      }
+      R2.push(['', '']);
+      R2.push(['Completeness & accuracy checks', '']);
+      (ipe.checks || []).forEach(function (c) { R2.push([c.name, c.method + ' — ' + c.result]); });
+      R2.push(['', '']);
+      R2.push(['Query 1 (as executed)', ipe.query || '']);
+      if (ipe.query2) R2.push(['Query 2 (as executed)', ipe.query2]);
+    } else { R2.push(['No IPE was captured for this request.', '']); }
+    t2.getRange(1, 1, R2.length, 2).setValues(R2.map(function (r) { return [r[0], r[1]]; }));
+    t2.getRange(1, 1, 1, 2).setFontWeight('bold'); t2.setColumnWidth(1, 340); t2.setColumnWidth(2, 760);
+
+    // Tab 3: Evidence index.
+    var t3 = ss.insertSheet('Evidence index');
+    t3.getRange(1, 1, R3.length, H3.length).setValues(R3);
+    t3.setFrozenRows(1); t3.getRange(1, 1, 1, H3.length).setFontWeight('bold');
+
+    SpreadsheetApp.flush();
+
+    // Export the workbook as .xlsx.
+    var resp = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + ss.getId() + '/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
+    if (resp.getResponseCode() >= 300) throw new Error('Could not build the Excel file (HTTP ' + resp.getResponseCode() + ').');
+    zipBlobs.unshift(resp.getBlob().setName(zipName + '.xlsx'));
+
+    // Gateway extraction files (raw data + SOX evidence workbooks).
+    [['csv_file_id', 'Extraction/query1_result.csv'], ['xlsx_file_id', 'Extraction/query1_evidence.xlsx'],
+     ['csv2_file_id', 'Extraction/query2_result.csv'], ['xlsx2_file_id', 'Extraction/query2_evidence.xlsx']].forEach(function (p) {
+      var fid = req[p[0]]; if (!fid) return;
+      try { var b = DriveApp.getFileById(fid).getBlob().copyBlob(); b.setName(p[1]); zipBlobs.push(b); } catch (e) {}
+    });
+
+    var zip = Utilities.zip(zipBlobs, zipName + '.zip');
+    var bytes = zip.getBytes();
+
+    // Keep a copy in Exports/{reqId}/ for the record.
+    try {
+      var exportsId = PropertiesService.getScriptProperties().getProperty(PROP.EXPORTS);
+      if (exportsId) getOrCreateFolder_(DriveApp.getFolderById(exportsId), requestId).createFile(zip.copyBlob().setName(zipName + '.zip'));
+    } catch (e) {}
+    logActivity('AUDIT_EXPORT', 'request', requestId, 'zip ' + Math.round(bytes.length / 1024) + ' KB, ' + (zipBlobs.length) + ' file(s)');
+
+    if (bytes.length > 40 * 1024 * 1024) {
+      throw new Error('The export is ' + Math.round(bytes.length / 1048576) + ' MB — too large to download in one go. A copy was saved to Exports/' + requestId + '/ on the Drive; ask an administrator to share it.');
+    }
+    return { name: zip.getName(), mime: 'application/zip', dataUrl: 'data:application/zip;base64,' + Utilities.base64Encode(bytes) };
+  } finally {
+    try { DriveApp.getFileById(ss.getId()).setTrashed(true); } catch (e) {}
+  }
+}
