@@ -117,34 +117,51 @@ function getEvidenceFile(evidenceId) {
 }
 
 /**
- * Full history of one task (sample line): every status change, human note and AI
- * assessment, oldest first. Pulls the line's own Activity_Log entries plus those of
- * its assignments (uploads, submits, withdrawals). Any role that can see the task
- * may read it; a preparer only for a line they're assigned on.
+ * Full history of one SAMPLE: every status change, human note and AI assessment,
+ * oldest first — the sample's own Activity_Log entries plus those of its tasks
+ * (uploads, submits, per-payment review/audit). Any role that can see the sample may
+ * read it; a preparer only for a sample they're assigned on. When the sample has more
+ * than one task (Cash & POS), also returns `tabs` (Sample + one per payment) so the
+ * client can separate the per-task histories.
  */
 function taskTimeline(lineId) {
   var me = requireRole_([ROLES.PREPARER, ROLES.REVIEWER, ROLES.AUDITOR, ROLES.ADMIN]);
   var ds = dataSs_();
   var line = findLine_(lineId);
-  if (!line) throw new Error('Task not found.');
+  if (!line) throw new Error('Sample not found.');
   var asgs = getAssignments(lineId);
   if (me.role === ROLES.PREPARER &&
       !asgs.some(function (a) { return String(a.assigned_to || '').toLowerCase() === me.email.toLowerCase(); })) {
-    throw new Error('This task is not assigned to you.');
+    throw new Error('This sample is not assigned to you.');
   }
-  var typeByAsg = {}; asgs.forEach(function (a) { typeByAsg[String(a.assignment_id)] = a.evidence_type; });
+  var labelByAsg = {};
+  asgs.forEach(function (a) { labelByAsg[String(a.assignment_id)] = parseJson_(a.detail_json).payment_no || a.evidence_type || 'Task'; });
 
   var events = readObjects_(ds, 'Activity_Log').filter(function (e) {
     return (String(e.entity_type) === 'line' && String(e.entity_id) === String(lineId)) ||
-           (String(e.entity_type) === 'assignment' && typeByAsg[String(e.entity_id)] != null);
+           (String(e.entity_type) === 'assignment' && labelByAsg[String(e.entity_id)] != null);
   }).map(function (e) {
+    var isAsg = String(e.entity_type) === 'assignment';
     return {
       ts: e.ts, actor: e.actor, action: e.action, details: e.details,
-      evidence_type: String(e.entity_type) === 'assignment' ? (typeByAsg[String(e.entity_id)] || '') : ''
+      entity_type: String(e.entity_type), assignment_id: String(e.entity_id),
+      evidence_type: isAsg ? (labelByAsg[String(e.entity_id)] || '') : ''
     };
   }).sort(function (a, b) { return String(a.ts).localeCompare(String(b.ts)); });
 
-  return { line: { line_id: line.line_id, document_no: line.document_no, vendor: line.vendor, status: line.status }, events: events };
+  var out = {
+    sample: { line_id: line.line_id, document_no: line.document_no, vendor: line.vendor, status: line.status, subpopulation: line.subpopulation || '' },
+    multi: asgs.length > 1, events: events
+  };
+  if (out.multi) {
+    var tabs = [{ key: 'sample', label: 'Sample', events: events.filter(function (e) { return e.entity_type === 'line'; }) }];
+    asgs.forEach(function (a) {
+      var id = String(a.assignment_id);
+      tabs.push({ key: id, label: labelByAsg[id], events: events.filter(function (e) { return e.entity_type === 'assignment' && e.assignment_id === id; }) });
+    });
+    out.tabs = tabs;
+  }
+  return out;
 }
 
 /* ---------- AI pre-check (review stage) ---------- */
@@ -421,6 +438,7 @@ function assessCashPos_(lineId, line, ds) {
       var r = assessAssignmentCore_(a, line);
       v = r.verdict; sm = String(r.summary || '');
       updateRowById_(ds, 'Assignments', 'assignment_id', a.assignment_id, { ai_verdict: v, ai_summary: sm.substring(0, 900), ai_checked_at: nowIso_() });
+      logActivity('AI_CHECK', 'assignment', a.assignment_id, (parseJson_(a.detail_json).payment_no || '') + ' → ' + v + ' :: ' + sm.substring(0, 300));
     }
     per.push({ file: (parseJson_(a.detail_json).payment_no || a.evidence_type), verdict: v, summary: sm });
     worst = worseVerdict_(worst, v);
@@ -438,7 +456,7 @@ function assessAssignment(assignmentId) {
   var r = assessAssignmentCore_(asg, line);
   var at = nowIso_();
   updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { ai_verdict: r.verdict, ai_summary: String(r.summary || '').substring(0, 900), ai_checked_at: at });
-  logActivity('AI_CHECK', 'line', asg.line_id, 'payment ' + (parseJson_(asg.detail_json).payment_no || '') + ' → ' + r.verdict + ' :: ' + String(r.summary || '').substring(0, 300));
+  logActivity('AI_CHECK', 'assignment', assignmentId, (parseJson_(asg.detail_json).payment_no || '') + ' → ' + r.verdict + ' :: ' + String(r.summary || '').substring(0, 300));
   return { verdict: r.verdict, perDoc: r.perDoc, checkedAt: at };
 }
 
@@ -491,7 +509,7 @@ function reviewerSubmitTask(assignmentId, override, note) {
   if (allReviewed) updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'pending_audit', note: '' });
 
   note = String(note || '').trim();
-  logActivity('REVIEW_SUBMIT_TASK', 'line', asg.line_id, 'payment reviewed (' + (parseJson_(asg.detail_json).payment_no || asg.evidence_type || '') + '; AI ' + verdict + (verdict !== 'accept' ? ', override' : '') + ')' + (allReviewed ? ' — sample to auditor' : '') + (note ? ' — ' + note : ''));
+  logActivity('REVIEW_SUBMIT_TASK', 'assignment', assignmentId, 'reviewed (AI ' + verdict + (verdict !== 'accept' ? ', override' : '') + ')' + (allReviewed ? ' — sample to auditor' : '') + (note ? ' — ' + note : ''));
   return reviewDetail(asg.request_id, 'review');
 }
 
@@ -507,7 +525,7 @@ function reviewerReturnTask(assignmentId, note) {
 
   updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '', ai_verdict: '', ai_summary: '', ai_checked_at: '' });
   updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'in_progress', note: 'Returned by reviewer (' + (parseJson_(asg.detail_json).payment_no || asg.evidence_type || 'task') + '): ' + note });
-  logActivity('REVIEW_RETURN_TASK', 'line', asg.line_id, note);
+  logActivity('REVIEW_RETURN_TASK', 'assignment', assignmentId, note);
   return reviewDetail(asg.request_id, 'review');
 }
 
@@ -532,7 +550,7 @@ function auditorCloseTask(assignmentId, note) {
     updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'closed', note: note ? ('Closed: ' + note) : '' });
     recomputeRequestStatus_(asg.request_id);
   }
-  logActivity('AUDIT_CLOSE_TASK', 'line', asg.line_id, 'payment closed (' + (parseJson_(asg.detail_json).payment_no || asg.evidence_type || '') + ')' + (allAccepted ? ' — sample closed' : '') + (note ? ' — ' + note : ''));
+  logActivity('AUDIT_CLOSE_TASK', 'assignment', assignmentId, 'closed' + (allAccepted ? ' — sample closed' : '') + (note ? ' — ' + note : ''));
   return reviewDetail(asg.request_id, 'audit');
 }
 
@@ -546,7 +564,7 @@ function auditorReturnTask(assignmentId, note) {
 
   updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '', ai_verdict: '', ai_summary: '', ai_checked_at: '' });
   updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'in_progress', note: 'Returned by auditor (' + (parseJson_(asg.detail_json).payment_no || asg.evidence_type || 'task') + '): ' + note });
-  logActivity('AUDIT_RETURN_TASK', 'line', asg.line_id, note);
+  logActivity('AUDIT_RETURN_TASK', 'assignment', assignmentId, note);
   return reviewDetail(asg.request_id, 'audit');
 }
 

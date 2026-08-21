@@ -565,11 +565,13 @@
   $('overlay').addEventListener('click', function(e){ if(e.target===$('overlay')) closeModal(); });
   document.addEventListener('keydown', function(e){ if(e.key==='Escape'){ if(!$('tlOverlay').hidden){ closeTimeline(); } else { closeModal(); } } });
 
-  /* ---- task history (timeline) — independent overlay, stacks over the task modal ---- */
+  /* ---- sample history (timeline) — independent overlay, stacks over the task modal ---- */
+  var tlData=null, tlTab='sample';
   function openTimeline(lineId){
     $('timelineBody').innerHTML='<div class="empty">Loading…</div>';
     $('tlOverlay').hidden=false;
-    google.script.run.withSuccessHandler(renderTimeline)
+    tlData=null; tlTab='sample';
+    google.script.run.withSuccessHandler(function(d){ tlData=d; renderTimeline(d); })
       .withFailureHandler(function(e){ $('timelineBody').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
       .taskTimeline(lineId);
   }
@@ -581,13 +583,13 @@
     ASSIGNMENT_SUBMIT:['Submitted by preparer',0], ASSIGNMENT_WITHDRAW:['Submission withdrawn',0],
     AI_CHECK:['AI assessment',1], AI_CHECK_ERROR:['AI check failed',1],
     REVIEW_SUBMIT:['Reviewer submitted to auditor',0], REVIEW_RETURN:['Reviewer returned for rework',0],
-    AUDIT_CLOSE:['Auditor closed',0], AUDIT_RETURN:['Auditor returned for rework',0]
+    REVIEW_SUBMIT_TASK:['Reviewer submitted to auditor',0], REVIEW_RETURN_TASK:['Reviewer returned for rework',0],
+    AUDIT_CLOSE:['Auditor closed',0], AUDIT_RETURN:['Auditor returned for rework',0],
+    AUDIT_CLOSE_TASK:['Auditor closed',0], AUDIT_RETURN_TASK:['Auditor returned for rework',0]
   };
-  function renderTimeline(data){
-    $('timelineTitle').textContent='Task history · '+data.line.document_no;
-    var evs=data.events||[];
-    if(!evs.length){ $('timelineBody').innerHTML='<div class="empty">No history recorded for this task yet.</div>'; return; }
-    var rows=evs.map(function(e){
+  function timelineList_(evs){
+    if(!evs || !evs.length) return '<div class="empty">No history recorded here yet.</div>';
+    return '<div class="tl">'+evs.map(function(e){
       var m=TL_LABEL[e.action]||[e.action.replace(/_/g,' ').toLowerCase(),0], ai=!!m[1];
       var actor = ai ? 'AI agent (Gemini)' : (e.actor||'—');
       var meta = actor + (e.evidence_type ? ' · '+esc(e.evidence_type) : '');
@@ -597,12 +599,27 @@
           +(ai?'<span class="pill blue tl-tag">AI</span>':'')
           +'<span class="tl-when">'+esc(fmtDateTime(e.ts))+'</span></div>'
         +'<div class="tl-meta">'+meta+'</div>'+detail+'</div></div>';
-    }).join('');
-    $('timelineBody').innerHTML='<div class="tl">'+rows+'</div>';
+    }).join('')+'</div>';
+  }
+  function renderTimeline(data){
+    var s=data.sample||data.line||{};
+    $('timelineTitle').textContent='Sample history · '+(s.document_no||'');
+    // Multi-task samples (Cash & POS) split into tabs: Sample + one per payment task.
+    if(data.multi && data.tabs && data.tabs.length){
+      if(!data.tabs.some(function(t){ return t.key===tlTab; })) tlTab='sample';
+      var bar='<div class="filter-bar" style="margin-bottom:14px; flex-wrap:wrap">'+data.tabs.map(function(t){
+        return '<button class="tl-tab'+(t.key===tlTab?' active':'')+'" data-key="'+esc(t.key)+'">'+esc(t.label)+' ('+t.events.length+')</button>';
+      }).join('')+'</div>';
+      var tab=data.tabs.filter(function(t){ return t.key===tlTab; })[0]||data.tabs[0];
+      $('timelineBody').innerHTML=bar+timelineList_(tab.events);
+      Array.prototype.forEach.call($('timelineBody').querySelectorAll('.tl-tab'), function(b){ b.addEventListener('click', function(){ tlTab=b.dataset.key; renderTimeline(tlData); }); });
+    } else {
+      $('timelineBody').innerHTML=timelineList_(data.events||[]);
+    }
   }
   function fmtDateTime(s){ if(!s) return '—'; var d=new Date(s); return isNaN(d)?esc(String(s)):d.toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
   var HIST_SVG='<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" focusable="false"><path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 2.05 4.95l-1.42 1.42A9 9 0 1 0 13 3zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>';
-  function histIconBtn(lineId, extraStyle){ return '<button class="btn sm icon-btn tl-open" data-line="'+esc(lineId)+'" title="Task history" aria-label="Task history"'+(extraStyle?' style="'+extraStyle+'"':'')+'>'+HIST_SVG+'</button>'; }
+  function histIconBtn(lineId, extraStyle){ return '<button class="btn sm icon-btn tl-open" data-line="'+esc(lineId)+'" title="Sample history" aria-label="Sample history"'+(extraStyle?' style="'+extraStyle+'"':'')+'>'+HIST_SVG+'</button>'; }
 
   $('run').addEventListener('click', function(){
     var docs=$('docs').value.trim(); if(!docs){ $('docs').focus(); return; }
@@ -1138,7 +1155,8 @@
         +'<td><div class="actions"><button class="btn '+(canAct?'primary ':'')+'sm icon-btn subtask-open" data-aid="'+esc(a.assignment_id)+'" title="'+(canAct?(stage==='audit'?'Audit':'Review'):'View')+'">⋯</button></div></td>'
         +'</tr>';
     }).join('');
-    $('taskModalBody').innerHTML='<div class="facts" style="margin-bottom:12px">'
+    $('taskModalBody').innerHTML='<div class="line-head" style="margin-bottom:10px"><span class="grow"></span>'+(stage!=='audit'?histIconBtn(line.line_id):'')+'</div>'
+      +'<div class="facts" style="margin-bottom:12px">'
       +fact('Sales order item','<span class="mono">'+esc(line.document_no)+'</span>')
       +fact('Company', esc(line.company||'—'))
       +fact('Subpopulation', esc(line.subpopulation))
@@ -1146,6 +1164,7 @@
       +'<div style="overflow-x:auto"><table class="req-table"><thead><tr><th>Payment no.</th><th>Bank</th><th>Amount</th><th>AI</th><th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
     openModal('task');
     Array.prototype.forEach.call($('taskModalBody').querySelectorAll('.subtask-open'), function(b){ b.addEventListener('click', function(){ openSubtask(stage, line.line_id, b.dataset.aid); }); });
+    Array.prototype.forEach.call($('taskModalBody').querySelectorAll('.tl-open'), function(b){ b.addEventListener('click', function(){ openTimeline(b.dataset.line); }); });
   }
   function openSubtask(stage, lineId, assignmentId){
     var d=stageState[stage].detail; var line=(d.lines||[]).filter(function(l){ return String(l.line_id)===String(lineId); })[0]; if(!line) return;
