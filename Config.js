@@ -58,7 +58,7 @@ var SCHEMA = {
     Requests:     ['request_id', 'flow_id', 'title', 'period', 'period_start', 'period_end',
                    'auditor_email', 'reviewer_email', 'request_ref', 'due_date',
                    'status', 'created_by', 'created_at', 'updated_at',
-                   'csv_file_id', 'xlsx_file_id', 'ipe_json'],
+                   'csv_file_id', 'xlsx_file_id', 'csv2_file_id', 'xlsx2_file_id', 'ipe_json'],
     Sample_Lines: ['line_id', 'request_id', 'document_no', 'company', 'vendor', 'mpl_type', 'paid_status',
                    'statement_code', 'amount', 'paid_at', 'closing_balance', 'route_rule', 'required_count',
                    'status', 'evidence_folder_id', 'note', 'created_at',

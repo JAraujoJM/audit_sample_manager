@@ -223,13 +223,13 @@ function seedFlowBRouting_(cfg) {
   }
 
   // Voucher — one task: prove the voucher (BOB) + tie it to the item (OMS); B2B proof if applicable.
-  row('voucher', 'Prepaid - Voucher', 'Voucher evidence', FO,
+  row('voucher', 'Prepaid - Voucher', 'BOB + OMS screenshot', FO,
       'BOB voucher screenshot|OMS screenshot|B2B proof of payment*');
 
   // JumiaPay family — one task: settlement report + proof of payment (ties to settlement
   // total) + optional document tie-out (NAV → settlement → proof).
   ['Prepaid - JumiaPay', 'Postpaid - JumiaPay on delivery', 'Postpaid - Cash - 3PL via JPay'].forEach(function (sub, i) {
-    row(['pre_jpay', 'post_jpay', 'cash_3pl'][i], sub, 'JumiaPay evidence', JP,
+    row(['pre_jpay', 'post_jpay', 'cash_3pl'][i], sub, 'Settlement report + proof of payment', JP,
         'Settlement report|Proof of payment|Document tie-out*');
   });
 

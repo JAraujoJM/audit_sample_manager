@@ -35,7 +35,9 @@
     padding:13px 22px; background:rgba(255,255,255,.8); backdrop-filter:saturate(180%) blur(20px);
     border-bottom:1px solid var(--sep);
   }
-  .brand{font-size:15px; font-weight:600; letter-spacing:-.01em;}
+  .brand{font-size:15px; font-weight:600; letter-spacing:-.01em; display:flex; align-items:center; gap:9px;}
+  .brand-mark{display:inline-flex; line-height:0;}
+  .brand-sub{color:var(--accent); font-weight:600;}
   .who{font-size:12.5px; color:var(--text-2); display:flex; align-items:center; gap:8px;}
   .role{font-size:11px; font-weight:600; color:var(--accent); background:var(--accent-tint); padding:2px 9px; border-radius:6px;}
 
@@ -288,7 +290,12 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">Audit Samples Manager</div>
+    <div class="brand"><span class="brand-mark" title="Jumia">
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false">
+        <rect width="24" height="24" rx="6" fill="#F68B1E"/>
+        <path d="M7 9.5h10l-.75 8.15A1.2 1.2 0 0 1 15.05 18.8H8.95a1.2 1.2 0 0 1-1.2-1.15L7 9.5z" fill="#fff"/>
+        <path d="M9.4 10V8.2a2.6 2.6 0 0 1 5.2 0V10" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>
+      </svg></span><span>Audit Samples Manager</span></div>
     <div class="who" id="who">…</div>
   </header>
 
@@ -630,12 +637,16 @@
     return '<div class="ipe-head"><span class="t">IPE / SOX — IT-Produced Evidence</span><span class="ref">'+esc(ipe.documentRef)+'</span></div>'
       +'<div class="ipe-sec">1 · Completeness &amp; accuracy</div>'
       +'<table><thead><tr><th>Check</th><th>Method</th><th>Result</th></tr></thead><tbody>'+checks+'</tbody></table>'
-      +'<div class="ipe-sec">2 · SQL query as executed</div>'
-      +'<details class="sql"><summary>Show query</summary><pre>'+esc(ipe.query||'')+'</pre>'
+      +'<div class="ipe-sec">2 · SQL quer'+(ipe.query2?'ies':'y')+' as executed</div>'
+      +'<details class="sql"><summary>Show query'+(ipe.query2?' 1 · '+esc(ipe.primaryDb||''):'')+'</summary><pre>'+esc(ipe.query||'')+'</pre>'
         +'<div style="padding:8px 13px 12px;"><button class="btn sm copy-sql">Copy query</button></div></details>'
+      +(ipe.query2?'<details class="sql" style="margin-top:8px"><summary>Show query 2 · '+esc(ipe.query2Db||'')+'</summary><pre>'+esc(ipe.query2)+'</pre>'
+        +'<div style="padding:8px 13px 12px;"><button class="btn sm copy-sql">Copy query</button></div></details>':'')
       +'<div class="ipe-sec">3 · File integrity &amp; evidence</div>'
-      +'<div class="hashrow"><div><b>File</b> &nbsp;'+esc(ipe.csvName)+' &nbsp;·&nbsp; '+Number(ipe.csvSize||0).toLocaleString()+' bytes</div>'
+      +'<div class="hashrow"><div><b>File'+(ipe.query2?' (query 1)':'')+'</b> &nbsp;'+esc(ipe.csvName)+' &nbsp;·&nbsp; '+Number(ipe.csvSize||0).toLocaleString()+' bytes</div>'
         +'<div style="margin-top:6px"><b>SHA-256</b> &nbsp;'+esc(ipe.csvSha256)+'</div>'
+        +(ipe.csv2Name?'<div style="margin-top:10px"><b>File (query 2)</b> &nbsp;'+esc(ipe.csv2Name)+' &nbsp;·&nbsp; '+Number(ipe.csv2Size||0).toLocaleString()+' bytes</div>'
+          +'<div style="margin-top:6px"><b>SHA-256</b> &nbsp;'+esc(ipe.csv2Sha256)+'</div>':'')
         +'<div style="margin-top:8px" class="muted">'+esc(ipe.evidenceNote||'')+'</div></div>'
       +'<div class="ipe-foot">'+esc(ipe.classification||'CONFIDENTIAL · SOX-Relevant')+' · '+esc(ipe.documentRef)+'</div>';
   }
@@ -669,8 +680,8 @@
     if(!reqs.length){ wrap.innerHTML='<div class="card"><div class="empty">No requests yet. Click “New request” to add one.</div></div>'; return; }
     var rows=reqs.map(function(r){
       var f=r.files||{};
-      var dl = (f.csv||f.xlsx)
-        ? '<button class="btn sm icon-btn dl-btn" data-id="'+esc(r.request_id)+'" data-csv="'+(f.csv?1:'')+'" data-xlsx="'+(f.xlsx?1:'')+'" title="Download">↓</button>'
+      var dl = (f.csv||f.xlsx||f.csv2||f.xlsx2)
+        ? '<button class="btn sm icon-btn dl-btn" data-id="'+esc(r.request_id)+'" data-csv="'+(f.csv?1:'')+'" data-xlsx="'+(f.xlsx?1:'')+'" data-csv2="'+(f.csv2?1:'')+'" data-xlsx2="'+(f.xlsx2?1:'')+'" title="Download">↓</button>'
         : '<button class="btn sm icon-btn" disabled title="No files yet">↓</button>';
       return '<tr>'
         +'<td class="mono">'+esc(r.request_ref||'—')+'</td>'
@@ -703,8 +714,10 @@
   }
   function openDownloadMenu(btn){
     var m=$('ddMenu'), id=btn.dataset.id, opts='';
-    if(btn.dataset.csv)  opts+='<button class="menu-item" data-id="'+esc(id)+'" data-w="csv">Result CSV</button>';
-    if(btn.dataset.xlsx) opts+='<button class="menu-item" data-id="'+esc(id)+'" data-w="xlsx">Evidence XLSX</button>';
+    if(btn.dataset.csv)   opts+='<button class="menu-item" data-id="'+esc(id)+'" data-w="csv">Query 1 · Result CSV</button>';
+    if(btn.dataset.xlsx)  opts+='<button class="menu-item" data-id="'+esc(id)+'" data-w="xlsx">Query 1 · Evidence XLSX</button>';
+    if(btn.dataset.csv2)  opts+='<button class="menu-item" data-id="'+esc(id)+'" data-w="csv2">Query 2 · Result CSV</button>';
+    if(btn.dataset.xlsx2) opts+='<button class="menu-item" data-id="'+esc(id)+'" data-w="xlsx2">Query 2 · Evidence XLSX</button>';
     m.innerHTML=opts;
     var r=btn.getBoundingClientRect();
     m.style.top=(r.bottom+4)+'px';
@@ -1031,18 +1044,36 @@
     if(!shown.length){
       body='<div class="card">'+toggle+'<div class="empty">'+(pendingOnly?'No lines pending your action. Switch to “All lines” to see the rest.':'No lines.')+'</div></div>';
     } else {
+      // Flow-aware columns: Cash Anchor lines carry a subpopulation (Seller / MPL type
+      // are Flow A only). Cash & POS lines also show a Tasks count (payments in review).
+      var isB=lines.some(function(l){ return !!l.subpopulation; });
+      var showTasks=lines.some(function(l){ return l.subpopulation==='Postpaid - Cash & POS'; });
       var rows=shown.map(function(l){
-        var adv=/advance/i.test(l.mpl_type), canAct=String(l.status).toLowerCase()===actionable;
+        var canAct=String(l.status).toLowerCase()===actionable;
+        var openTd='<td><div class="actions"><button class="btn '+(canAct?'primary ':'')+'sm icon-btn task-open" data-line="'+esc(l.line_id)+'" title="'+(canAct?'Review / decide':'View')+'">⋯</button></div></td>';
+        if(isB){
+          var cash=l.subpopulation==='Postpaid - Cash & POS';
+          var subCount=(l.assignments||[]).filter(function(a){ return ['submitted','reviewed'].indexOf(String(a.status).toLowerCase())!==-1; }).length;
+          var tasksCell = showTasks ? '<td>'+(cash?('<span class="pill amber">'+subCount+'</span>'):'<span class="muted">—</span>')+'</td>' : '';
+          return '<tr>'
+            +'<td class="mono">'+esc(l.document_no)+'</td>'
+            +'<td>'+esc(l.company||'—')+'</td>'
+            +'<td>'+(l.subpopulation?'<span class="pill neutral">'+esc(l.subpopulation)+'</span>':'—')+'</td>'
+            +tasksCell
+            +'<td>'+statusPill(l.status)+'</td>'+openTd+'</tr>';
+        }
+        var adv=/advance/i.test(l.mpl_type);
         return '<tr>'
           +'<td class="mono">'+esc(l.document_no)+'</td>'
           +'<td class="trunc" title="'+esc(l.vendor||'')+'">'+esc(l.vendor||'—')+'</td>'
           +'<td>'+(adv?'<span class="pill blue">MPL advance</span>':'<span class="pill neutral">Regular</span>')+'</td>'
-          +'<td>'+statusPill(l.status)+'</td>'
-          +'<td><div class="actions"><button class="btn '+(canAct?'primary ':'')+'sm icon-btn task-open" data-line="'+esc(l.line_id)+'" title="'+(canAct?'Review / decide':'View')+'">⋯</button></div></td>'
-          +'</tr>';
+          +'<td>'+statusPill(l.status)+'</td>'+openTd+'</tr>';
       }).join('');
+      var header = isB
+        ? '<th>Document</th><th>Company</th><th>Subpopulation</th>'+(showTasks?'<th>Tasks</th>':'')+'<th>Status</th><th></th>'
+        : '<th>Document</th><th>Seller</th><th>Type</th><th>Status</th><th></th>';
       body='<div class="card">'+toggle+'<div style="overflow-x:auto"><table class="req-table"><thead><tr>'
-        +'<th>Document</th><th>Seller</th><th>Type</th><th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+        +header+'</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
     }
     $(c.tasksWrap).innerHTML=head+body;
     var tog=$(c.tasksWrap).querySelector('.pending-toggle');
@@ -1052,6 +1083,8 @@
   function openTaskModal(stage, lineId){
     var d=stageState[stage].detail; if(!d) return;
     var line=d.lines.filter(function(l){ return String(l.line_id)===String(lineId); })[0]; if(!line) return;
+    // Cash & POS is reviewed payment-by-payment: '...' opens the list of payment subtasks.
+    if(stage==='review' && line.subpopulation==='Postpaid - Cash & POS'){ openSubtaskTable(stage, line); return; }
     $('taskModalTitle').textContent=STAGE_CFG[stage].modalTitle+' · '+line.document_no;
     $('taskModalBody').innerHTML=renderStageLine(stage, d.actionable, line);
     openModal('task');
@@ -1062,6 +1095,90 @@
     if(stage==='review' && String(line.status).toLowerCase()==='pending_review' && !String(line.ai_verdict||'').trim()){
       var runBtn=$('taskModalBody').querySelector('.ai-run'); if(runBtn) runAiCheck(stage, runBtn);
     }
+  }
+  /* ---- Cash & POS: review payment subtasks one at a time ---- */
+  var curSubtaskLine=null;
+  function openSubtaskTable(stage, line){
+    $('taskModalTitle').textContent='Review · '+line.document_no+' · payments';
+    var asgs=line.assignments||[];
+    var rows=asgs.map(function(a,idx){
+      var u=a.unit||{}, canAct=String(a.status).toLowerCase()==='submitted';
+      return '<tr>'
+        +'<td class="mono">'+esc(u.payment_no||('#'+(idx+1)))+'</td>'
+        +'<td>'+esc(u.bank_account||'—')+'</td>'
+        +'<td>'+fmtNum(u.amount)+'</td>'
+        +'<td>'+statusPill(a.status)+'</td>'
+        +'<td><div class="actions"><button class="btn '+(canAct?'primary ':'')+'sm icon-btn subtask-open" data-aid="'+esc(a.assignment_id)+'" title="'+(canAct?'Review':'View')+'">⋯</button></div></td>'
+        +'</tr>';
+    }).join('');
+    $('taskModalBody').innerHTML='<div class="facts" style="margin-bottom:12px">'
+      +fact('Sales order item','<span class="mono">'+esc(line.document_no)+'</span>')
+      +fact('Company', esc(line.company||'—'))
+      +fact('Subpopulation', esc(line.subpopulation))
+      +fact('Payments', String(asgs.length))+'</div>'
+      +'<div style="overflow-x:auto"><table class="req-table"><thead><tr><th>Payment no.</th><th>Bank</th><th>Amount</th><th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    openModal('task');
+    Array.prototype.forEach.call($('taskModalBody').querySelectorAll('.subtask-open'), function(b){ b.addEventListener('click', function(){ openSubtask(stage, line.line_id, b.dataset.aid); }); });
+  }
+  function openSubtask(stage, lineId, assignmentId){
+    var d=stageState[stage].detail; var line=(d.lines||[]).filter(function(l){ return String(l.line_id)===String(lineId); })[0]; if(!line) return;
+    var a=(line.assignments||[]).filter(function(x){ return String(x.assignment_id)===String(assignmentId); })[0]; if(!a) return;
+    curSubtaskLine=lineId;
+    $('taskModalBody').innerHTML=renderSubtaskReview(stage, line, a);
+    var el=$('taskModalBody');
+    el.querySelector('.subtask-back').addEventListener('click', function(){ openSubtaskTable(stage, line); });
+    Array.prototype.forEach.call(el.querySelectorAll('.chip'), function(c){ c.addEventListener('click', function(){ openDoc(c.dataset.line, c.dataset.eid, c); }); });
+    var p=el.querySelector('.subtask-primary'); if(p) p.addEventListener('click', function(){ subtaskAction(stage,'reviewerSubmitTask', p, false); });
+    var r=el.querySelector('.subtask-return');  if(r) r.addEventListener('click', function(){ subtaskAction(stage,'reviewerReturnTask', r, true); });
+    var first=el.querySelector('.chip'); if(first) openDoc(first.dataset.line, first.dataset.eid, first);
+  }
+  function renderSubtaskReview(stage, line, a){
+    var u=a.unit||{};
+    var facts='<div class="facts">'
+      +fact('Sales order item','<span class="mono">'+esc(line.document_no)+'</span>')
+      +fact('Company', esc(line.company||'—'))
+      +fact('Payment no.','<span class="mono">'+esc(u.payment_no||'—')+'</span>')
+      +fact('Payment date', esc(u.payment_date||'—'))
+      +fact('Payment reference', esc(u.payment_ref||'—'))
+      +fact('Bank account', esc(u.bank_account||'—'))
+      +fact('Amount', fmtNum(u.amount))
+      +fact('Packlist no.','<span class="mono">'+esc(u.packlist_no||'—')+'</span>')+'</div>';
+    var chips=a.files.length
+      ? a.files.map(function(f){ return '<button class="chip" data-eid="'+esc(f.evidence_id)+'" data-line="'+esc(a.assignment_id)+'">'+esc(f.file_name)+'</button>'; }).join('')
+      : '<span class="muted" style="font-size:12px">no files</span>';
+    var canAct=String(a.status).toLowerCase()==='submitted';
+    var actions = canAct
+      ? '<div class="line-foot"><input class="note-in" placeholder="Note (required to return)">'
+        +'<button class="btn primary sm subtask-primary" data-aid="'+esc(a.assignment_id)+'">Submit to auditor</button>'
+        +'<button class="btn sm subtask-return" data-aid="'+esc(a.assignment_id)+'">Return</button></div>'
+      : '<div class="muted" style="font-size:12.5px; margin-top:10px">'+esc(String(a.status).replace(/_/g,' '))+'</div>';
+    return '<div class="line-card" data-aid="'+esc(a.assignment_id)+'" style="border:0;padding:0;margin:0">'
+      +'<div class="line-head"><button class="btn sm subtask-back">← Payments</button><span class="doc" style="margin-left:8px">'+esc(u.payment_no||a.evidence_type)+'</span>'
+        +'<span class="grow"></span>'+statusPill(a.status)+'</div>'
+      +'<div class="rev-grid"><div>'+facts+'</div>'
+      +'<div class="preview" id="prev-'+esc(a.assignment_id)+'"><span class="ph">Select a document to preview</span></div></div>'
+      +'<div class="doc-chips" style="margin-top:10px">'+chips+'</div>'
+      +actions+'</div>';
+  }
+  function subtaskAction(stage, method, btn, needNote){
+    var card=btn.closest('.line-card'), aid=card.dataset.aid, lineId=curSubtaskLine;
+    var noteEl=card.querySelector('.note-in'), note=noteEl?noteEl.value.trim():'';
+    if(needNote && !note){ toast('Please add a note explaining what to fix.','warn'); return; }
+    var okMsg = needNote ? 'Payment returned to preparer' : 'Payment reviewed';
+    var busy  = needNote ? 'Returning' : 'Submitting';
+    var sibs=card.querySelectorAll('.subtask-primary, .subtask-return');
+    Array.prototype.forEach.call(sibs, function(b){ b.disabled=true; });
+    var orig=btn.innerHTML; btn.innerHTML='<span class="spinner"></span>'+busy;
+    var ok=function(dd){
+      stageState[stage].detail=dd; renderStageTasks(stage);
+      var line=(dd.lines||[]).filter(function(l){ return String(l.line_id)===String(lineId); })[0];
+      if(line && String(line.status).toLowerCase()==='pending_review'){ openSubtaskTable(stage, line); }   // more payments to review
+      else { closeModal(); }
+      toast(okMsg,'ok');
+    };
+    var fail=function(e){ Array.prototype.forEach.call(sibs, function(b){ b.disabled=false; }); btn.innerHTML=orig; toast(e.message,'warn'); };
+    var api=google.script.run.withSuccessHandler(ok).withFailureHandler(fail);
+    if(needNote) api[method](aid, note); else api[method](aid);
   }
   function fact(k,v){ return '<div class="f"><span class="fk">'+k+'</span><span class="fv">'+v+'</span></div>'; }
   function renderStageLine(stage, actionable, l){

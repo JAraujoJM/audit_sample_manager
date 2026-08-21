@@ -33,7 +33,7 @@ function requestOverview() {
       auditor_email: r.auditor_email || '', reviewer_email: r.reviewer_email || '',
       status: r.status, created_at: r.created_at, created_by: r.created_by,
       lineCount: rl.length, progress: progressOf_(rl),
-      files: { csv: !!r.csv_file_id, xlsx: !!r.xlsx_file_id }
+      files: { csv: !!r.csv_file_id, xlsx: !!r.xlsx_file_id, csv2: !!r.csv2_file_id, xlsx2: !!r.xlsx2_file_id }
     };
   }).sort(function (a, b) { return String(b.created_at).localeCompare(String(a.created_at)); });
 }
@@ -56,17 +56,17 @@ function requestReport(requestId) {
     },
     lineCount: lines.length,
     progress: progressOf_(lines),
-    files: { csv: !!r.csv_file_id, xlsx: !!r.xlsx_file_id },
+    files: { csv: !!r.csv_file_id, xlsx: !!r.xlsx_file_id, csv2: !!r.csv2_file_id, xlsx2: !!r.xlsx2_file_id },
     ipe: ipe
   };
 }
 
-/** Download a stored request file (which = 'csv' | 'xlsx') as a data URL. */
+/** Download a stored request file (which = 'csv' | 'xlsx' | 'csv2' | 'xlsx2') as a data URL. */
 function getRequestFile(requestId, which) {
   requireRole_([ROLES.ADMIN, ROLES.REVIEWER, ROLES.AUDITOR]);
   var r = findRequest_(requestId);
   if (!r) throw new Error('Request not found.');
-  var fid = { csv: r.csv_file_id, xlsx: r.xlsx_file_id }[which];
+  var fid = { csv: r.csv_file_id, xlsx: r.xlsx_file_id, csv2: r.csv2_file_id, xlsx2: r.xlsx2_file_id }[which];
   if (!fid) throw new Error('That file was not stored for this request.');
   var blob = DriveApp.getFileById(fid).getBlob();
   var bytes = blob.getBytes();

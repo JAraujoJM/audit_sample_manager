@@ -85,7 +85,7 @@ function reviewDetail(requestId, stage) {
         ai_verdict: l.ai_verdict || '', ai_summary: l.ai_summary || '', ai_checked_at: l.ai_checked_at || '',
         assignments: (asgByLine[l.line_id] || []).map(function (a) {
           var slts = parseJson_(a.slots_json); if (!Array.isArray(slts)) slts = [];
-          return { evidence_type: a.evidence_type, assigned_to: a.assigned_to, status: a.status,
+          return { assignment_id: a.assignment_id, evidence_type: a.evidence_type, assigned_to: a.assigned_to, status: a.status,
                    optional: isOptional_(a.optional), unit: parseJson_(a.detail_json), slots: slts, files: evByAsg[a.assignment_id] || [] };
         })
       };
@@ -310,6 +310,48 @@ function reviewerSubmit(lineId, override) {
   logActivity('REVIEW_SUBMIT', 'line', lineId,
     'to auditor (AI ' + verdict + (verdict !== 'accept' ? '; reviewer override' : '') + ')');
   return reviewDetail(line.request_id, 'review');
+}
+
+/* ---------- per-subtask review (Cash & POS: one payment task at a time) ---------- */
+/**
+ * Mark ONE submitted task (a single payment) as reviewed. When every required task of
+ * the line is reviewed, the line advances to the auditor — so the reviewer works
+ * payment-by-payment instead of the whole line at once. No AI gate at this level.
+ */
+function reviewerSubmitTask(assignmentId) {
+  var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
+  var asg = findAssignment_(assignmentId);
+  if (!asg) throw new Error('Task not found.');
+  assertReviewer_(asg.request_id, me);
+  var line = requireLineStatus_(asg.line_id, 'pending_review');
+  if (String(asg.status).toLowerCase() !== 'submitted') throw new Error('Only a submitted task can be reviewed (now: ' + asg.status + ').');
+
+  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'reviewed' });
+
+  var items = getAssignments(asg.line_id);
+  var required = items.filter(function (a) { return !isOptional_(a.optional); });
+  var gate = required.length ? required : items;
+  var allReviewed = gate.every(function (a) { return ['reviewed', 'accepted'].indexOf(String(a.status).toLowerCase()) !== -1; });
+  if (allReviewed) updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'pending_audit', note: '' });
+
+  logActivity('REVIEW_SUBMIT_TASK', 'line', asg.line_id, 'task reviewed (' + (asg.evidence_type || '') + ')' + (allReviewed ? ' — line to auditor' : ''));
+  return reviewDetail(asg.request_id, 'review');
+}
+
+/** Return ONE payment task to its preparer; the whole line drops back to in_progress
+ *  so that payment can be redone, while already-reviewed tasks keep their status. */
+function reviewerReturnTask(assignmentId, note) {
+  var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
+  if (!String(note || '').trim()) throw new Error('Please add a note explaining what to fix.');
+  var asg = findAssignment_(assignmentId);
+  if (!asg) throw new Error('Task not found.');
+  assertReviewer_(asg.request_id, me);
+  var line = requireLineStatus_(asg.line_id, 'pending_review');
+
+  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '' });
+  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'in_progress', note: 'Returned by reviewer (' + (asg.evidence_type || 'task') + '): ' + note });
+  logActivity('REVIEW_RETURN_TASK', 'line', asg.line_id, note);
+  return reviewDetail(asg.request_id, 'review');
 }
 
 function reviewerReturn(lineId, note) {
