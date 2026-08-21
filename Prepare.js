@@ -38,7 +38,7 @@ function listMyAssignments() {
         subpopulation: line.subpopulation || '', detail: parseJson_(line.detail_json), unit: parseJson_(a.detail_json),
         evidence_type: a.evidence_type, optional: isOptional_(a.optional), slots: slots,
         status: a.status, due_date: toDateStr_(req.due_date, tz),
-        note: line.note || '', files: files
+        note: a.notes || line.note || '', files: files
       };
     })
     .sort(function (x, y) { return String(x.due_date || '9999').localeCompare(String(y.due_date || '9999')); });

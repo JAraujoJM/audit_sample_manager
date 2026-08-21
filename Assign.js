@@ -121,40 +121,52 @@ function toDateStr_(v, tz) {
 }
 
 /**
- * Roll the assignment lifecycle up to the line status (preparer phase only):
- *   open -> assigned -> in_progress -> pending_review.
- * 'pending_review' means every required item is in (submitted/reviewed/accepted)
- * — all preparers have responded, so the line is ready for the reviewer. The
- * later stages (pending_audit, closed) are set by the reviewer/auditor and left
- * untouched here.
+ * Roll the sample status up from its tasks across the WHOLE lifecycle. This is
+ * called after every task change (preparer upload/submit/withdraw, reviewer/auditor
+ * per-task actions) so tasks advance independently:
+ *   open -> assigned -> in_progress -> pending_review -> pending_audit -> closed.
+ *
+ * For subpopulations reviewed PER TASK (Cash & POS), the sample is pending_review as
+ * soon as ANY task is submitted (the reviewer starts immediately, and returning one
+ * task never blocks the others). For the rest, the whole sample moves together, so it
+ * only reaches pending_review once every required task is in. Optional evidence never
+ * gates. pending_audit = every required task reviewed; closed = every required task accepted.
  */
 function updateLineAssignmentRollup_(lineId) {
   var items = getAssignments(lineId);
   if (!items.length) return;
   var line = readObjects_(dataSs_(), 'Sample_Lines').filter(function (l) { return String(l.line_id) === String(lineId); })[0];
   if (!line) return;
-  if (['open', 'assigned', 'in_progress', 'pending_review'].indexOf(String(line.status).toLowerCase()) === -1) return;
 
   var st = function (a) { return String(a.status).toLowerCase(); };
-  var done = ['submitted', 'reviewed', 'accepted'];
-  // Optional evidence (e.g. a B2B proof of payment, a tie-out workbook) never gates the
-  // line — only required assignments decide when it's ready for the reviewer.
   var required = items.filter(function (a) { return !isOptional_(a.optional); });
   var gate = required.length ? required : items;
-  var allDone     = gate.every(function (a) { return done.indexOf(st(a)) !== -1; });
-  var anyWork     = items.some(function (a) { return ['in_progress'].concat(done).indexOf(st(a)) !== -1; });
-  var allAssigned = gate.every(function (a) { return String(a.assigned_to || '').trim() !== ''; });
+  var perTask = String(line.subpopulation) === 'Postpaid - Cash & POS';
   var prev = String(line.status).toLowerCase();
-  var next = allDone ? 'pending_review' : anyWork ? 'in_progress' : allAssigned ? 'assigned' : 'open';
+
+  var allAccepted = gate.every(function (a) { return st(a) === 'accepted'; });
+  var allReviewed = gate.every(function (a) { return ['reviewed', 'accepted'].indexOf(st(a)) !== -1; });
+  var anySubmitted = gate.some(function (a) { return st(a) === 'submitted'; });
+  var allSubmitted = gate.every(function (a) { return ['submitted', 'reviewed', 'accepted'].indexOf(st(a)) !== -1; });
+  var anyWork = items.some(function (a) { return ['in_progress', 'submitted', 'reviewed', 'accepted'].indexOf(st(a)) !== -1; });
+  var allAssigned = gate.every(function (a) { return String(a.assigned_to || '').trim() !== ''; });
+
+  var next = allAccepted ? 'closed'
+    : allReviewed ? 'pending_audit'
+    : (perTask ? anySubmitted : allSubmitted) ? 'pending_review'
+    : anyWork ? 'in_progress'
+    : allAssigned ? 'assigned' : 'open';
+
   var patch = { status: next };
-  // Leaving pending_review (returned / withdrawn / file changed) invalidates the AI
-  // verdict — clear it so a fresh check runs when the line comes back.
-  if (next !== 'pending_review' && String(line.ai_verdict || '').trim()) {
+  // Regressing to the preparer invalidates the sample-level AI verdict — clear it so a
+  // fresh check runs when it comes back (per-task verdicts live on the assignments).
+  if (['pending_review', 'pending_audit', 'closed'].indexOf(next) === -1 && String(line.ai_verdict || '').trim()) {
     patch.ai_verdict = ''; patch.ai_summary = ''; patch.ai_checked_at = '';
   }
   updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, patch);
 
-  // First time a line becomes ready for the reviewer, queue the AI pre-check in the
+  if (next === 'closed' && prev !== 'closed') recomputeRequestStatus_(line.request_id);
+  // First time a sample becomes ready for the reviewer, queue the AI pre-check in the
   // background (a time trigger) so it never delays the preparer's submit.
   if (next === 'pending_review' && prev !== 'pending_review') scheduleAiCheck_();
 }

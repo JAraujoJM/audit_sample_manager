@@ -1145,12 +1145,12 @@
     $('taskModalTitle').textContent=(stage==='audit'?'Audit':'Review')+' · '+line.document_no+' · payments';
     var asgs=line.assignments||[];
     var rows=asgs.map(function(a,idx){
-      var u=a.unit||{}, canAct=String(line.status).toLowerCase()===cfg.sampleStatus && String(a.status).toLowerCase()===cfg.actNeeded;
+      var u=a.unit||{}, canAct=String(a.status).toLowerCase()===cfg.actNeeded;   // task-level: independent of siblings
       return '<tr>'
         +'<td class="mono">'+esc(u.payment_no||('#'+(idx+1)))+'</td>'
         +'<td>'+esc(u.bank_account||'—')+'</td>'
         +'<td>'+fmtNum(u.amount)+'</td>'
-        +'<td>'+(a.ai_verdict?aiVerdictPill(String(a.ai_verdict).toLowerCase()):'<span class="muted">—</span>')+'</td>'
+        +(cfg.ai?('<td>'+(a.ai_verdict?aiVerdictPill(String(a.ai_verdict).toLowerCase()):'<span class="muted">—</span>')+'</td>'):'')
         +'<td>'+statusPill(a.status)+'</td>'
         +'<td><div class="actions"><button class="btn '+(canAct?'primary ':'')+'sm icon-btn subtask-open" data-aid="'+esc(a.assignment_id)+'" title="'+(canAct?(stage==='audit'?'Audit':'Review'):'View')+'">⋯</button></div></td>'
         +'</tr>';
@@ -1161,7 +1161,7 @@
       +fact('Company', esc(line.company||'—'))
       +fact('Subpopulation', esc(line.subpopulation))
       +fact('Payments', String(asgs.length))+'</div>'
-      +'<div style="overflow-x:auto"><table class="req-table"><thead><tr><th>Payment no.</th><th>Bank</th><th>Amount</th><th>AI</th><th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+      +'<div style="overflow-x:auto"><table class="req-table"><thead><tr><th>Payment no.</th><th>Bank</th><th>Amount</th>'+(cfg.ai?'<th>AI</th>':'')+'<th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
     openModal('task');
     Array.prototype.forEach.call($('taskModalBody').querySelectorAll('.subtask-open'), function(b){ b.addEventListener('click', function(){ openSubtask(stage, line.line_id, b.dataset.aid); }); });
     Array.prototype.forEach.call($('taskModalBody').querySelectorAll('.tl-open'), function(b){ b.addEventListener('click', function(){ openTimeline(b.dataset.line); }); });
@@ -1181,14 +1181,14 @@
       var run=el.querySelector('.ai-run'); if(run) run.addEventListener('click', function(){ runSubtaskAiCheck(stage, run); });
       var ovr=el.querySelector('.ai-ovr'); if(ovr) ovr.addEventListener('change', function(){ updateSubtaskGate(el); });
       updateSubtaskGate(el);
-      // Auto-run the AI check on open if this payment has no verdict yet.
-      if(String(line.status).toLowerCase()===cfg.sampleStatus && String(a.status).toLowerCase()===cfg.actNeeded && !String(a.ai_verdict||'').trim() && run){ runSubtaskAiCheck(stage, run); }
+      // Auto-run the AI check on open if this submitted payment has no verdict yet.
+      if(String(a.status).toLowerCase()===cfg.actNeeded && !String(a.ai_verdict||'').trim() && run){ runSubtaskAiCheck(stage, run); }
     }
     var first=el.querySelector('.chip'); if(first) openDoc(first.dataset.line, first.dataset.eid, first);
   }
   function renderSubtaskReview(stage, line, a){
     var cfg=SUBTASK_CFG[stage], u=a.unit||{};
-    var canAct=String(line.status).toLowerCase()===cfg.sampleStatus && String(a.status).toLowerCase()===cfg.actNeeded;
+    var canAct=String(a.status).toLowerCase()===cfg.actNeeded;   // task-level: independent of siblings
     var facts='<div class="facts">'
       +fact('Sales order item','<span class="mono">'+esc(line.document_no)+'</span>')
       +fact('Company', esc(line.company||'—'))
@@ -1201,15 +1201,15 @@
     var chips=a.files.length
       ? a.files.map(function(f){ return '<button class="chip" data-eid="'+esc(f.evidence_id)+'" data-line="'+esc(a.assignment_id)+'">'+esc(f.file_name)+'</button>'; }).join('')
       : '<span class="muted" style="font-size:12px">no files</span>';
-    // Review: AI panel gates Submit. Audit: show the AI verdict read-only.
-    var aiBlock='';
-    if(cfg.ai && canAct){ aiBlock=aiPanelHtml({ai_verdict:a.ai_verdict, ai_summary:a.ai_summary}); }
-    else if(a.ai_verdict){ aiBlock='<div class="ai-panel"><div class="ai-head">'+aiVerdictPill(String(a.ai_verdict).toLowerCase())+' <span class="ai-sum">'+esc(a.ai_summary||'')+'</span></div></div>'; }
+    // The AI panel is Review-only — the auditor never sees the AI's comments.
+    var aiBlock = (cfg.ai && canAct) ? aiPanelHtml({ai_verdict:a.ai_verdict, ai_summary:a.ai_summary}) : '';
+    var noteLine = a.note ? '<div class="note-line">'+esc(a.note)+'</div>' : '';   // reviewer's note reaches the auditor
     var actions = canAct
       ? aiBlock+'<div class="line-foot"><input class="note-in" placeholder="Note (required to return)">'
         +'<button class="btn primary sm subtask-primary" data-aid="'+esc(a.assignment_id)+'"'+(cfg.ai?' disabled':'')+'>'+esc(cfg.primaryLabel)+'</button>'
         +'<button class="btn sm subtask-return" data-aid="'+esc(a.assignment_id)+'">Return</button></div>'
       : aiBlock+'<div class="muted" style="font-size:12.5px; margin-top:10px">'+esc(String(a.status).replace(/_/g,' '))+'</div>';
+    actions = noteLine + actions;
     return '<div class="line-card" data-aid="'+esc(a.assignment_id)+'" style="border:0;padding:0;margin:0">'
       +'<div class="line-head"><button class="btn sm subtask-back">← Payments</button><span class="doc" style="margin-left:8px">'+esc(u.payment_no||a.evidence_type)+'</span>'
         +'<span class="grow"></span>'+statusPill(a.status)+'</div>'
@@ -1249,7 +1249,7 @@
     var ok=function(dd){
       stageState[stage].detail=dd; renderStageTasks(stage);
       var line=(dd.lines||[]).filter(function(l){ return String(l.line_id)===String(lineId); })[0];
-      if(line && String(line.status).toLowerCase()===cfg.sampleStatus){ openSubtaskTable(stage, line); }   // more payments to handle
+      if(line){ openSubtaskTable(stage, line); }   // stay on the payments list to handle the next one
       else { closeModal(); }
       toast(okMsg,'ok');
     };

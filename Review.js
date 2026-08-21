@@ -90,7 +90,7 @@ function reviewDetail(requestId, stage) {
           var slts = parseJson_(a.slots_json); if (!Array.isArray(slts)) slts = [];
           return { assignment_id: a.assignment_id, evidence_type: a.evidence_type, assigned_to: a.assigned_to, status: a.status,
                    optional: isOptional_(a.optional), unit: parseJson_(a.detail_json), slots: slts, files: evByAsg[a.assignment_id] || [],
-                   ai_verdict: a.ai_verdict || '', ai_summary: a.ai_summary || '' };
+                   note: a.notes || '', ai_verdict: a.ai_verdict || '', ai_summary: a.ai_summary || '' };
         })
       };
     });
@@ -483,87 +483,69 @@ function reviewerSubmit(lineId, override, note) {
   return reviewDetail(line.request_id, 'review');
 }
 
-/* ---------- per-subtask review (Cash & POS: one payment task at a time) ---------- */
-/**
- * Mark ONE submitted task (a single payment) as reviewed. When every required task of
- * the line is reviewed, the line advances to the auditor — so the reviewer works
- * payment-by-payment instead of the whole line at once. No AI gate at this level.
- */
+/* ---------- per-subtask review (Cash & POS: one payment task at a time) ----------
+ * Tasks are handled INDEPENDENTLY: a task can be reviewed/returned as soon as it is
+ * submitted, regardless of its siblings, and returning one never blocks the others.
+ * The sample status is recomputed from all tasks by updateLineAssignmentRollup_. */
+
+/** Mark ONE submitted payment task as reviewed. */
 function reviewerSubmitTask(assignmentId, override, note) {
   var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
   var asg = findAssignment_(assignmentId);
   if (!asg) throw new Error('Task not found.');
   assertReviewer_(asg.request_id, me);
-  var line = requireLineStatus_(asg.line_id, 'pending_review');
   if (String(asg.status).toLowerCase() !== 'submitted') throw new Error('Only a submitted task can be reviewed (now: ' + asg.status + ').');
   var verdict = String(asg.ai_verdict || '').toLowerCase();
   if (!verdict) throw new Error('Run the AI check before submitting this payment to the auditor.');
   if (verdict !== 'accept' && !override) throw new Error('The AI flagged this payment (' + verdict + '). Tick the confirmation to proceed anyway.');
 
-  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'reviewed' });
-
-  var items = getAssignments(asg.line_id);
-  var required = items.filter(function (a) { return !isOptional_(a.optional); });
-  var gate = required.length ? required : items;
-  var allReviewed = gate.every(function (a) { return ['reviewed', 'accepted'].indexOf(String(a.status).toLowerCase()) !== -1; });
-  if (allReviewed) updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'pending_audit', note: '' });
-
   note = String(note || '').trim();
-  logActivity('REVIEW_SUBMIT_TASK', 'assignment', assignmentId, 'reviewed (AI ' + verdict + (verdict !== 'accept' ? ', override' : '') + ')' + (allReviewed ? ' — sample to auditor' : '') + (note ? ' — ' + note : ''));
+  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'reviewed', notes: note ? ('Reviewer: ' + note) : '' });
+  updateLineAssignmentRollup_(asg.line_id);
+  logActivity('REVIEW_SUBMIT_TASK', 'assignment', assignmentId, 'reviewed (AI ' + verdict + (verdict !== 'accept' ? ', override' : '') + ')' + (note ? ' — ' + note : ''));
   return reviewDetail(asg.request_id, 'review');
 }
 
-/** Return ONE payment task to its preparer; the whole line drops back to in_progress
- *  so that payment can be redone, while already-reviewed tasks keep their status. */
+/** Return ONE payment task to its preparer — only that task; siblings are untouched. */
 function reviewerReturnTask(assignmentId, note) {
   var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
   if (!String(note || '').trim()) throw new Error('Please add a note explaining what to fix.');
   var asg = findAssignment_(assignmentId);
   if (!asg) throw new Error('Task not found.');
   assertReviewer_(asg.request_id, me);
-  var line = requireLineStatus_(asg.line_id, 'pending_review');
+  if (String(asg.status).toLowerCase() !== 'submitted') throw new Error('Only a submitted task can be returned (now: ' + asg.status + ').');
 
-  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '', ai_verdict: '', ai_summary: '', ai_checked_at: '' });
-  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'in_progress', note: 'Returned by reviewer (' + (parseJson_(asg.detail_json).payment_no || asg.evidence_type || 'task') + '): ' + note });
+  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '', ai_verdict: '', ai_summary: '', ai_checked_at: '', notes: 'Returned by reviewer: ' + note });
+  updateLineAssignmentRollup_(asg.line_id);
   logActivity('REVIEW_RETURN_TASK', 'assignment', assignmentId, note);
   return reviewDetail(asg.request_id, 'review');
 }
 
 /* ---------- per-subtask audit (Cash & POS: close/return one payment at a time) ---------- */
-/** Auditor accepts ONE reviewed payment. When every required payment is accepted the
- *  sample closes (and the request may close). */
+/** Auditor accepts ONE reviewed payment; the sample closes once every payment is accepted. */
 function auditorCloseTask(assignmentId, note) {
   requireRole_([ROLES.AUDITOR, ROLES.ADMIN]);
   var asg = findAssignment_(assignmentId);
   if (!asg) throw new Error('Task not found.');
-  var line = requireLineStatus_(asg.line_id, 'pending_audit');
-  if (['reviewed', 'submitted'].indexOf(String(asg.status).toLowerCase()) === -1) throw new Error('Only a reviewed task can be closed (now: ' + asg.status + ').');
+  if (String(asg.status).toLowerCase() !== 'reviewed') throw new Error('Only a reviewed task can be closed (now: ' + asg.status + ').');
 
-  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'accepted' });
-
-  var items = getAssignments(asg.line_id);
-  var required = items.filter(function (a) { return !isOptional_(a.optional); });
-  var gate = required.length ? required : items;
-  var allAccepted = gate.every(function (a) { return String(a.status).toLowerCase() === 'accepted'; });
   note = String(note || '').trim();
-  if (allAccepted) {
-    updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'closed', note: note ? ('Closed: ' + note) : '' });
-    recomputeRequestStatus_(asg.request_id);
-  }
-  logActivity('AUDIT_CLOSE_TASK', 'assignment', assignmentId, 'closed' + (allAccepted ? ' — sample closed' : '') + (note ? ' — ' + note : ''));
+  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'accepted', notes: note ? ('Auditor: ' + note) : '' });
+  updateLineAssignmentRollup_(asg.line_id);   // closes the sample when all accepted
+  logActivity('AUDIT_CLOSE_TASK', 'assignment', assignmentId, 'closed' + (note ? ' — ' + note : ''));
   return reviewDetail(asg.request_id, 'audit');
 }
 
-/** Auditor returns ONE payment; the sample drops to in_progress so it can be redone. */
+/** Auditor returns ONE payment to the preparer — only that task; siblings are untouched. */
 function auditorReturnTask(assignmentId, note) {
   requireRole_([ROLES.AUDITOR, ROLES.ADMIN]);
   if (!String(note || '').trim()) throw new Error('Please add a note explaining what to fix.');
   var asg = findAssignment_(assignmentId);
   if (!asg) throw new Error('Task not found.');
-  var line = requireLineStatus_(asg.line_id, 'pending_audit');
+  if (String(asg.status).toLowerCase() !== 'reviewed') throw new Error('Only a reviewed task can be returned (now: ' + asg.status + ').');
 
-  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '', ai_verdict: '', ai_summary: '', ai_checked_at: '' });
-  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'in_progress', note: 'Returned by auditor (' + (parseJson_(asg.detail_json).payment_no || asg.evidence_type || 'task') + '): ' + note });
+  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '', ai_verdict: '', ai_summary: '', ai_checked_at: '', notes: 'Returned by auditor: ' + note });
+  updateLineAssignmentRollup_(asg.line_id);
   logActivity('AUDIT_RETURN_TASK', 'assignment', assignmentId, note);
   return reviewDetail(asg.request_id, 'audit');
 }
