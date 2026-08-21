@@ -371,7 +371,7 @@ function worseVerdict_(a, b) {
 }
 
 /* ---------- reviewer actions ---------- */
-function reviewerSubmit(lineId, override) {
+function reviewerSubmit(lineId, override, note) {
   var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
   var line = requireLineStatus_(lineId, 'pending_review');
   assertReviewer_(line.request_id, me);
@@ -385,9 +385,11 @@ function reviewerSubmit(lineId, override) {
       updateRowById_(dataSs_(), 'Assignments', 'assignment_id', a.assignment_id, { status: 'reviewed' });
     }
   });
-  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'pending_audit', note: '' });
+  note = String(note || '').trim();
+  // Keep the reviewer's comment on the sample so the auditor sees it, and in the trail.
+  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'pending_audit', note: note ? ('Reviewer: ' + note) : '' });
   logActivity('REVIEW_SUBMIT', 'line', lineId,
-    'to auditor (AI ' + verdict + (verdict !== 'accept' ? '; reviewer override' : '') + ')');
+    'to auditor (AI ' + verdict + (verdict !== 'accept' ? '; reviewer override' : '') + ')' + (note ? ' — ' + note : ''));
   return reviewDetail(line.request_id, 'review');
 }
 
@@ -397,7 +399,7 @@ function reviewerSubmit(lineId, override) {
  * the line is reviewed, the line advances to the auditor — so the reviewer works
  * payment-by-payment instead of the whole line at once. No AI gate at this level.
  */
-function reviewerSubmitTask(assignmentId) {
+function reviewerSubmitTask(assignmentId, note) {
   var me = requireRole_([ROLES.REVIEWER, ROLES.ADMIN]);
   var asg = findAssignment_(assignmentId);
   if (!asg) throw new Error('Task not found.');
@@ -413,7 +415,8 @@ function reviewerSubmitTask(assignmentId) {
   var allReviewed = gate.every(function (a) { return ['reviewed', 'accepted'].indexOf(String(a.status).toLowerCase()) !== -1; });
   if (allReviewed) updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', asg.line_id, { status: 'pending_audit', note: '' });
 
-  logActivity('REVIEW_SUBMIT_TASK', 'line', asg.line_id, 'task reviewed (' + (asg.evidence_type || '') + ')' + (allReviewed ? ' — line to auditor' : ''));
+  note = String(note || '').trim();
+  logActivity('REVIEW_SUBMIT_TASK', 'line', asg.line_id, 'task reviewed (' + (asg.evidence_type || '') + ')' + (allReviewed ? ' — line to auditor' : '') + (note ? ' — ' + note : ''));
   return reviewDetail(asg.request_id, 'review');
 }
 

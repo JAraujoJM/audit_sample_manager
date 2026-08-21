@@ -1198,7 +1198,7 @@
     };
     var fail=function(e){ Array.prototype.forEach.call(sibs, function(b){ b.disabled=false; }); btn.innerHTML=orig; toast(e.message,'warn'); };
     var api=google.script.run.withSuccessHandler(ok).withFailureHandler(fail);
-    if(needNote) api[method](aid, note); else api[method](aid);
+    api[method](aid, note);   // reviewerSubmitTask / reviewerReturnTask both take (id, note)
   }
   function fact(k,v){ return '<div class="f"><span class="fk">'+k+'</span><span class="fv">'+v+'</span></div>'; }
   function renderStageLine(stage, actionable, l){
@@ -1365,15 +1365,17 @@
     if(needNote && !note){ toast('Please add a note explaining what to fix.','warn'); return; }
     var okMsg = needNote ? 'Returned to preparer' : (stage==='review'?'Submitted to auditor':'Sample closed');
     var busy  = needNote ? 'Returning' : (stage==='review'?'Submitting':'Closing');
-    // reviewerSubmit's 2nd arg is the AI override flag; every other action takes the note.
-    var arg = note;
-    if(method==='reviewerSubmit'){ var ovr=card.querySelector('.ai-ovr'); arg = ovr?ovr.checked:false; }
     // Disable both action buttons; show the spinner on the one clicked.
     var sibs=card.querySelectorAll('.stage-primary, .stage-return');
     Array.prototype.forEach.call(sibs, function(b){ b.disabled=true; });
     var orig=btn.innerHTML; btn.innerHTML='<span class="spinner"></span>'+busy;
-    google.script.run.withSuccessHandler(function(d){ closeModal(); stageState[stage].detail=d; renderStageTasks(stage); toast(okMsg,'ok'); })
-      .withFailureHandler(function(e){ Array.prototype.forEach.call(sibs, function(b){ b.disabled=false; }); btn.innerHTML=orig; toast(e.message,'warn'); })[method](id, arg);
+    var runner=google.script.run
+      .withSuccessHandler(function(d){ closeModal(); stageState[stage].detail=d; renderStageTasks(stage); toast(okMsg,'ok'); })
+      .withFailureHandler(function(e){ Array.prototype.forEach.call(sibs, function(b){ b.disabled=false; }); btn.innerHTML=orig; toast(e.message,'warn'); });
+    // reviewerSubmit takes (id, override, note) — the reviewer's comment (e.g. an AI-override
+    // justification) is saved; every other action takes (id, note).
+    if(method==='reviewerSubmit'){ var ovr=card.querySelector('.ai-ovr'); runner[method](id, ovr?ovr.checked:false, note); }
+    else { runner[method](id, note); }
   }
 
   /* ---------- shared: open an evidence file in a new tab (app-mediated) ---------- */
