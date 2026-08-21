@@ -423,6 +423,8 @@
   function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
   function fmtNum(v){ if(v===null||v===undefined||String(v).trim()==='') return '—'; var n=Number(v); return isNaN(n)?esc(v):n.toLocaleString(undefined,{maximumFractionDigits:2}); }
   function fmtDate(s){ if(!s) return '—'; var d=new Date(s); return isNaN(d)?esc(String(s).slice(0,10)):d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }
+  // Drop a trailing @jumia.com to keep the table compact (external domains are kept).
+  function shortEmail(e){ return String(e||'').split(/[,;]\s*/).map(function(x){ return x.replace(/@jumia\.com$/i,''); }).join(', '); }
 
   /* ---- Cash Anchor (Flow B) subpopulation field specs ----
    * What the preparer / reviewer sees per subpopulation. Values resolve from the
@@ -730,8 +732,8 @@
         +'<td class="mono">'+esc(r.request_ref||'—')+'</td>'
         +'<td>'+esc(r.period||'—')+'</td>'
         +'<td>'+esc(r.due_date||'—')+'</td>'
-        +'<td class="trunc" title="'+esc(r.auditor_email||'')+'">'+esc(r.auditor_email||'—')+'</td>'
-        +'<td class="trunc" title="'+esc(r.reviewer_email||'')+'">'+esc(r.reviewer_email||'—')+'</td>'
+        +'<td class="trunc" title="'+esc(r.auditor_email||'')+'">'+esc(shortEmail(r.auditor_email)||'—')+'</td>'
+        +'<td class="trunc" title="'+esc(r.reviewer_email||'')+'">'+esc(shortEmail(r.reviewer_email)||'—')+'</td>'
         +'<td>'+miniProgress(r.progress, r.lineCount, r.taskProgress, r.taskCount)+'</td>'
         +'<td>'+statusPill(r.status)+'</td>'
         +'<td><div class="actions">'
