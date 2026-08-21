@@ -1069,8 +1069,17 @@
   function renderStageTasks(stage){
     var c=STAGE_CFG[stage], d=stageState[stage].detail; if(!d) return;
     var actionable=d.actionable, pendingOnly=stageState[stage].pendingOnly;
+    // "Pending my action" is task-based: a sample counts if ANY of its tasks is on this
+    // role's desk (submitted for review, reviewed for audit) — not only when the whole
+    // sample is. Falls back to sample status for samples with no tasks (not_found etc.).
+    var actTask = stage==='audit' ? 'reviewed' : 'submitted';
+    var hasAct = function(l){
+      var ts=l.assignments||[];
+      return ts.length ? ts.some(function(a){ return String(a.status).toLowerCase()===actTask; })
+                       : String(l.status).toLowerCase()===actionable;
+    };
     var lines=d.lines.filter(function(l){ return String(l.status).toLowerCase()!=='not_found'; });
-    var shown=pendingOnly ? lines.filter(function(l){ return String(l.status).toLowerCase()===actionable; }) : lines;
+    var shown=pendingOnly ? lines.filter(hasAct) : lines;
     // A "task" is one assignment; a Cash & POS line has several (one per payment). The
     // header shows lines + total tasks; the table splits each line's tasks into
     // submitted (in the review pipeline) vs pending (not yet submitted by the preparer).
@@ -1091,7 +1100,7 @@
       body='<div class="card">'+toggle+'<div class="empty">'+(pendingOnly?'No samples pending your action. Switch off the toggle to see the rest.':'No samples.')+'</div></div>';
     } else {
       var rows=shown.map(function(l){
-        var canAct=String(l.status).toLowerCase()===actionable;
+        var canAct=hasAct(l);
         var openTd='<td><div class="actions"><button class="btn '+(canAct?'primary ':'')+'sm icon-btn task-open" data-line="'+esc(l.line_id)+'" title="'+(canAct?'Review / decide':'View')+'">⋯</button></div></td>';
         if(isB){
           var ts=(l.assignments||[]), sub=ts.filter(function(a){ return DONE.indexOf(String(a.status).toLowerCase())!==-1; }).length, pend=ts.length-sub;

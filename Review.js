@@ -23,7 +23,7 @@ function stageRoles_(stage) {
 /* ---------- read ---------- */
 function reviewQueue(stage) {
   var me = requireRole_(stageRoles_(stage));
-  var want = STAGE_STATUS[stage];
+  var actTask = stage === 'audit' ? 'reviewed' : 'submitted';   // the TASK status this role acts on
   var ds = dataSs_();
   var tz = ds.getSpreadsheetTimeZone();
   var lines = readObjects_(ds, 'Sample_Lines');
@@ -36,7 +36,11 @@ function reviewQueue(stage) {
     var rid = String(r.request_id);
     var rl = lines.filter(function (l) { return String(l.request_id) === rid; });
     var ra = asg.filter(function (a) { return String(a.request_id) === rid; });
-    var pending = rl.filter(function (l) { return String(l.status).toLowerCase() === want; }).length;
+    var byLine = {}; ra.forEach(function (a) { (byLine[String(a.line_id)] = byLine[String(a.line_id)] || []).push(a); });
+    // "Pending" is task-based: a sample counts if ANY of its tasks is on this role's desk.
+    var pending = rl.filter(function (l) {
+      return (byLine[String(l.line_id)] || []).some(function (a) { return String(a.status).toLowerCase() === actTask; });
+    }).length;
     return {
       request_id: r.request_id, title: r.title, period: r.period, status: r.status,
       request_ref: r.request_ref || '', due_date: toDateStr_(r.due_date, tz),
