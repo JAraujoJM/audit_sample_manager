@@ -291,10 +291,9 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="brand-mark" title="Jumia">
-      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false">
-        <rect width="24" height="24" rx="6" fill="#F68B1E"/>
-        <path d="M7 9.5h10l-.75 8.15A1.2 1.2 0 0 1 15.05 18.8H8.95a1.2 1.2 0 0 1-1.2-1.15L7 9.5z" fill="#fff"/>
-        <path d="M9.4 10V8.2a2.6 2.6 0 0 1 5.2 0V10" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>
+      <svg viewBox="0 0 1544 1548" width="26" height="26" aria-hidden="true" focusable="false">
+        <path fill="#ffffff" d="m780.4 1404.5c-360.7 0-652.3-283.2-652.3-633.5 0-350.3 291.6-633.5 652.3-633.5 360.7 0 652.2 283.2 652.2 633.5 0 350.3-291.5 633.5-652.2 633.5z"/>
+        <path fill="#f8991d" fill-rule="evenodd" d="m1432.6 374.2v0.2h1.6c73.1 120.3 111 259.6 109.3 400.7 0 141.7-38.1 281.1-109.8 402.9l-22 32.5-43.7 58.7-49.3 54.5c-14.8 16.8-36.3 31.2-54.4 49.2-28.5 22.5-59.2 43.7-90.8 62l-33.1 22c-113.5 59.9-239.5 91.3-368 90.9-128.7 0.7-255.5-32-367.6-95.1-21.8-9.8-42.7-22-61.8-36.4l-58.6-43.8c-38.1-31.6-73.6-66.7-105.2-105.3-16.6-18.7-31.4-39.9-43.8-61.9l-21.7-29-36.4-65.9c-15.9-34.2-29.4-69.1-40.5-105.3-23.1-74.3-35.3-151.7-36.4-229.8 0.5-52.7 6.3-104.8 18.1-156.5 21.3-111.2 67.5-216.3 135.7-306.6 21.3-30.3 45.7-58.2 72.9-83.7l25.7-25.7 58.6-49.3 61.8-40.5 32.5-18.1c112.3-63.3 239.3-96.2 368-94.7 128.9-0.4 255.4 32.1 368 94.7l32.5 18.1 58.5 40.5 58.2 49.3 25.7 25.7c27.2 25.1 51.6 53.2 72.9 83.7 15.9 19.7 30.5 40.2 43.8 62zm-481.5 152.8l-174.8-357.8-178.4 357.8-393.7 58.2 283.7 277.3-65.5 394.2 349.1-185.7 353.6 185.7-65.8-394.2 284.4-277.3z"/>
       </svg></span><span>Audit Samples Manager</span></div>
     <div class="who" id="who">…</div>
   </header>
@@ -1006,7 +1005,6 @@
         +'<td class="mono">'+esc(r.request_ref||'—')+'</td>'
         +'<td>'+esc(r.period||'—')+'</td>'
         +'<td>'+esc(r.due_date||'—')+'</td>'
-        +'<td>'+r.lineCount+'</td>'
         +'<td>'+pend+'</td>'
         +'<td>'+miniProgress(r.progress, r.lineCount)+'</td>'
         +'<td><div class="actions"><button class="btn primary sm icon-btn stage-open" data-id="'+esc(r.request_id)+'" title="Open">⋯</button></div></td>'
@@ -1017,7 +1015,7 @@
     var leg=legOrder.filter(function(o){ return present[o[0]]; }).map(function(o){ return '<span class="prog-lbl"><i class="seg-'+o[1]+'"></i>'+o[2]+'</span>'; }).join('');
     var legendHtml = leg ? '<div class="prog-legend" style="margin:0 2px 12px">'+leg+'</div>' : '';
     wrap.innerHTML='<div class="card" style="overflow-x:auto">'+legendHtml+'<table class="req-table"><thead><tr>'
-      +'<th>PBC ref</th><th>Period</th><th>Due</th><th>Tasks</th><th>Pending</th><th>Progress</th><th>Actions</th>'
+      +'<th>PBC ref</th><th>Period</th><th>Due</th><th>Pending</th><th>Progress</th><th>Actions</th>'
       +'</tr></thead><tbody>'+rows+'</tbody></table></div>';
     Array.prototype.forEach.call(wrap.querySelectorAll('.stage-open'), function(b){ b.addEventListener('click', function(){ openStageDetail(stage, b.dataset.id); }); });
   }
@@ -1035,8 +1033,14 @@
     var actionable=d.actionable, pendingOnly=stageState[stage].pendingOnly;
     var lines=d.lines.filter(function(l){ return String(l.status).toLowerCase()!=='not_found'; });
     var shown=pendingOnly ? lines.filter(function(l){ return String(l.status).toLowerCase()===actionable; }) : lines;
+    // A "task" is one assignment; a Cash & POS line has several (one per payment). The
+    // header shows lines + total tasks; the table splits each line's tasks into
+    // submitted (in the review pipeline) vs pending (not yet submitted by the preparer).
+    var isB=lines.some(function(l){ return !!l.subpopulation; });
+    var totalTasks=lines.reduce(function(n,l){ return n+((l.assignments||[]).length); }, 0);
+    var DONE=['submitted','reviewed','accepted'];
     var head='<div class="card"><h2 style="font-size:16px;margin:0 0 2px">'+esc(d.request.title)+'</h2>'
-      +'<p class="sub" style="margin:0">'+esc(d.request.period||'')+' · '+lines.length+' lines</p></div>';
+      +'<p class="sub" style="margin:0">'+esc(d.request.period||'')+' · '+lines.length+' lines'+(isB?(' · '+totalTasks+' tasks'):'')+'</p></div>';
     var toggle='<div class="row" style="margin-bottom:12px; gap:0; align-items:center">'
       +'<label class="switch"><input type="checkbox" class="pending-toggle"'+(pendingOnly?' checked':'')+'><span class="sw-track"><span class="sw-knob"></span></span></label>'
       +'<span class="sw-label">Pending my action</span></div>';
@@ -1044,22 +1048,17 @@
     if(!shown.length){
       body='<div class="card">'+toggle+'<div class="empty">'+(pendingOnly?'No lines pending your action. Switch to “All lines” to see the rest.':'No lines.')+'</div></div>';
     } else {
-      // Flow-aware columns: Cash Anchor lines carry a subpopulation (Seller / MPL type
-      // are Flow A only). Cash & POS lines also show a Tasks count (payments in review).
-      var isB=lines.some(function(l){ return !!l.subpopulation; });
-      var showTasks=lines.some(function(l){ return l.subpopulation==='Postpaid - Cash & POS'; });
       var rows=shown.map(function(l){
         var canAct=String(l.status).toLowerCase()===actionable;
         var openTd='<td><div class="actions"><button class="btn '+(canAct?'primary ':'')+'sm icon-btn task-open" data-line="'+esc(l.line_id)+'" title="'+(canAct?'Review / decide':'View')+'">⋯</button></div></td>';
         if(isB){
-          var cash=l.subpopulation==='Postpaid - Cash & POS';
-          var subCount=(l.assignments||[]).filter(function(a){ return ['submitted','reviewed'].indexOf(String(a.status).toLowerCase())!==-1; }).length;
-          var tasksCell = showTasks ? '<td>'+(cash?('<span class="pill amber">'+subCount+'</span>'):'<span class="muted">—</span>')+'</td>' : '';
+          var ts=(l.assignments||[]), sub=ts.filter(function(a){ return DONE.indexOf(String(a.status).toLowerCase())!==-1; }).length, pend=ts.length-sub;
           return '<tr>'
             +'<td class="mono">'+esc(l.document_no)+'</td>'
             +'<td>'+esc(l.company||'—')+'</td>'
             +'<td>'+(l.subpopulation?'<span class="pill neutral">'+esc(l.subpopulation)+'</span>':'—')+'</td>'
-            +tasksCell
+            +'<td>'+sub+'</td>'
+            +'<td>'+(pend?'<span class="pill amber">'+pend+'</span>':pend)+'</td>'
             +'<td>'+statusPill(l.status)+'</td>'+openTd+'</tr>';
         }
         var adv=/advance/i.test(l.mpl_type);
@@ -1070,7 +1069,7 @@
           +'<td>'+statusPill(l.status)+'</td>'+openTd+'</tr>';
       }).join('');
       var header = isB
-        ? '<th>Document</th><th>Company</th><th>Subpopulation</th>'+(showTasks?'<th>Tasks</th>':'')+'<th>Status</th><th></th>'
+        ? '<th>Document</th><th>Company</th><th>Subpopulation</th><th>Tasks submitted</th><th>Tasks pending</th><th>Status</th><th></th>'
         : '<th>Document</th><th>Seller</th><th>Type</th><th>Status</th><th></th>';
       body='<div class="card">'+toggle+'<div style="overflow-x:auto"><table class="req-table"><thead><tr>'
         +header+'</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
