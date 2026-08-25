@@ -68,6 +68,13 @@ the **auditor never sees any AI output** — only reviewer comments addressed to
 `Assignments.notes`, surfaced via `reviewDetail`). The reviewer's override comment is saved on submit and
 shown in Sample history.
 
+**Comment channels (same segregation shape):** the Preparer may add an optional comment when submitting a
+task (`Assignments.preparer_note`, set by `submitAssignment(id, note)`) — e.g. flagging a known variance +
+its justification up front. It reaches the **Reviewer only** (`reviewDetail` sends `preparer_note` for the
+`review` stage only; shown in both line and per-payment review windows); the **Auditor never sees it** — the
+reviewer transcribes/edits/ignores it into their own note-to-auditor. Preparers can also **export their tasks
+to Excel** (`exportMyTasks`, Prepare.js — one-tab xlsx checklist, Export button in the My-tasks toolbar).
+
 **Auditor export** (`auditExport(requestId)`, Review.js; Export button in the Audit request detail): builds
 a temp Google Sheet → exports `.xlsx` (tabs: Samples & Tasks enriched / IPE with queries + SHA-256 + checks /
 Evidence index) → zips it with `Extraction/` (gateway CSVs + SOX xlsx) + `Evidence/<soi>/<task>/<file>` via
