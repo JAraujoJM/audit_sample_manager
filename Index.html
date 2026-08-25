@@ -226,7 +226,7 @@
   .file{font-size:13px; display:flex; align-items:center; gap:6px;}
   .file a{color:var(--accent); text-decoration:none;} .file a:hover{text-decoration:underline;}
   .link-btn{border:0; background:none; color:var(--text-3); font:inherit; font-size:12px; cursor:pointer; text-decoration:underline; padding:0;}
-  .task-foot{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+  .task-foot{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:12px;}
   .task-foot .grow{flex:1;}
   .upmsg{font-size:12.5px; min-height:1px;}
   .upmsg:not(:empty){margin-top:14px;}
@@ -918,8 +918,7 @@
     return '<div class="row" style="margin-bottom:12px; gap:0; align-items:center">'
       +'<label class="switch"><input type="checkbox" id="myPendingTog"'+(myPendingOnly?' checked':'')+'><span class="sw-track"><span class="sw-knob"></span></span></label>'
       +'<span class="sw-label">Pending my action</span>'
-      +'<span class="grow"></span>'
-      +'<button class="btn sm" id="myExportBtn" title="Download all your tasks as an Excel checklist">Export to Excel</button></div>';
+      +'<button class="btn sm" id="myExportBtn" style="margin-left:auto" title="Download all your tasks as an Excel checklist">Export</button></div>';
   }
   function renderTasks(items){
     if(items) myTasks=items;

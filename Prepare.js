@@ -48,6 +48,35 @@ function listMyAssignments() {
  * A working checklist the preparer can use while gathering evidence: every task
  * routed to them, with the documents to collect and the sample facts. Read-only,
  * no evidence files — just the list. Same Sheet→xlsx export path as auditExport. */
+
+// Field specs mirror the client's CA_FIELDS (Index.html) so the export's Details
+// column carries exactly what the "My tasks" card shows on screen — keep in sync.
+var CA_JP_EXPORT_ = [['Order', 'order_nr'], ['Amount', 'amount'], ['Payment date', 'jp_created'], ['Gateway', 'jp_gateway'], ['Payment provider', 'jp_provider'], ['Retrieval ref', 'jp_retrieval']];
+var CA_FIELDS_EXPORT_ = {
+  'Prepaid - Voucher': [['Order', 'order_nr'], ['Amount', 'amount']],
+  'Prepaid - JumiaPay': CA_JP_EXPORT_, 'Postpaid - JumiaPay on delivery': CA_JP_EXPORT_, 'Postpaid - Cash - 3PL via JPay': CA_JP_EXPORT_,
+  'Postpaid - Cash & POS': [['Package no', 'package_number'], ['Collection partner', 'collection_partner'], ['Payment no', 'payment_no'], ['Payment date', 'payment_date'], ['Payment reference', 'payment_ref'], ['Bank account', 'bank_account'], ['Amount', 'amount']],
+  'Prepaid - Other methods': [['Order', 'order_nr'], ['Amount', 'amount']]
+};
+// Value resolves per-payment unit → line detail → the task row, same order as caVal.
+function caValExport_(key, t) {
+  var u = t.unit || {}, d = t.detail || {};
+  if (u[key] != null && u[key] !== '') return u[key];
+  if (d[key] != null && d[key] !== '') return d[key];
+  if (t[key] != null && t[key] !== '') return t[key];
+  return '';
+}
+function taskDetails_(t) {
+  var spec = t.subpopulation && CA_FIELDS_EXPORT_[t.subpopulation];
+  if (spec) {
+    return spec.map(function (f) { var v = caValExport_(f[1], t); return f[0] + ' ' + (v === '' ? '—' : v); }).join(' · ');
+  }
+  // Flow A card shows statement no. / statement amount / paid at.
+  return [t.statement_code ? 'Statement no ' + t.statement_code : '',
+          (t.statement_amount != null && t.statement_amount !== '') ? 'Statement amount ' + t.statement_amount : '',
+          t.paid_at ? 'Paid at ' + t.paid_at : ''].filter(String).join(' · ');
+}
+
 function exportMyTasks() {
   var me = requireRole_([ROLES.PREPARER, ROLES.ADMIN]);
   var tasks = listMyAssignments();
@@ -60,12 +89,8 @@ function exportMyTasks() {
     var docs = (t.slots && t.slots.length)
       ? t.slots.map(function (s) { return s.label + (s.optional ? ' (optional)' : ''); }).join('\n')
       : (t.evidence_type + (t.optional ? ' (optional)' : ''));
-    var u = t.unit || {};
-    var details = (u.payment_no || u.bank_account || u.amount || u.payment_date)
-      ? [u.payment_no ? 'Payment ' + u.payment_no : '', u.bank_account, (u.amount != null && u.amount !== '' ? u.amount : ''), u.payment_date].filter(String).join(' · ')
-      : [t.statement_code ? 'Statement ' + t.statement_code : '', (t.statement_amount != null && t.statement_amount !== '' ? t.statement_amount : ''), t.paid_at ? 'paid ' + t.paid_at : ''].filter(String).join(' · ');
     rows.push([t.request_title || '', t.document_no || '', t.company || '', t.subpopulation || (t.mpl_type || ''),
-      t.evidence_type || '', docs, details, String(t.status || '').replace(/_/g, ' '),
+      t.evidence_type || '', docs, taskDetails_(t), String(t.status || '').replace(/_/g, ' '),
       t.due_date || '', t.note || '', t.preparer_note || '']);
   });
 
