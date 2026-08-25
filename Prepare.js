@@ -38,10 +38,57 @@ function listMyAssignments() {
         subpopulation: line.subpopulation || '', detail: parseJson_(line.detail_json), unit: parseJson_(a.detail_json),
         evidence_type: a.evidence_type, optional: isOptional_(a.optional), slots: slots,
         status: a.status, due_date: toDateStr_(req.due_date, tz),
-        note: a.notes || line.note || '', files: files
+        note: a.notes || line.note || '', preparer_note: a.preparer_note || '', files: files
       };
     })
     .sort(function (x, y) { return String(x.due_date || '9999').localeCompare(String(y.due_date || '9999')); });
+}
+
+/* ---------- export my tasks to Excel ----------
+ * A working checklist the preparer can use while gathering evidence: every task
+ * routed to them, with the documents to collect and the sample facts. Read-only,
+ * no evidence files — just the list. Same Sheet→xlsx export path as auditExport. */
+function exportMyTasks() {
+  var me = requireRole_([ROLES.PREPARER, ROLES.ADMIN]);
+  var tasks = listMyAssignments();
+  if (!tasks.length) throw new Error('You have no tasks to export yet.');
+
+  var H = ['Request', 'Sample', 'Company', 'Subpopulation / type', 'Evidence / task', 'Documents to collect',
+           'Details', 'Status', 'Due date', 'Note from reviewer', 'My comment'];
+  var rows = [H];
+  tasks.forEach(function (t) {
+    var docs = (t.slots && t.slots.length)
+      ? t.slots.map(function (s) { return s.label + (s.optional ? ' (optional)' : ''); }).join('\n')
+      : (t.evidence_type + (t.optional ? ' (optional)' : ''));
+    var u = t.unit || {};
+    var details = (u.payment_no || u.bank_account || u.amount || u.payment_date)
+      ? [u.payment_no ? 'Payment ' + u.payment_no : '', u.bank_account, (u.amount != null && u.amount !== '' ? u.amount : ''), u.payment_date].filter(String).join(' · ')
+      : [t.statement_code ? 'Statement ' + t.statement_code : '', (t.statement_amount != null && t.statement_amount !== '' ? t.statement_amount : ''), t.paid_at ? 'paid ' + t.paid_at : ''].filter(String).join(' · ');
+    rows.push([t.request_title || '', t.document_no || '', t.company || '', t.subpopulation || (t.mpl_type || ''),
+      t.evidence_type || '', docs, details, String(t.status || '').replace(/_/g, ' '),
+      t.due_date || '', t.note || '', t.preparer_note || '']);
+  });
+
+  var name = sanitizeName_('My audit tasks - ' + me.email.split('@')[0]);
+  var ss = SpreadsheetApp.create(name);
+  try {
+    var sh = ss.getSheets()[0].setName('My tasks');
+    sh.getRange(1, 1, rows.length, H.length).setValues(rows);
+    sh.setFrozenRows(1); sh.getRange(1, 1, 1, H.length).setFontWeight('bold');
+    sh.getRange(1, 1, rows.length, H.length).setVerticalAlignment('top').setWrap(true);
+    [180, 120, 90, 150, 160, 200, 220, 110, 100, 240, 240].forEach(function (w, i) { sh.setColumnWidth(i + 1, w); });
+    SpreadsheetApp.flush();
+
+    var resp = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + ss.getId() + '/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
+    if (resp.getResponseCode() >= 300) throw new Error('Could not build the Excel file (HTTP ' + resp.getResponseCode() + ').');
+    var bytes = resp.getBlob().getBytes();
+    logActivity('MY_TASKS_EXPORT', 'user', me.email, tasks.length + ' task(s)');
+    return { name: name + '.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+             dataUrl: 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + Utilities.base64Encode(bytes) };
+  } finally {
+    try { DriveApp.getFileById(ss.getId()).setTrashed(true); } catch (e) {}
+  }
 }
 
 /* ---------- evidence upload (app-mediated) ---------- */
@@ -111,7 +158,7 @@ function removeEvidence(evidenceId) {
 }
 
 /* ---------- submit / withdraw ---------- */
-function submitAssignment(assignmentId) {
+function submitAssignment(assignmentId, note) {
   var me = requireRole_([ROLES.PREPARER, ROLES.ADMIN]);
   var ds = dataSs_();
   var asg = findAssignment_(assignmentId);
@@ -129,9 +176,14 @@ function submitAssignment(assignmentId) {
     throw new Error('Upload at least one evidence file before submitting.');
   }
 
-  updateRowById_(ds, 'Assignments', 'assignment_id', assignmentId, { status: 'submitted', submitted_at: nowIso_() });
+  // Optional preparer comment: seen by the reviewer only (never the auditor), so the
+  // preparer can flag a known variance + its justification up front. Stored on its own
+  // column so it never collides with the reviewer/auditor `notes` channel.
+  note = String(note || '').trim();
+  updateRowById_(ds, 'Assignments', 'assignment_id', assignmentId,
+    { status: 'submitted', submitted_at: nowIso_(), preparer_note: note });
   updateLineAssignmentRollup_(asg.line_id);
-  logActivity('ASSIGNMENT_SUBMIT', 'assignment', assignmentId, files.length + ' file(s)');
+  logActivity('ASSIGNMENT_SUBMIT', 'assignment', assignmentId, files.length + ' file(s)' + (note ? ' — ' + note : ''));
   return listMyAssignments();
 }
 

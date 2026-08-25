@@ -94,7 +94,10 @@ function reviewDetail(requestId, stage) {
           var slts = parseJson_(a.slots_json); if (!Array.isArray(slts)) slts = [];
           return { assignment_id: a.assignment_id, evidence_type: a.evidence_type, assigned_to: a.assigned_to, status: a.status,
                    optional: isOptional_(a.optional), unit: parseJson_(a.detail_json), slots: slts, files: evByAsg[a.assignment_id] || [],
-                   note: a.notes || '', ai_verdict: a.ai_verdict || '', ai_summary: a.ai_summary || '' };
+                   note: a.notes || '', ai_verdict: a.ai_verdict || '', ai_summary: a.ai_summary || '',
+                   // The preparer's comment is for the reviewer only — the auditor never sees it
+                   // (the reviewer transcribes what's relevant into their own note to the auditor).
+                   preparer_note: (stage === 'review') ? (a.preparer_note || '') : '' };
         })
       };
     });

@@ -259,6 +259,8 @@
   .preview .ph{color:var(--text-3); font-size:13px; text-align:center;}
   .note-line{margin-top:11px; font-size:12.5px; color:var(--amber); background:var(--amber-tint); border-radius:6px; padding:7px 10px;}
   .note-in{flex:1; min-width:170px;}
+  .prep-note{width:100%; margin-top:10px; box-sizing:border-box; resize:vertical; min-height:38px; font:inherit; font-size:12.5px; padding:7px 10px; border:1px solid var(--sep-strong); border-radius:var(--radius-sm); background:var(--surface); color:var(--text);}
+  .prep-note-view{margin-top:10px; font-size:12.5px; color:var(--text); background:var(--accent-tint); border-left:3px solid var(--accent); border-radius:6px; padding:7px 10px;}
   .ai-panel{margin-top:14px; border:1px solid var(--sep); border-radius:10px; padding:11px 13px; background:var(--surface-2, #fafafa);}
   .ai-head{display:flex; align-items:center; gap:11px; flex-wrap:wrap;}
   .ai-result{display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap;}
@@ -915,7 +917,9 @@
   function taskFilterBar_(all){
     return '<div class="row" style="margin-bottom:12px; gap:0; align-items:center">'
       +'<label class="switch"><input type="checkbox" id="myPendingTog"'+(myPendingOnly?' checked':'')+'><span class="sw-track"><span class="sw-knob"></span></span></label>'
-      +'<span class="sw-label">Pending my action</span></div>';
+      +'<span class="sw-label">Pending my action</span>'
+      +'<span class="grow"></span>'
+      +'<button class="btn sm" id="myExportBtn" title="Download all your tasks as an Excel checklist">Export to Excel</button></div>';
   }
   function renderTasks(items){
     if(items) myTasks=items;
@@ -958,6 +962,11 @@
         ? '<button class="btn sm withdraw" data-aid="'+esc(t.assignment_id)+'">Withdraw</button>'
         : '<span class="muted" style="font-size:12.5px">Locked · '+esc(s.replace(/_/g,' '))+'</span>';
     var note = t.note ? '<div class="task-note">'+esc(t.note)+'</div>' : '';
+    // Optional comment to the reviewer (e.g. a known variance + its justification),
+    // saved on submit. Only the reviewer sees it — never the auditor.
+    var commentBlock = editable
+      ? '<textarea class="prep-note" data-aid="'+esc(t.assignment_id)+'" rows="2" placeholder="Optional comment for the reviewer — e.g. a known variance and why it is expected">'+esc(t.preparer_note||'')+'</textarea>'
+      : (t.preparer_note ? '<div class="prep-note-view"><b>Your comment:</b> '+esc(t.preparer_note)+'</div>' : '');
     var facts;
     if(t.subpopulation && CA_FIELDS[t.subpopulation]){
       facts = '<div class="task-facts">'+CA_FIELDS[t.subpopulation].map(function(f){
@@ -980,6 +989,7 @@
       +facts
       +note
       +filesBlock
+      +commentBlock
       +'<div class="task-foot">'+actions+'<span class="grow"></span>'+histIconBtn(t.line_id)+'</div>'
       +'<div class="upmsg muted"></div></div>';
   }
@@ -987,7 +997,8 @@
     var L=$('taskList');
     var tog=$('myPendingTog'); if(tog) tog.addEventListener('change', function(){ myPendingOnly=tog.checked; renderTasks(); });
     Array.prototype.forEach.call(L.querySelectorAll('.file-input'), function(inp){ inp.addEventListener('change', function(){ handleUpload(inp); }); });
-    Array.prototype.forEach.call(L.querySelectorAll('.submit'),     function(b){ b.addEventListener('click', function(){ taskCall('submitAssignment', b.dataset.aid, b, 'Submitted for review', 'Submitting'); }); });
+    Array.prototype.forEach.call(L.querySelectorAll('.submit'),     function(b){ b.addEventListener('click', function(){ submitTask(b); }); });
+    var xb=$('myExportBtn'); if(xb) xb.addEventListener('click', function(){ exportMyTasks_(xb); });
     Array.prototype.forEach.call(L.querySelectorAll('.withdraw'),   function(b){ b.addEventListener('click', function(){ taskCall('withdrawAssignment', b.dataset.aid, b, 'Withdrawn', 'Withdrawing'); }); });
     Array.prototype.forEach.call(L.querySelectorAll('.rm-file'),    function(b){ b.addEventListener('click', function(){ taskCall('removeEvidence', b.dataset.eid, b, 'File removed', ''); }); });
     Array.prototype.forEach.call(L.querySelectorAll('.view-doc'),   function(a){ a.addEventListener('click', function(ev){ ev.preventDefault(); viewEvidence(a.dataset.eid); }); });
@@ -1017,6 +1028,20 @@
     if(btn){ orig=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>'+(busyLabel||''); }
     google.script.run.withSuccessHandler(function(items){ renderTasks(items); if(okMsg) toast(okMsg,'ok'); })
       .withFailureHandler(function(e){ if(btn){ btn.disabled=false; btn.innerHTML=orig; } toast(e.message,'warn'); })[method](arg);
+  }
+  // Submit carries the preparer's optional comment (read from the card's textarea).
+  function submitTask(btn){
+    var card=btn.closest('.task-card'), ta=card&&card.querySelector('.prep-note'), note=ta?ta.value.trim():'';
+    var orig=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Submitting';
+    google.script.run.withSuccessHandler(function(items){ renderTasks(items); toast('Submitted for review','ok'); })
+      .withFailureHandler(function(e){ btn.disabled=false; btn.innerHTML=orig; toast(e.message,'warn'); })
+      .submitAssignment(btn.dataset.aid, note);
+  }
+  function exportMyTasks_(btn){
+    var o=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Exporting';
+    google.script.run.withSuccessHandler(function(f){ btn.disabled=false; btn.innerHTML=o; downloadBlob(f); toast('Export ready','ok'); })
+      .withFailureHandler(function(e){ btn.disabled=false; btn.innerHTML=o; toast(e.message,'warn'); })
+      .exportMyTasks();
   }
 
   /* ---------- review / audit (reviewer + auditor) ----------
@@ -1233,12 +1258,14 @@
     // The AI panel is Review-only — the auditor never sees the AI's comments.
     var aiBlock = (cfg.ai && canAct) ? aiPanelHtml({ai_verdict:a.ai_verdict, ai_summary:a.ai_summary}) : '';
     var noteLine = a.note ? '<div class="note-line">'+esc(a.note)+'</div>' : '';   // reviewer's note reaches the auditor
+    // Preparer's comment — reviewer-only (server sends it for the review stage only).
+    var prepNote = a.preparer_note ? '<div class="prep-note-view"><b>Preparer:</b> '+esc(a.preparer_note)+'</div>' : '';
     var actions = canAct
       ? aiBlock+'<div class="line-foot"><input class="note-in" placeholder="Note (required to return)">'
         +'<button class="btn primary sm subtask-primary" data-aid="'+esc(a.assignment_id)+'"'+(cfg.ai?' disabled':'')+'>'+esc(cfg.primaryLabel)+'</button>'
         +'<button class="btn sm subtask-return" data-aid="'+esc(a.assignment_id)+'">Return</button></div>'
       : aiBlock+'<div class="muted" style="font-size:12.5px; margin-top:10px">'+esc(String(a.status).replace(/_/g,' '))+'</div>';
-    actions = noteLine + actions;
+    actions = prepNote + noteLine + actions;
     return '<div class="line-card" data-aid="'+esc(a.assignment_id)+'" style="border:0;padding:0;margin:0">'
       +'<div class="line-head"><button class="btn sm subtask-back">← Payments</button><span class="doc" style="margin-left:8px">'+esc(u.payment_no||a.evidence_type)+'</span>'
         +'<span class="grow"></span>'+statusPill(a.status)+'</div>'
@@ -1325,8 +1352,9 @@
       } else {
         body='<div class="doc-chips">'+(a.files.length?a.files.map(chip).join(''):'<span class="muted" style="font-size:12px">no files</span>')+'</div>';
       }
+      var prepNote = a.preparer_note ? '<div class="prep-note-view"><b>Preparer:</b> '+esc(a.preparer_note)+'</div>' : '';
       return '<div class="asg-rev"><div class="et">'+esc(a.evidence_type)+opt+'</div>'
-        +'<div class="who">'+esc(a.assigned_to||'unassigned')+'</div>'+uLine+body+'</div>';
+        +'<div class="who">'+esc(a.assigned_to||'unassigned')+'</div>'+uLine+body+prepNote+'</div>';
     }).join('');
     var note = l.note ? '<div class="note-line">'+esc(l.note)+'</div>' : '';
     var actions='';
