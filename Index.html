@@ -968,7 +968,10 @@
       : (t.preparer_note ? '<div class="prep-note-view"><b>Your comment:</b> '+esc(t.preparer_note)+'</div>' : '');
     var facts;
     if(t.subpopulation && CA_FIELDS[t.subpopulation]){
-      facts = '<div class="task-facts">'+CA_FIELDS[t.subpopulation].map(function(f){
+      // Lead with the company (country code) — the preparer needs it to know which
+      // country portal to pull the evidence from (e.g. the Voucher BOB/OMS screenshots).
+      var cty = t.company ? '<span>Company <b>'+esc(t.company)+'</b></span>' : '';
+      facts = '<div class="task-facts">'+cty+CA_FIELDS[t.subpopulation].map(function(f){
         var v=caVal(f[1], t, t.detail, t.unit);
         return '<span>'+esc(f[0])+' <b>'+(f[1]==='amount'?fmtNum(v):esc(v||'—'))+'</b></span>';
       }).join('')+'</div>';
