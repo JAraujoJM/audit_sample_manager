@@ -7,10 +7,11 @@ review (with an AI pre-check) → audit → close/export to the auditors. Built 
 flow** at a time. (Terminology: user-facing UI says "sample" for a sampled item and "task" for a
 required evidence item; the data layer still calls them `Sample_Lines` rows and `Assignments`.)
 
-**Current state (2026-08-21):** the full lifecycle is built and deployed for **two flows** —
-**Flow A** (Marketplace revenues / COGS, single query) and **Flow B** (Cash Anchor, two-stage query).
-About to be **piloted** with a small real request. Both flows run intake → enrich → assign → preparer
-collection → reviewer review (AI pre-check) → auditor audit → close → auditor export.
+**Current state (2026-09-11):** the full lifecycle is **in production** for **Flow A** (Marketplace
+revenues / COGS by RING transaction, single query) and **Flow B** (Cash Anchor, two-stage query; a real
+request is in flight). **Flow C** (Marketplace revenues / COGS by **sales-order item**, N-stage queries +
+system reconciliation tasks) is **built and pushed, awaiting `setup()` + `seedFlowC()` + a first real run**.
+Everything new is additive — Flow A/B code paths are unchanged.
 
 ## Stack
 - **Google Apps Script** (V8, synced with `clasp`). Server is split by concern: `Code.js` (enrichment
@@ -43,6 +44,24 @@ for a **dependent second query** (Flow B: query 1 on `AIG_Nav_Jumia_Reconciliati
 enrich() runs both stages in one execution, resumable (persists both stage ids under one signature). Flow-specific
 line fields the standard `Sample_Lines` columns don't cover are stored as `detail_json` (+ a `subpopulation`
 column). Flow-shaped views (assign detail, review/preparer panels) still need per-flow tweaks when columns differ.
+
+**N-stage hook (Flow C) — `stages: [...]`** (separate from `stage2`, which Flow B keeps): each stage =
+`{ tag, label, server, database, dependsOn?[tags], refs(mapped, ctx), buildQuery(refs, qp, ctx), fold(csv, cellFactory, mapped, ctx) }`.
+`runStages_` (Code.js) runs them in **waves** — a stage is submitted as soon as its dependencies have landed
+(none → right after stage 1, so independent queries run in parallel on the gateway), all outstanding jobs are
+polled together, every gateway id persists under the run signature (timeout → **resume**, never resubmit), a
+stage whose `refs()` is empty is skipped and counts as landed. Module lists stages in dependency order. Then
+`mod.finalize(mapped, ctx)` (checks + routing facts) → routing → persist. Per-stage CSVs are stored and recorded
+in `Requests.stages_json`; the IPE carries `stages[]` (query + SHA-256 each). `ctx.data` is the module's scratch.
+
+**System tasks** (Flow C): a Routing row whose `responsible` is the **Reviewer role** marks a task whose evidence
+the app produces itself. `persistRun_` assigns it to the request's reviewer, creates it **already `submitted`**
+with `detail_json = { kind:'system', checks[], verdict, summary }` and `ai_verdict` preset (deterministic — never
+sent to Gemini), attaches the module's `evidenceWorkbook` xlsx (one per request, built by `buildXlsxFile_`) as
+its Evidence, and opens the sample at `pending_review`. `enrich()` refuses to run a `requiresReviewer` flow
+without a reviewer. System tasks are hidden from My tasks / Assign, cannot be returned by the reviewer or
+withdrawn, and an auditor return sends them back to the reviewer (`submitted`). `PER_TASK_SUBPOPS`
+(Config.js, mirrored as `PER_TASK_SUBS` in the client) = Cash & POS + Retail + Marketplace.
 
 ## Roles
 Administrator, Preparer, Reviewer, Auditor — assigned by email, restricted to `@jumia.com`.
@@ -144,8 +163,32 @@ owner teams as **document-slot tasks** (Voucher/JumiaPay = one task with several
 Cash & POS = one Proof-of-payment task **per payment**, fanned via `mapGroup`). Full detail (queries,
 subpopulations, owners, phase-by-phase build log) is in the **`flow-b-cash-anchor` memory**.
 
+## Flow C — Marketplace revenues / COGS by sales-order item (built, not yet seeded)
+Input = `ID_COMPANY` + `COD_OMS_SALES_ORDER_ITEM` (Flow B's paste format). **Stage 1** `RPT_SOI` (the base
+TABLE — `V_RPT_SOI` lacks `IS_MARKETPLACE`) → unit price + Retail/Marketplace split (`subpopulation`).
+**Retail**: NAV `Posted Sales Invoices` + `Posted Sales Invoice Line` (`AIG_Nav_DW`, keyed on
+`id_company` + `No_`/`Document No_` = `PACKAGE_NUMBER`; sampled line = `Line No_` = `COD_BOB_SALES_ORDER_ITEM`);
+checks: line amount incl. VAT = unit price; header = Σ lines. **Marketplace**: hop 1 `ringcodes` (item → statement
+code, + PO/down payment for those few items — the text `notes` join lives HERE, not on the big query), then in
+parallel hop 2 `ring` (all transactions of those statements: MPL type via the insurance join, payout, balances)
+and `gl` (NAV `G_L Entries`, account **18314**, `Document No_` = `'IS' + code.slice(2)`, source PURCHASES);
+checks: Item Price Credit = unit price; opening + Σ by `Nav_Type` = closing; NAV 18314 = −REVENUES. Tolerance
+`FLOWC_TOLERANCE = 5` (|diff| ≤ 5 → match; else variance — verdict `uncertain`, never reject). Then Flow A's
+task rules on the marketplace items (advance → contract + down-payment; regular → PoP, or VC screenshot when
+unpaid; same insurance-join method as Flow A). Routing seeded by `seedFlowC()` / `reseedFlowCRouting()`.
+**Query performance rules (measured on the gateway):** every WHERE names the sampled companies
+(`ID_Company IN (…)`) **and** a per-company key list — RING/NAV indexes all lead with the company column;
+statement/NAV windows are bounded by hop-1 dates (`flowCWindow_`: RING −1/+1 month, NAV −1/+3 months — NAV's
+index leads on `Posting Date, Chart of Accounts No_`). Literal statement codes beat an `IN (subquery)` (412 s vs
+605 s); the unbounded literal shapes ran 5–7 min, so expect the first executions to return *pending* and resume.
+Evidence = ONE workbook per request (`Summary - Retail`, `Summary - MPL`, raw `SOI` / `NAV_PostedSalesInvoices` /
+`NAV_PostedSalesInvoiceLine` / `RING` / `NAV` tabs) attached to every system task. Deep detail in the
+**`flow-c-revenue-soi` memory**.
+
 ## Roadmap / next
-- **Pilot** the two built flows with a small real request (in progress).
+- **Flow C first real run**: `setup()` (adds `Requests.stages_json`) → `seedFlowC()` → run the H1 2026 sample on
+  the `/dev` deployment → check the gateway timings + the workbook → then promote to prod.
+- **Pilot** of Flows A/B continues in production.
 - Not yet built: Gmail notifications + reminders (default provisional: due +1 week, daily, escalate at
   due date) and their time-driven triggers.
 - Possible next: refine Flow B after first real Q2 run (a column tweak may surface), or add a new flow
@@ -156,7 +199,13 @@ subpopulations, owners, phase-by-phase build log) is in the **`flow-b-cash-ancho
   `export PATH="/c/Users/joao.araujo/node-v24.16.0:$PATH" && clasp push --force`. Then redeploy the web app.
   Commit with `Co-Authored-By: Claude Opus 4.8`. Repo: `github.com/JAraujoJM/audit_sample_manager`.
 - **After a schema change** (new SCHEMA columns): run `setup()` once in the Apps Script editor, then the
-  relevant `reseed*()` (e.g. `reseedFlowBRouting()`). Client-only changes just need a redeploy.
+  relevant `reseed*()` (e.g. `reseedFlowBRouting()`, `seedFlowC()`). Client-only changes just need a redeploy.
+- **Prod vs dev**: `clasp push` updates the project (= the `@HEAD` `/dev` deployment). The prod `/exec` URL is a
+  **versioned deployment** (`@NN`) — promote with
+  `clasp deploy -i <deploymentId> -d "<note>"` only when asked; it changes what live users run.
+- **Heavy SQL**: the FinRec MCP times out on queries over ~30 s — benchmark through the gateway itself
+  (drop a job JSON into `FinRec Outside Teleport/Requests_Pending`, poll `Responses/`, read `Logs/audit.jsonl`
+  for `duration_seconds`). The gateway allows 45 min of SQL; the app polls 5.5 min per execution and resumes.
 - **Verify before push**: syntax-check Index.html inline scripts via `node -e` (`vm.Script` per `<script>`)
   and `node --check` on `.js` files; browser-verify by concatenating a scratchpad mock (a
   `window.google.script.run` shim) + Index.html into `_preview_ai.html` **inside the project folder**

@@ -240,6 +240,67 @@ function seedFlowBRouting_(cfg) {
   row('prepaid_other', 'Prepaid - Other methods', 'Payment evidence', FO, '');
 }
 
+/* ==================== Flow C — Marketplace revenues / COGS by sales-order item ==================== */
+/**
+ * Admin-run: seed Flow C — a Flows row, half-year Periods and its Routing. Idempotent
+ * (does nothing if a flowC Flows row exists). Run once from the editor AFTER setup()
+ * (which adds the Requests.stages_json column). Existing requests are untouched.
+ */
+function seedFlowC() {
+  requireRole_([ROLES.ADMIN]);
+  var cfg = configSs_();
+  if (getFlows().some(function (f) { return String(f.flow_id) === 'flowC'; })) {
+    Logger.log('Flow C already seeded.');
+    return { seeded: false };
+  }
+  appendObject_(cfg, 'Flows', {
+    flow_id: 'flowC', name: 'Marketplace revenues / COGS (by sales-order item)',
+    database: 'AIG_Nav_Jumia_Reconciliation', query_mode: '',
+    sample_key: 'SampleKey', dedup_keys: 'ID_COMPANY+COD_OMS_SALES_ORDER_ITEM', active: true
+  });
+  // Delivered-date windows (end-exclusive). NAV / statement queries widen them on their own.
+  [['H1 2026 (Jan–Jun)', '2026-01-01', '2026-07-01'],
+   ['H2 2026 (Jul–Dec)', '2026-07-01', '2027-01-01'],
+   ['FY 2026',           '2026-01-01', '2027-01-01']].forEach(function (q) {
+    appendObject_(cfg, 'Periods', { flow_id: 'flowC', name: q[0], start_date: q[1], end_date: q[2], active: true });
+  });
+  seedFlowCRouting_(cfg);
+  logActivity('FLOW_SEED', 'flow', 'flowC', 'Seeded Flow C (Flows + Periods + Routing)');
+  return { seeded: true };
+}
+
+/**
+ * Flow C routing. `responsible` = the Reviewer ROLE marks a SYSTEM task: the app produces
+ * the evidence (the reconciliation workbook), assigns the task to the request's reviewer
+ * and auto-submits it. The marketplace items additionally get Flow A's preparer tasks,
+ * decided by the facts the RING stage sets (mpl = advance|regular, paid = yes|no).
+ */
+function seedFlowCRouting_(cfg) {
+  function row(rule, match, evidence, resp) {
+    appendObject_(cfg, 'Routing', { flow_id: 'flowC', rule_name: rule, match: match, required_evidence: evidence,
+      documents: '', responsible: resp, optional: '', active: true });
+  }
+  row('recon_retail',            'population=retail',                            'Reconciliation (system)', ROLES.REVIEWER);
+  row('recon_mpl',               'population=marketplace',                       'Reconciliation (system)', ROLES.REVIEWER);
+  row('mpl_advance_contract',    'population=marketplace;mpl=advance',           'Consignment contract',    ROLES.PREPARER);
+  row('mpl_advance_downpayment', 'population=marketplace;mpl=advance',           'Down-payment proof',      ROLES.PREPARER);
+  row('regular_paid',            'population=marketplace;mpl=regular;paid=yes',  'Proof of payment',        ROLES.PREPARER);
+  row('regular_unpaid',          'population=marketplace;mpl=regular;paid=no',   'VC screenshot (Unpaid)',  ROLES.PREPARER);
+}
+
+/** Admin-run: rewrite Flow C routing to the set above (other flows preserved). */
+function reseedFlowCRouting() {
+  requireRole_([ROLES.ADMIN]);
+  var cfg = configSs_();
+  var sh = cfg.getSheetByName('Routing');
+  var kept = readObjects_(cfg, 'Routing').filter(function (r) { return String(r.flow_id) !== 'flowC'; });
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).clearContent();
+  kept.forEach(function (r) { appendObject_(cfg, 'Routing', r); });
+  seedFlowCRouting_(cfg);
+  logActivity('ROUTING_RESEED', 'flow', 'flowC', 'Reseeded Flow C routing');
+  return getRouting('flowC');
+}
+
 /**
  * Admin-run: rewrite Cash Anchor routing to the set above. OVERWRITES the existing
  * flowB rows (other flows preserved). Run once after updating the evidence rules (and

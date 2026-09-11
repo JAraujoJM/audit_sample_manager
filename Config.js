@@ -22,6 +22,16 @@ var ROLES = {
   AUDITOR:  'Auditor'
 };
 
+/**
+ * Subpopulations whose samples are reviewed / audited ONE TASK AT A TIME (tasks advance
+ * independently; the sample is on the reviewer's desk as soon as ANY task is submitted):
+ * Cash & POS (one proof of payment per payment) and Flow C's Retail / Marketplace (a
+ * system reconciliation task plus, for marketplace items, the preparer tasks).
+ * Mirrored in the client (PER_TASK_SUBS) — keep both lists in sync.
+ */
+var PER_TASK_SUBPOPS = ['Postpaid - Cash & POS', 'Retail', 'Marketplace'];
+function isPerTaskSub_(sub) { return PER_TASK_SUBPOPS.indexOf(String(sub || '')) !== -1; }
+
 /* Script Property keys — where setup() persists the IDs it creates. */
 var PROP = {
   CONFIG_SS: 'CONFIG_SS_ID',
@@ -58,7 +68,7 @@ var SCHEMA = {
     Requests:     ['request_id', 'flow_id', 'title', 'period', 'period_start', 'period_end',
                    'auditor_email', 'reviewer_email', 'request_ref', 'due_date',
                    'status', 'created_by', 'created_at', 'updated_at',
-                   'csv_file_id', 'xlsx_file_id', 'csv2_file_id', 'xlsx2_file_id', 'ipe_json'],
+                   'csv_file_id', 'xlsx_file_id', 'csv2_file_id', 'xlsx2_file_id', 'ipe_json', 'stages_json'],
     Sample_Lines: ['line_id', 'request_id', 'document_no', 'company', 'vendor', 'mpl_type', 'paid_status',
                    'statement_code', 'amount', 'paid_at', 'closing_balance', 'route_rule', 'required_count',
                    'status', 'evidence_folder_id', 'note', 'created_at',

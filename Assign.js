@@ -48,7 +48,8 @@ function getRequestDetail(requestId) {
         mpl_type: l.mpl_type, paid_status: l.paid_status, status: l.status,
         subpopulation: l.subpopulation || '', amount: l.amount || '', detail: parseJson_(l.detail_json),
         required_count: l.required_count,
-        assignments: (byLine[l.line_id] || []).map(function (a) {
+        // System tasks (Flow C reconciliation) are owned by the app + the reviewer — never routed to a preparer here.
+        assignments: (byLine[l.line_id] || []).filter(function (a) { return parseJson_(a.detail_json).kind !== 'system'; }).map(function (a) {
           return {
             assignment_id: a.assignment_id, evidence_type: a.evidence_type,
             assigned_to: a.assigned_to, status: a.status, due_date: toDateStr_(a.due_date, tz),
@@ -141,7 +142,7 @@ function updateLineAssignmentRollup_(lineId) {
   var st = function (a) { return String(a.status).toLowerCase(); };
   var required = items.filter(function (a) { return !isOptional_(a.optional); });
   var gate = required.length ? required : items;
-  var perTask = String(line.subpopulation) === 'Postpaid - Cash & POS';
+  var perTask = isPerTaskSub_(line.subpopulation);
   var prev = String(line.status).toLowerCase();
 
   var allAccepted = gate.every(function (a) { return st(a) === 'accepted'; });

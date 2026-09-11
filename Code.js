@@ -164,6 +164,8 @@ function enrich(payload) {
 
   var qp = { database: flow.database || DATABASE, queryMode: flow.query_mode || QUERY_MODE, fyStart: period.start, fyEnd: period.end };
   var mod = flowModule_(flow.flow_id);
+  // A flow whose reconciliation task is owned by the reviewer (Flow C) needs one named up front.
+  if (mod && mod.requiresReviewer && !reviewer) throw new Error('This flow assigns its reconciliation to the request\'s reviewer — enter a reviewer email.');
   var query = buildQuery_(flow.flow_id, items, qp);   // throws if the flow has no module yet
   var ctx = {
     flow: flow, period: period, qp: qp,
@@ -184,6 +186,17 @@ function enrich(payload) {
   if (!csv1File) return { status: 'pending', requestId: st.q1Id };
   var csv1 = parseCsv_(csv1File);
   var mapped = mapStage1Rows_(mod, csv1, items);
+
+  // ----- Stages (optional: N dependent queries run in waves — Flow C) -----
+  // Kept separate from the single `stage2` path below so Flow B's behaviour is untouched.
+  if (mod && mod.stages && mod.stages.length) {
+    var run = runStages_(mod, mapped, qp, st, p, deadline, ctx);
+    if (run.status !== 'ok') return run;              // 'pending' (state kept → resume) or 'failed'
+    ctx.csv1 = csv1; ctx.mapped = mapped;
+    if (typeof mod.finalize === 'function') mod.finalize(mapped, ctx);   // checks + routing facts
+    p.deleteProperty('outstanding');
+    return buildResults_(mapped, items, st.q1Id, query, csv1File, ctx, null);
+  }
 
   // ----- Stage 2 (optional, dependent on stage 1's references) -----
   var csv2 = null;
@@ -239,6 +252,126 @@ function collectRefs_(mod, mapped) {
     if (ref && !seen[String(ref)]) { seen[String(ref)] = true; out.push(ref); }
   });
   return out;
+}
+
+/**
+ * Run a module's `stages` — N dependent queries — in waves. A stage is submitted as
+ * soon as every stage it `dependsOn` has landed (no dependencies → straight after
+ * stage 1, so independent queries run in parallel on the gateway). All outstanding
+ * jobs are polled together. Every gateway id persists under the run signature, so a
+ * timed-out execution RESUMES (re-polls) instead of resubmitting. Each landed CSV is
+ * folded into the mapped lines by the module (stage.fold) and kept on ctx.csvs /
+ * ctx.stageFiles for the IPE and the stored files. A stage whose refs() is empty is
+ * skipped (nothing to fetch) and counts as landed for its dependants.
+ *
+ * Contract: stage = { tag, label, server, database, dependsOn?[tags], refs(mapped, ctx),
+ *                     buildQuery(refs, qp, ctx), fold(csv, cellFactory, mapped, ctx) }.
+ * The module lists its stages in dependency order (dependants after their dependencies).
+ */
+function runStages_(mod, mapped, qp, st, p, deadline, ctx) {
+  st.stages = st.stages || {};        // tag → gateway id (persisted for resume)
+  st.skipped = st.skipped || {};      // tag → true when there was nothing to fetch
+  ctx.data = ctx.data || {}; ctx.csvs = {}; ctx.stageFiles = [];
+  var landed = {};
+  var save = function () { p.setProperty('outstanding', JSON.stringify(st)); };
+  var done = function (tag) { return !!(landed[tag] || st.skipped[tag]); };
+  var depsMet = function (s) { return (s.dependsOn || []).every(done); };
+  function cellFactory(csv) {
+    var idx = {}; csv[0].forEach(function (h, i) { idx[String(h).trim()] = i; });
+    return function (row) { return function (name) { return idx[name] === undefined ? '' : row[idx[name]]; }; };
+  }
+  function record(s, id) {
+    var sf = ctx.stageFiles.filter(function (x) { return x.tag === s.tag; })[0];
+    if (!sf) { sf = { tag: s.tag, label: s.label || s.tag, db: s.database, server: s.server || 'finrec', id: id, query: '' }; ctx.stageFiles.push(sf); }
+    return sf;
+  }
+
+  for (var guard = 0; guard < 10000; guard++) {
+    // 1) Submit every stage whose dependencies are met.
+    var progressed = false;
+    mod.stages.forEach(function (s) {
+      if (done(s.tag) || st.stages[s.tag] || !depsMet(s)) return;
+      var refs = s.refs(mapped, ctx) || [];
+      if (!refs.length) { st.skipped[s.tag] = true; save(); progressed = true; return; }
+      var q = s.buildQuery(refs, qp, ctx);
+      st.stages[s.tag] = submitJob_(q, s.database, s.server);
+      record(s, st.stages[s.tag]).query = q;
+      save(); progressed = true;
+    });
+
+    // 2) Poll everything submitted and not yet landed (in module order = dependency order,
+    //    so on a resumed execution a dependency is folded before its dependants).
+    var outstanding = mod.stages.filter(function (s) { return st.stages[s.tag] && !landed[s.tag]; });
+    if (!outstanding.length) {
+      if (mod.stages.every(function (s) { return done(s.tag); })) break;
+      if (!progressed) break;                       // nothing left that can start
+      continue;
+    }
+    var anyLanded = false;
+    for (var j = 0; j < outstanding.length; j++) {
+      var o = outstanding[j], id = st.stages[o.tag];
+      var f = findCsv_(id);
+      if (f) {
+        var csv = parseCsv_(f);
+        landed[o.tag] = csv; ctx.csvs[o.tag] = csv;
+        var sf = record(o, id); sf.csvFile = f;
+        if (!sf.query) { try { sf.query = o.buildQuery(o.refs(mapped, ctx) || [], qp, ctx); } catch (e) {} }   // resumed run: rebuild for the record
+        if (typeof o.fold === 'function' && csv.length > 1) o.fold(csv, cellFactory(csv), mapped, ctx);
+        anyLanded = true;
+      } else if (isFailed_(id)) {
+        p.deleteProperty('outstanding');
+        return { status: 'failed', requestId: id, reason: 'Query "' + (o.label || o.tag) + '" (' + o.database + ') moved to Requests_Failed/ — see Logs/audit.jsonl' };
+      }
+    }
+    if (!anyLanded) {
+      if (Date.now() >= deadline) {
+        return { status: 'pending', requestId: outstanding.map(function (o) { return (o.label || o.tag); }).join(', ') };
+      }
+      Utilities.sleep(POLL_INTERVAL);
+    }
+  }
+  // Only 'ok' when every stage has landed or been skipped; anything else resumes next run.
+  if (mod.stages.every(function (s) { return done(s.tag); })) return { status: 'ok' };
+  return { status: 'pending', requestId: mod.stages.filter(function (s) { return !done(s.tag); }).map(function (s) { return s.label || s.tag; }).join(', ') };
+}
+
+/**
+ * Build an .xlsx from plain row arrays: a throwaway Google Sheet (one tab per sheet,
+ * written in chunks, numeric-looking text coerced to numbers), exported through Drive
+ * and saved into `folder`. Used for the system-evidence workbook (Flow C). Returns the File.
+ */
+function buildXlsxFile_(name, sheets, folder) {
+  var ss = SpreadsheetApp.create(name);
+  try {
+    var first = true;
+    sheets.forEach(function (sh) {
+      var rows = (sh.rows || []).filter(function (r) { return r && r.length; });
+      var width = 0; rows.forEach(function (r) { if (r.length > width) width = r.length; });
+      var s = first ? ss.getSheets()[0].setName(String(sh.name).slice(0, 99)) : ss.insertSheet(String(sh.name).slice(0, 99));
+      first = false;
+      if (!rows.length || !width) return;
+      var CH = 4000;
+      for (var r0 = 0; r0 < rows.length; r0 += CH) {
+        var chunk = rows.slice(r0, r0 + CH).map(function (r, i) {
+          var o = r.slice(0, width); while (o.length < width) o.push('');
+          return o.map(function (v) {
+            if (v === null || v === undefined) return '';
+            if (r0 + i > 0 && typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v) && v.length < 16) return Number(v);
+            return v;
+          });
+        });
+        s.getRange(r0 + 1, 1, chunk.length, width).setValues(chunk);
+      }
+      s.setFrozenRows(1); s.getRange(1, 1, 1, width).setFontWeight('bold');
+    });
+    SpreadsheetApp.flush();
+    var resp = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + ss.getId() + '/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
+    if (resp.getResponseCode() >= 300) throw new Error('Could not export the workbook (HTTP ' + resp.getResponseCode() + ').');
+    return folder.createFile(resp.getBlob().setName(sanitizeName_(name) + '.xlsx'));
+  } finally {
+    try { DriveApp.getFileById(ss.getId()).setTrashed(true); } catch (e) {}
+  }
 }
 
 /**
@@ -359,9 +492,10 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
   var ds     = dataSs_();
   var reqId  = newId_('REQ');
   var ts     = nowIso_();
+  var mod    = flowModule_(flow.flow_id);
 
   var stored = {};
-  try { stored = storeRequestFiles_(reqId, gatewayRequestId, file, ctx.q2Id, ctx.csv2File); }
+  try { stored = storeRequestFiles_(reqId, gatewayRequestId, file, ctx.q2Id, ctx.csv2File, ctx.stageFiles); }
   catch (e) { logActivity('STORE_FILES_FAILED', 'request', reqId, String(e)); }
 
   appendObject_(ds, 'Requests', {
@@ -372,10 +506,28 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
     status: 'enriched', created_by: actor, created_at: ts, updated_at: ts,
     csv_file_id: stored.csvId || '', xlsx_file_id: stored.xlsxId || '',
     csv2_file_id: stored.csv2Id || '', xlsx2_file_id: stored.xlsx2Id || '',
-    ipe_json: ipe ? JSON.stringify(ipe) : ''
+    ipe_json: ipe ? JSON.stringify(ipe) : '',
+    stages_json: (stored.stages && stored.stages.length) ? JSON.stringify(stored.stages) : ''
   });
 
-  var lines = 0, assignments = 0;
+  // SYSTEM tasks: a routing rule whose `responsible` is the Reviewer role means the app
+  // itself produced the evidence (Flow C's reconciliation). Such a task is assigned to the
+  // request's reviewer, auto-submitted, and carries the computed checks + verdict. The
+  // module supplies ONE workbook per request (summaries + raw extracts) that is attached
+  // as the evidence file of every system task.
+  var isSystemRule = function (m) { return String(m.responsible || '') === ROLES.REVIEWER; };
+  var wbFile = null;
+  var anySystem = results.some(function (r) { return r.found && (r._matched || []).some(isSystemRule); });
+  if (anySystem && mod && typeof mod.evidenceWorkbook === 'function') {
+    try {
+      var exportsId = PropertiesService.getScriptProperties().getProperty(PROP.EXPORTS);
+      if (!exportsId) throw new Error('Exports folder not provisioned');
+      var wb = mod.evidenceWorkbook(ctx.mapped || [], ctx);
+      wbFile = buildXlsxFile_(wb.name, wb.sheets, getOrCreateFolder_(DriveApp.getFolderById(exportsId), reqId));
+    } catch (e) { wbFile = null; logActivity('SYSTEM_EVIDENCE_FAILED', 'request', reqId, String(e)); }
+  }
+
+  var lines = 0, assignments = 0, systemTasks = 0;
   results.forEach(function (r) {
     var lineId = newId_('LIN');
     var it = r.item || {};
@@ -394,7 +546,10 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
     // (Cash & POS: one proof of payment per payment on the transaction list).
     var units = (r.units && r.units.length) ? r.units : [null];
     var requiredCount = 0;
-    matched.forEach(function (m) { if (!isOptional_(m.optional)) requiredCount += units.length; });
+    matched.forEach(function (m) { if (!isOptional_(m.optional)) requiredCount += (isSystemRule(m) ? 1 : units.length); });
+    // A system task is submitted the moment it exists, so a sample that has one starts
+    // on the reviewer's desk (per-task semantics — its human tasks follow at their pace).
+    var hasSystem = !!ctx.reviewer && matched.some(isSystemRule);
     appendObject_(ds, 'Sample_Lines', {
       line_id: lineId, request_id: reqId,
       document_no: r.document_no || r.doc,
@@ -404,7 +559,7 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
       statement_code: r.statement || '', amount: r.amount || '',
       paid_at: r.paid_at || '', closing_balance: r.closing_balance || '',
       route_rule: matched.map(function (m) { return m.rule_name; }).join(','),
-      required_count: requiredCount, status: 'open',
+      required_count: requiredCount, status: hasSystem ? 'pending_review' : 'open',
       evidence_folder_id: '', created_at: ts,
       subpopulation: r.subpopulation || '',
       detail_json: Object.keys(detail).length ? JSON.stringify(detail) : ''
@@ -412,6 +567,30 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
     lines++;
     matched.forEach(function (m) {
       var resp = String(m.responsible || ''), opt = isOptional_(m.optional);
+      if (isSystemRule(m)) {
+        var verdict = r.recon_verdict || 'uncertain', summary = String(r.recon_summary || '').substring(0, 900);
+        var asgId = newId_('ASG');
+        appendObject_(ds, 'Assignments', {
+          assignment_id: asgId, line_id: lineId, request_id: reqId,
+          evidence_type: m.required_evidence,
+          assigned_to: ctx.reviewer || '',
+          status: ctx.reviewer ? 'submitted' : 'pending', due_date: '', submitted_at: ctx.reviewer ? ts : '', notes: '', created_at: ts,
+          optional: opt ? true : '',
+          detail_json: JSON.stringify({ kind: 'system', checks: r.checks || [], verdict: verdict, summary: summary }),
+          slots_json: '',
+          ai_verdict: verdict, ai_summary: summary, ai_checked_at: ts
+        });
+        if (wbFile) {
+          appendObject_(ds, 'Evidence', {
+            evidence_id: newId_('EVD'), assignment_id: asgId, line_id: lineId, request_id: reqId,
+            file_id: wbFile.getId(), file_name: wbFile.getName(), mime: wbFile.getMimeType(),
+            uploaded_by: 'system', uploaded_at: ts, status: 'uploaded', slot: ''
+          });
+        }
+        logActivity('SYSTEM_RECON', 'assignment', asgId, 'verdict=' + verdict + ' :: ' + summary.substring(0, 400));
+        assignments++; systemTasks++;
+        return;
+      }
       // A task may bundle several document slots (Voucher, JumiaPay = one owner, one
       // task, several uploads). Single-document tasks (Flow A, Cash & POS) leave
       // slots_json empty and use the free upload.
@@ -432,8 +611,11 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
     });
   });
 
+  // Samples that opened on the reviewer's desk get their line-level check queued (for
+  // system tasks it is deterministic — no AI call — see assessLineCore_).
+  if (systemTasks) scheduleAiCheck_();
   logActivity('ENRICH_PERSIST', 'request', reqId,
-              lines + ' lines, ' + assignments + ' assignments (gateway ' + gatewayRequestId + ')');
+              lines + ' lines, ' + assignments + ' assignments' + (systemTasks ? (' incl. ' + systemTasks + ' system') : '') + ' (gateway ' + gatewayRequestId + ')');
   return { dbRequestId: reqId, lines: lines, assignments: assignments };
 }
 
@@ -445,7 +627,7 @@ function newId_(prefix) { return prefix + '_' + Utilities.getUuid().slice(0, 8);
  * seconds after the CSV, so wait a short while for it. Files are COPIED (the
  * gateway's Responses/ is shared).
  */
-function storeRequestFiles_(reqId, gatewayRequestId, csvFile, gateway2Id, csv2File) {
+function storeRequestFiles_(reqId, gatewayRequestId, csvFile, gateway2Id, csv2File, stageFiles) {
   var exportsId = PropertiesService.getScriptProperties().getProperty(PROP.EXPORTS);
   if (!exportsId) return {};
   var folder = getOrCreateFolder_(DriveApp.getFolderById(exportsId), reqId);
@@ -454,12 +636,22 @@ function storeRequestFiles_(reqId, gatewayRequestId, csvFile, gateway2Id, csv2Fi
   if (csvFile)  { try { out.csvId  = csvFile.makeCopy(csvFile.getName(), folder).getId(); } catch (e) {} }
   if (csv2File) { try { out.csv2Id = csv2File.makeCopy(csv2File.getName(), folder).getId(); } catch (e) {} }
 
-  // Both queries' SOX evidence workbooks can land a few seconds after their CSVs.
+  // N-stage flows (Flow C): one CSV (+ evidence xlsx) per dependent query.
+  var stages = (stageFiles || []).filter(function (sf) { return sf.csvFile; }).map(function (sf) {
+    var rec = { tag: sf.tag, label: sf.label, db: sf.db, server: sf.server || 'finrec', gatewayId: sf.id, csvName: sf.csvFile.getName(), csvId: '', xlsxId: '' };
+    try { rec.csvId = sf.csvFile.makeCopy(sf.csvFile.getName(), folder).getId(); } catch (e) {}
+    return rec;
+  });
+  if (stages.length) out.stages = stages;
+
+  // Every query's SOX evidence workbook can land a few seconds after its CSV.
+  var need = function () { return !out.xlsxId || (gateway2Id && !out.xlsx2Id) || stages.some(function (s) { return !s.xlsxId; }); };
   var deadline = Date.now() + 20000;
-  while (Date.now() < deadline && (!out.xlsxId || (gateway2Id && !out.xlsx2Id))) {
+  while (Date.now() < deadline && need()) {
     if (!out.xlsxId) { var x1 = findResponse_(gatewayRequestId, /\.xlsx$/i); if (x1) { try { out.xlsxId = x1.makeCopy(x1.getName(), folder).getId(); } catch (e) {} } }
     if (gateway2Id && !out.xlsx2Id) { var x2 = findResponse_(gateway2Id, /\.xlsx$/i); if (x2) { try { out.xlsx2Id = x2.makeCopy(x2.getName(), folder).getId(); } catch (e) {} } }
-    if (out.xlsxId && (!gateway2Id || out.xlsx2Id)) break;
+    stages.forEach(function (s) { if (!s.xlsxId) { var xs = findResponse_(s.gatewayId, /\.xlsx$/i); if (xs) { try { s.xlsxId = xs.makeCopy(xs.getName(), folder).getId(); } catch (e) {} } } });
+    if (!need()) break;
     Utilities.sleep(2500);
   }
   return out;
@@ -509,6 +701,12 @@ function buildIpe_(docs, foundCount, requestId, query, file, ctx) {
     csv2Name:       ctx.csv2File ? ctx.csv2File.getName() : '',
     csv2Size:       bytes2.length,
     csv2Sha256:     bytes2.length ? sha256Hex_(bytes2) : '',
+    // N-stage flows (Flow C): one entry per dependent query, each hashed over its raw CSV.
+    stages:         (ctx.stageFiles || []).map(function (sf) {
+                      var b = sf.csvFile ? sf.csvFile.getBlob().getBytes() : [];
+                      return { tag: sf.tag, label: sf.label, db: sf.db, server: sf.server || 'finrec', query: sf.query || '',
+                               csvName: sf.csvFile ? sf.csvFile.getName() : '', csvSize: b.length, csvSha256: b.length ? sha256Hex_(b) : '' };
+                    }),
     evidenceNote:   'A SOX evidence workbook (query, script, result set, timestamp) was generated by the gateway for this request (evidence = true).',
     checks: [
       { name: 'Source authenticity',  method: 'Read-only SELECT executed via the FinRec SQL gateway (no client DB access)', result: 'Pass' },

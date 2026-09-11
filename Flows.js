@@ -21,7 +21,8 @@
 function flowModule_(flowId) {
   var registry = {
     flowA: flowA_,
-    flowB: flowB_   // Cash Anchor — two-stage (query 1 AIG_Nav_Jumia_Reconciliation → query 2 PAY_DWH)
+    flowB: flowB_,  // Cash Anchor — two-stage (query 1 AIG_Nav_Jumia_Reconciliation → query 2 PAY_DWH)
+    flowC: flowC_   // Marketplace revenues / COGS by sales-order item — stage 1 RPT_SOI + N dependent queries (`stages`), system reconciliation tasks
   };
   var builder = registry[String(flowId)];
   return builder ? builder() : null;

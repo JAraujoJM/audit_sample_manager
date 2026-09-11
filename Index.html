@@ -436,8 +436,17 @@
     'Prepaid - Voucher':[['Order','order_nr'],['Amount','amount']],
     'Prepaid - JumiaPay':CA_JP, 'Postpaid - JumiaPay on delivery':CA_JP, 'Postpaid - Cash - 3PL via JPay':CA_JP,
     'Postpaid - Cash & POS':[['Package no','package_number'],['Collection partner','collection_partner'],['Payment no','payment_no'],['Payment date','payment_date'],['Payment reference','payment_ref'],['Bank account','bank_account'],['Amount','amount']],
-    'Prepaid - Other methods':[['Order','order_nr'],['Amount','amount']]
+    'Prepaid - Other methods':[['Order','order_nr'],['Amount','amount']],
+    // Flow C (Marketplace revenues / COGS by sales-order item)
+    'Retail':[['Package no','package_number'],['BOB item','bob_soi'],['SKU','sku'],['Unit price','amount'],['Delivered','delivered_date']],
+    'Marketplace':[['Package no','package_number'],['SKU','sku'],['Unit price','amount'],['Statement','statement_code'],['Closing balance','closing_balance'],['Paid at','paid_at'],['MPL type','mpl_type'],['PO','po']]
   };
+  // Flows whose sample box takes two columns (ID_COMPANY + sales-order item).
+  var TWO_COL_FLOWS=['flowB','flowC'];
+  // Samples reviewed / audited one task at a time (mirrors PER_TASK_SUBPOPS in Config.js).
+  var PER_TASK_SUBS=['Postpaid - Cash & POS','Retail','Marketplace'];
+  function isPerTaskSub(s){ return PER_TASK_SUBS.indexOf(String(s||''))!==-1; }
+  function isFlowCSub(s){ return s==='Retail' || s==='Marketplace'; }
   function caVal(key, line, detail, unit){
     if(unit && unit[key]!=null && unit[key]!=='') return unit[key];
     if(detail && detail[key]!=null && detail[key]!=='') return detail[key];
@@ -456,6 +465,7 @@
     detail=detail||{}; unit=unit||{};
     if(/JumiaPay|3PL/.test(subpop||'')){ var g=[detail.jp_gateway,detail.jp_provider].filter(Boolean).join(' · '); return g||'—'; }
     if(subpop==='Postpaid - Cash & POS'){ var p=[unit.payment_no, unit.bank_account].filter(Boolean).join(' · '); return p||'—'; }
+    if(isFlowCSub(subpop)){ var q=[detail.package_number, detail.statement].filter(Boolean).join(' · '); return q||'—'; }
     return '—';
   }
   function toast(msg, type){
@@ -551,8 +561,8 @@
     var f=formFlows.filter(function(x){ return x.flow_id===$('flowSel').value; })[0];
     var ps=(f&&f.periods)||[];
     $('periodSel').innerHTML = ps.length ? ps.map(function(p){ return '<option value="'+esc(p.name)+'">'+esc(p.name)+' ('+esc(p.start)+' → '+esc(p.end)+')</option>'; }).join('') : '<option value="">No periods configured</option>';
-    // Cash Anchor takes two columns per line (company + sales-order item); Flow A takes one token.
-    var isB = f && f.flow_id==='flowB';
+    // Cash Anchor and Flow C take two columns per line (company + sales-order item); Flow A takes one token.
+    var isB = f && TWO_COL_FLOWS.indexOf(f.flow_id)!==-1;
     $('docsLabel').textContent = isB ? 'Sample — ID_COMPANY + sales order item (one per line)' : 'Document numbers';
     $('docs').placeholder = isB
       ? 'Paste two columns per line: ID_COMPANY then COD_OMS_SALES_ORDER_ITEM\n(separated by a tab, comma or space)\n\nEC_IC   49493550\nJM_EG   90195962'
@@ -586,6 +596,7 @@
     ASSIGN:['Assigned to preparer',0], EVIDENCE_UPLOAD:['File uploaded',0], EVIDENCE_REMOVE:['File removed',0],
     ASSIGNMENT_SUBMIT:['Submitted by preparer',0], ASSIGNMENT_WITHDRAW:['Submission withdrawn',0],
     AI_CHECK:['AI assessment',1], AI_CHECK_ERROR:['AI check failed',1],
+    SYSTEM_RECON:['Reconciliation computed by the app',0],
     REVIEW_SUBMIT:['Reviewer submitted to auditor',0], REVIEW_RETURN:['Reviewer returned for rework',0],
     REVIEW_SUBMIT_TASK:['Reviewer submitted to auditor',0], REVIEW_RETURN_TASK:['Reviewer returned for rework',0],
     AUDIT_CLOSE:['Auditor closed',0], AUDIT_RETURN:['Auditor returned for rework',0],
@@ -633,6 +644,7 @@
     if(!flowId){ setStatus('Choose a flow.','warn'); return; }
     if(!periodName){ setStatus('Choose a period.','warn'); return; }
     if(!auditor){ setStatus('Enter auditor email(s).','warn'); return; }
+    if(flowId==='flowC' && !reviewer){ setStatus('This flow needs a reviewer — the reconciliation task is assigned to them.','warn'); return; }
     $('run').disabled=true; clearStatus(); startLoader();
     google.script.run.withSuccessHandler(handleEnrich)
       .withFailureHandler(function(e){ stopLoader(); $('run').disabled=false; setStatus('Error: '+e.message,'warn'); })
@@ -654,6 +666,7 @@
   /* reusable IPE panel markup (immediate run + history detail) */
   function ipeHtml(ipe){
     if(!ipe) return '<div class="empty">No IPE captured.</div>';
+    var stages=(ipe.stages||[]);   // N-stage flows (Flow C): one dependent query per entry
     var checks=(ipe.checks||[]).map(function(c){
       var b = c.result==='Pass' ? '<span class="badge pass">Pass</span>' : '<span class="badge flag">Flag</span>';
       return '<tr><td style="font-weight:500">'+esc(c.name)+'</td><td class="muted">'+esc(c.method)+'</td><td>'+b+'</td></tr>';
@@ -661,16 +674,20 @@
     return '<div class="ipe-head"><span class="t">IPE / SOX — IT-Produced Evidence</span><span class="ref">'+esc(ipe.documentRef)+'</span></div>'
       +'<div class="ipe-sec">1 · Completeness &amp; accuracy</div>'
       +'<table><thead><tr><th>Check</th><th>Method</th><th>Result</th></tr></thead><tbody>'+checks+'</tbody></table>'
-      +'<div class="ipe-sec">2 · SQL quer'+(ipe.query2?'ies':'y')+' as executed</div>'
+      +'<div class="ipe-sec">2 · SQL quer'+((ipe.query2||stages.length)?'ies':'y')+' as executed</div>'
       +'<details class="sql"><summary>Show query'+(ipe.query2?' 1 · '+esc(ipe.primaryDb||''):'')+'</summary><pre>'+esc(ipe.query||'')+'</pre>'
         +'<div style="padding:8px 13px 12px;"><button class="btn sm copy-sql">Copy query</button></div></details>'
       +(ipe.query2?'<details class="sql" style="margin-top:8px"><summary>Show query 2 · '+esc(ipe.query2Db||'')+'</summary><pre>'+esc(ipe.query2)+'</pre>'
         +'<div style="padding:8px 13px 12px;"><button class="btn sm copy-sql">Copy query</button></div></details>':'')
+      +stages.map(function(s){ return '<details class="sql" style="margin-top:8px"><summary>Show query · '+esc(s.label||s.tag)+' · '+esc(s.db||'')+'</summary><pre>'+esc(s.query||'')+'</pre>'
+        +'<div style="padding:8px 13px 12px;"><button class="btn sm copy-sql">Copy query</button></div></details>'; }).join('')
       +'<div class="ipe-sec">3 · File integrity &amp; evidence</div>'
-      +'<div class="hashrow"><div><b>File'+(ipe.query2?' (query 1)':'')+'</b> &nbsp;'+esc(ipe.csvName)+' &nbsp;·&nbsp; '+Number(ipe.csvSize||0).toLocaleString()+' bytes</div>'
+      +'<div class="hashrow"><div><b>File'+((ipe.query2||stages.length)?' (query 1)':'')+'</b> &nbsp;'+esc(ipe.csvName)+' &nbsp;·&nbsp; '+Number(ipe.csvSize||0).toLocaleString()+' bytes</div>'
         +'<div style="margin-top:6px"><b>SHA-256</b> &nbsp;'+esc(ipe.csvSha256)+'</div>'
         +(ipe.csv2Name?'<div style="margin-top:10px"><b>File (query 2)</b> &nbsp;'+esc(ipe.csv2Name)+' &nbsp;·&nbsp; '+Number(ipe.csv2Size||0).toLocaleString()+' bytes</div>'
           +'<div style="margin-top:6px"><b>SHA-256</b> &nbsp;'+esc(ipe.csv2Sha256)+'</div>':'')
+        +stages.filter(function(s){ return s.csvName; }).map(function(s){ return '<div style="margin-top:10px"><b>File ('+esc(s.label||s.tag)+')</b> &nbsp;'+esc(s.csvName)+' &nbsp;·&nbsp; '+Number(s.csvSize||0).toLocaleString()+' bytes</div>'
+          +'<div style="margin-top:6px"><b>SHA-256</b> &nbsp;'+esc(s.csvSha256||'')+'</div>'; }).join('')
         +'<div style="margin-top:8px" class="muted">'+esc(ipe.evidenceNote||'')+'</div></div>'
       +'<div class="ipe-foot">'+esc(ipe.classification||'CONFIDENTIAL · SOX-Relevant')+' · '+esc(ipe.documentRef)+'</div>';
   }
@@ -1190,9 +1207,9 @@
   function openTaskModal(stage, lineId){
     var d=stageState[stage].detail; if(!d) return;
     var line=d.lines.filter(function(l){ return String(l.line_id)===String(lineId); })[0]; if(!line) return;
-    // Cash & POS is handled payment-by-payment in both Review and Audit: '...' opens
-    // the list of payment subtasks.
-    if((stage==='review'||stage==='audit') && line.subpopulation==='Postpaid - Cash & POS'){ openSubtaskTable(stage, line); return; }
+    // Per-task subpopulations (Cash & POS payments, Flow C reconciliation + preparer tasks)
+    // are handled task-by-task in both Review and Audit: '...' opens the task list.
+    if((stage==='review'||stage==='audit') && isPerTaskSub(line.subpopulation)){ openSubtaskTable(stage, line); return; }
     $('taskModalTitle').textContent=STAGE_CFG[stage].modalTitle+' · '+line.document_no;
     $('taskModalBody').innerHTML=renderStageLine(stage, d.actionable, line);
     openModal('task');
@@ -1210,28 +1227,42 @@
     audit: { sampleStatus:'pending_audit',  actNeeded:'reviewed',  primaryLabel:'Close',             primaryFn:'auditorCloseTask',   returnFn:'auditorReturnTask',   ai:false }
   };
   var curSubtaskLine=null;
+  // Flow C system task: a compact result pill from its stored checks.
+  function checksPill(u){
+    var cs=(u&&u.checks)||[]; if(!cs.length) return '<span class="muted">—</span>';
+    var m=cs.filter(function(c){ return c.status==='match'; }).length, miss=cs.some(function(c){ return c.status==='missing'; });
+    return m===cs.length ? '<span class="pill green">'+m+'/'+cs.length+' match</span>'
+         : miss ? '<span class="pill red">missing data</span>' : '<span class="pill amber">'+(cs.length-m)+' variance</span>';
+  }
   function openSubtaskTable(stage, line){
-    var cfg=SUBTASK_CFG[stage];
-    $('taskModalTitle').textContent=(stage==='audit'?'Audit':'Review')+' · '+line.document_no+' · payments';
+    var cfg=SUBTASK_CFG[stage], flowC=isFlowCSub(line.subpopulation);
+    $('taskModalTitle').textContent=(stage==='audit'?'Audit':'Review')+' · '+line.document_no+(flowC?' · tasks':' · payments');
     var asgs=line.assignments||[];
     var rows=asgs.map(function(a,idx){
       var u=a.unit||{}, canAct=String(a.status).toLowerCase()===cfg.actNeeded;   // task-level: independent of siblings
-      return '<tr>'
-        +'<td class="mono">'+esc(u.payment_no||('#'+(idx+1)))+'</td>'
-        +'<td>'+esc(u.bank_account||'—')+'</td>'
-        +'<td>'+fmtNum(u.amount)+'</td>'
-        +(cfg.ai?('<td>'+(a.ai_verdict?aiVerdictPill(String(a.ai_verdict).toLowerCase()):'<span class="muted">—</span>')+'</td>'):'')
+      var sys=u.kind==='system';
+      var lead = flowC
+        ? '<td>'+esc(a.evidence_type||('#'+(idx+1)))+(sys?' <span class="pill blue" style="font-size:10px">system</span>':'')+'</td>'
+          +'<td class="trunc" title="'+esc(sys?'Produced by the app':(a.assigned_to||''))+'">'+esc(sys?'App':shortEmail(a.assigned_to)||'—')+'</td>'
+          +'<td>'+(sys?checksPill(u):((a.files&&a.files.length)?(a.files.length+' file'+(a.files.length>1?'s':'')):'<span class="muted">—</span>'))+'</td>'
+        : '<td class="mono">'+esc(u.payment_no||('#'+(idx+1)))+'</td>'
+          +'<td>'+esc(u.bank_account||'—')+'</td>'
+          +'<td>'+fmtNum(u.amount)+'</td>';
+      return '<tr>'+lead
+        +(cfg.ai?('<td>'+(sys?'<span class="muted" title="Deterministic system check — see Result">—</span>':(a.ai_verdict?aiVerdictPill(String(a.ai_verdict).toLowerCase()):'<span class="muted">—</span>'))+'</td>'):'')
         +'<td>'+statusPill(a.status)+'</td>'
         +'<td><div class="actions"><button class="btn '+(canAct?'primary ':'')+'sm icon-btn subtask-open" data-aid="'+esc(a.assignment_id)+'" title="'+(canAct?(stage==='audit'?'Audit':'Review'):'View')+'">⋯</button></div></td>'
         +'</tr>';
     }).join('');
+    var facts = flowC
+      ? fact('Sales order item','<span class="mono">'+esc(line.document_no)+'</span>')+fact('Company', esc(line.company||'—'))
+        +fact('Subpopulation', esc(line.subpopulation))+fact('Unit price', fmtNum(line.amount))+fact('Tasks', String(asgs.length))
+      : fact('Sales order item','<span class="mono">'+esc(line.document_no)+'</span>')+fact('Company', esc(line.company||'—'))
+        +fact('Subpopulation', esc(line.subpopulation))+fact('Payments', String(asgs.length));
+    var head = flowC ? '<th>Task</th><th>Owner</th><th>Result</th>' : '<th>Payment no.</th><th>Bank</th><th>Amount</th>';
     $('taskModalBody').innerHTML='<div class="line-head" style="margin-bottom:10px"><span class="grow"></span>'+(stage!=='audit'?histIconBtn(line.line_id):'')+'</div>'
-      +'<div class="facts" style="margin-bottom:12px">'
-      +fact('Sales order item','<span class="mono">'+esc(line.document_no)+'</span>')
-      +fact('Company', esc(line.company||'—'))
-      +fact('Subpopulation', esc(line.subpopulation))
-      +fact('Payments', String(asgs.length))+'</div>'
-      +'<div style="overflow-x:auto"><table class="req-table"><thead><tr><th>Payment no.</th><th>Bank</th><th>Amount</th>'+(cfg.ai?'<th>AI</th>':'')+'<th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+      +'<div class="facts" style="margin-bottom:12px">'+facts+'</div>'
+      +'<div style="overflow-x:auto"><table class="req-table"><thead><tr>'+head+(cfg.ai?'<th>AI</th>':'')+'<th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
     openModal('task');
     Array.prototype.forEach.call($('taskModalBody').querySelectorAll('.subtask-open'), function(b){ b.addEventListener('click', function(){ openSubtask(stage, line.line_id, b.dataset.aid); }); });
     Array.prototype.forEach.call($('taskModalBody').querySelectorAll('.tl-open'), function(b){ b.addEventListener('click', function(){ openTimeline(b.dataset.line); }); });
@@ -1256,7 +1287,68 @@
     }
     var first=el.querySelector('.chip'); if(first) openDoc(first.dataset.line, first.dataset.eid, first);
   }
+  /* ---- Flow C task window (system reconciliation or a preparer task) ---- */
+  function checksTableHtml(checks){
+    if(!checks||!checks.length) return '';
+    var ST={match:['green','Match'],variance:['amber','Variance'],missing:['red','Missing']};
+    var n=function(v){ return (v===null||v===undefined||v==='')?'—':fmtNum(v); };
+    return '<div style="overflow-x:auto;margin-top:12px"><table class="req-table"><thead><tr><th>Check</th><th>Recorded</th><th>Expected</th><th>Difference</th><th>Result</th></tr></thead><tbody>'
+      +checks.map(function(c){ var s=ST[c.status]||['neutral',c.status||'—'];
+        return '<tr><td>'+esc(c.name)+(c.note?'<div class="muted" style="font-size:11.5px">'+esc(c.note)+'</div>':'')+'</td>'
+          +'<td>'+n(c.a)+'</td><td>'+n(c.b)+'</td><td>'+n(c.diff)+'</td><td><span class="pill '+s[0]+'">'+esc(s[1])+'</span></td></tr>'; }).join('')
+      +'</tbody></table></div>';
+  }
+  // A system task carries its deterministic verdict: same .ai-panel contract (data-verdict,
+  // .ai-ovr) so the Submit gate works, but no "Run AI check" — nothing was sent to a model.
+  // Deterministic result of the app's reconciliation — deliberately not worded as "AI".
+  function sysVerdictPill(v){ return v==='accept' ? '<span class="pill green">All checks match</span>' : '<span class="pill amber">Needs your review</span>'; }
+  function systemPanelHtml(a){
+    var v=String(a.ai_verdict||'').toLowerCase()||'uncertain';
+    var ovr = v!=='accept'
+      ? '<label class="ai-ovr-row"><input type="checkbox" class="ai-ovr"> I reviewed the variance / missing data above and confirm this reconciliation is acceptable as evidence.</label>' : '';
+    return '<div class="ai-panel" data-verdict="'+esc(v)+'"><div class="ai-head"><span class="pill neutral" style="font-size:10.5px">System check</span>'
+      +'<span class="ai-result">'+sysVerdictPill(v)+' <span class="ai-sum">'+esc(a.ai_summary||'')+'</span></span></div>'+ovr+'</div>';
+  }
+  function renderFlowCTask(stage, line, a){
+    var cfg=SUBTASK_CFG[stage], u=a.unit||{}, sys=u.kind==='system', d=line.detail||{};
+    var canAct=String(a.status).toLowerCase()===cfg.actNeeded;
+    var facts='<div class="facts">'
+      +fact('Sales order item','<span class="mono">'+esc(line.document_no)+'</span>')
+      +fact('Company', esc(line.company||'—'))
+      +fact('Subpopulation', esc(line.subpopulation))
+      +fact('Unit price', fmtNum(line.amount))
+      +fact('Package no.','<span class="mono">'+esc(d.package_number||'—')+'</span>')
+      +(line.subpopulation==='Retail'
+        ? fact('BOB item','<span class="mono">'+esc(d.bob_soi||'—')+'</span>')+fact('SKU', esc(d.sku||'—'))
+        : fact('Statement','<span class="mono">'+esc(line.statement_code||'—')+'</span>')+fact('Closing balance', fmtNum(line.closing_balance))
+          +fact('Paid at', esc(line.paid_at||'—'))+fact('MPL type', esc(line.mpl_type||'—'))+fact('Seller', esc(line.vendor||'—'))+fact('PO', esc(d.po||'—')))
+      +'</div>';
+    var chips=a.files.length
+      ? a.files.map(function(f){ return '<button class="chip" data-eid="'+esc(f.evidence_id)+'" data-line="'+esc(a.assignment_id)+'">'+esc(f.file_name)+'</button>'; }).join('')
+      : '<span class="muted" style="font-size:12px">no files</span>';
+    // Review only: the gate panel (system verdict + override, or the AI check). The auditor
+    // sees the checks table and the reviewer's note — never a verdict panel.
+    var gated = canAct && stage==='review';
+    var panel = gated ? (sys ? systemPanelHtml(a) : aiPanelHtml({ai_verdict:a.ai_verdict, ai_summary:a.ai_summary})) : '';
+    var prepNote = a.preparer_note ? '<div class="prep-note-view"><b>Preparer:</b> '+esc(a.preparer_note)+'</div>' : '';
+    var noteLine = a.note ? '<div class="note-line">'+esc(a.note)+'</div>' : '';
+    var actions = canAct
+      ? panel+'<div class="line-foot"><input class="note-in" placeholder="'+(sys&&stage==='review'?'Note to the auditor (optional)':'Note (required to return)')+'">'
+        +'<button class="btn primary sm subtask-primary" data-aid="'+esc(a.assignment_id)+'"'+(gated?' disabled':'')+'>'+esc(cfg.primaryLabel)+'</button>'
+        +((sys&&stage==='review')?'':'<button class="btn sm subtask-return" data-aid="'+esc(a.assignment_id)+'">Return</button>')+'</div>'
+      : '<div class="muted" style="font-size:12.5px; margin-top:10px">'+esc(String(a.status).replace(/_/g,' '))+'</div>';
+    return '<div class="line-card" data-aid="'+esc(a.assignment_id)+'" style="border:0;padding:0;margin:0">'
+      +'<div class="line-head"><button class="btn sm subtask-back">← Tasks</button><span class="doc" style="margin-left:8px">'+esc(a.evidence_type)+'</span>'
+        +(sys?'<span class="pill blue" style="margin-left:8px;font-size:10px">system</span>':'')
+        +'<span class="grow"></span>'+statusPill(a.status)+'</div>'
+      +'<div class="rev-grid"><div>'+facts+'</div>'
+      +'<div class="preview" id="prev-'+esc(a.assignment_id)+'"><span class="ph">'+(sys?'The reconciliation workbook is attached below.':'Select a document to preview')+'</span></div></div>'
+      +(sys?checksTableHtml(u.checks):'')
+      +'<div class="doc-chips" style="margin-top:10px">'+chips+'</div>'
+      +prepNote+noteLine+actions+'</div>';
+  }
   function renderSubtaskReview(stage, line, a){
+    if(isFlowCSub(line.subpopulation)) return renderFlowCTask(stage, line, a);
     var cfg=SUBTASK_CFG[stage], u=a.unit||{};
     var canAct=String(a.status).toLowerCase()===cfg.actNeeded;   // task-level: independent of siblings
     var facts='<div class="facts">'

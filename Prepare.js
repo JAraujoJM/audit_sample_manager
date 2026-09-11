@@ -20,6 +20,7 @@ function listMyAssignments() {
 
   return readObjects_(ds, 'Assignments')
     .filter(function (a) { return String(a.assigned_to || '').toLowerCase() === email; })
+    .filter(function (a) { return parseJson_(a.detail_json).kind !== 'system'; })   // app-produced reconciliations are reviewed, not prepared
     .map(function (a) {
       var line = lines[String(a.line_id)] || {};
       var req  = reqs[String(a.request_id)] || {};
@@ -34,6 +35,7 @@ function listMyAssignments() {
         request_title: req.title || '', document_no: line.document_no || '', vendor: line.vendor || '',
         company: line.company || '', amount: line.amount || '',
         statement_code: line.statement_code || '', statement_amount: line.closing_balance || '',
+        closing_balance: line.closing_balance || '', mpl_type: line.mpl_type || '',
         paid_at: toDateStr_(line.paid_at, tz),
         subpopulation: line.subpopulation || '', detail: parseJson_(line.detail_json), unit: parseJson_(a.detail_json),
         evidence_type: a.evidence_type, optional: isOptional_(a.optional), slots: slots,
@@ -218,6 +220,7 @@ function withdrawAssignment(assignmentId) {
   var asg = findAssignment_(assignmentId);
   if (!asg) throw new Error('Assignment not found.');
   assertOwner_(asg, me);
+  if (parseJson_(asg.detail_json).kind === 'system') throw new Error('A system reconciliation cannot be withdrawn.');
   if (String(asg.status).toLowerCase() !== 'submitted') throw new Error('Only a submitted task can be withdrawn.');
 
   updateRowById_(ds, 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '' });

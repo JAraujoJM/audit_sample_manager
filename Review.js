@@ -264,10 +264,12 @@ function assessLineCore_(lineId, line, how) {
   var docs = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.line_id) === String(lineId); });
   if (!docs.length) throw new Error('No evidence documents to assess on this sample.');
 
-  // Voucher = two-image cross-check; Cash & POS = one verdict per payment task;
+  // Voucher = two-image cross-check; Cash & POS = one verdict per payment task; Flow C
+  // (Retail / Marketplace) = per task too (system tasks are deterministic, no AI call);
   // everything else = per-document.
   var result = (sub === 'Prepaid - Voucher') ? assessVoucher_(line, detail, docs)
     : (sub === 'Postpaid - Cash & POS') ? assessCashPos_(lineId, line, ds)
+    : isPerTaskSub_(sub) ? assessPerTaskLine_(lineId, line, ds)
     : assessPerDoc_(line, detail, sub, docs, typeByAsg);
 
   var at = nowIso_();
@@ -398,11 +400,52 @@ function worseVerdict_(a, b) {
 
 /* ---------- per-assignment (per-payment) AI check — Cash & POS ---------- */
 /** Assess one Cash & POS payment task's proof of payment against that payment's data. */
+/**
+ * Flow C line-level check: one verdict per task. A SYSTEM task carries its deterministic
+ * verdict already (the reconciliation checks computed at enrichment); a submitted human
+ * task (proof of payment / contract / down-payment) gets the Flow-A-style per-document AI
+ * check on its own files. Tasks not yet submitted are skipped. The line verdict is the
+ * worst of the assessed tasks.
+ */
+function assessPerTaskLine_(lineId, line, ds) {
+  var worst = null, parts = [], perDoc = [];
+  getAssignments(lineId).forEach(function (a) {
+    var st = String(a.status || '').toLowerCase();
+    if (['submitted', 'reviewed', 'accepted'].indexOf(st) === -1) return;
+    var r = assessAssignmentCore_(a, line);
+    if (!r) return;
+    if (st === 'submitted' && parseJson_(a.detail_json).kind !== 'system') {
+      updateRowById_(ds, 'Assignments', 'assignment_id', a.assignment_id, { ai_verdict: r.verdict, ai_summary: String(r.summary || '').substring(0, 900), ai_checked_at: nowIso_() });
+    }
+    worst = worst === null ? r.verdict : worseVerdict_(worst, r.verdict);
+    parts.push((a.evidence_type || 'task') + ' → ' + r.verdict);
+    (r.perDoc || []).forEach(function (p) { perDoc.push(p); });
+  });
+  if (worst === null) return { verdict: 'uncertain', summary: 'No submitted task to assess yet.', perDoc: [] };
+  return { verdict: worst, summary: parts.join('  |  '), perDoc: perDoc };
+}
+
+/** The verdict of an app-produced reconciliation task, straight from its stored checks (no AI). */
+function systemVerdict_(unit) {
+  var checks = unit.checks || [];
+  return {
+    verdict: unit.verdict || 'uncertain',
+    summary: unit.summary || checks.map(function (c) { return c.name + ': ' + c.status; }).join(' | '),
+    perDoc: checks.map(function (c) { return { file: c.name, verdict: c.status === 'match' ? 'accept' : 'uncertain', summary: c.status === 'match' ? ('match (diff ' + c.diff + ')') : c.status === 'variance' ? ('variance of ' + c.diff) : ('missing data' + (c.note ? ' — ' + c.note : '')) }; })
+  };
+}
+
 function assessAssignmentCore_(asg, line) {
   var ds = dataSs_();
+  var unit = parseJson_(asg.detail_json), ldet = parseJson_(line.detail_json);
+  if (unit.kind === 'system') return systemVerdict_(unit);           // deterministic — never sent to the model
   var files = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.assignment_id) === String(asg.assignment_id); });
   if (!files.length) return { verdict: 'uncertain', summary: 'No file uploaded for this task.', perDoc: [] };
-  var unit = parseJson_(asg.detail_json), ldet = parseJson_(line.detail_json);
+  if (isPerTaskSub_(line.subpopulation) && String(line.subpopulation) !== 'Postpaid - Cash & POS') {
+    // Flow C human task: Flow A's per-document check (statement / balance / paid / MPL facts) on THIS task's files.
+    var types = {}; types[String(asg.assignment_id)] = asg.evidence_type;
+    return assessPerDoc_(line, ldet, '', files, types);
+  }
   var facts = [
     'Company: ' + (line.company || '—'),
     'Order number: ' + (ldet.order_nr || '—'),
@@ -521,6 +564,7 @@ function reviewerReturnTask(assignmentId, note) {
   if (!asg) throw new Error('Task not found.');
   assertReviewer_(asg.request_id, me);
   if (String(asg.status).toLowerCase() !== 'submitted') throw new Error('Only a submitted task can be returned (now: ' + asg.status + ').');
+  if (parseJson_(asg.detail_json).kind === 'system') throw new Error('This reconciliation was produced by the app — there is no preparer to return it to. Submit it with your note, or ask an administrator to re-run the enrichment.');
 
   updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '', ai_verdict: '', ai_summary: '', ai_checked_at: '', notes: 'Returned by reviewer: ' + note });
   updateLineAssignmentRollup_(asg.line_id);
@@ -551,7 +595,12 @@ function auditorReturnTask(assignmentId, note) {
   if (!asg) throw new Error('Task not found.');
   if (String(asg.status).toLowerCase() !== 'reviewed') throw new Error('Only a reviewed task can be returned (now: ' + asg.status + ').');
 
-  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '', ai_verdict: '', ai_summary: '', ai_checked_at: '', notes: 'Returned by auditor: ' + note });
+  // An app-produced reconciliation has no preparer: the auditor's return sends it back to
+  // the REVIEWER (status submitted again, checks kept); anything else goes back to in_progress.
+  var patch = parseJson_(asg.detail_json).kind === 'system'
+    ? { status: 'submitted', notes: 'Returned by auditor: ' + note }
+    : { status: 'in_progress', submitted_at: '', ai_verdict: '', ai_summary: '', ai_checked_at: '', notes: 'Returned by auditor: ' + note };
+  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, patch);
   updateLineAssignmentRollup_(asg.line_id);
   logActivity('AUDIT_RETURN_TASK', 'assignment', assignmentId, note);
   return reviewDetail(asg.request_id, 'audit');
@@ -736,11 +785,15 @@ function auditExport(requestId) {
     var outFolder = reqFolder.createFolder(zipName + ' (' + stamp + ')');
     outFolder.createFile(xlsxBlob);
 
-    var extraction = [['csv_file_id', 'query1_result.csv'], ['xlsx_file_id', 'query1_evidence.xlsx'],
-                      ['csv2_file_id', 'query2_result.csv'], ['xlsx2_file_id', 'query2_evidence.xlsx']]
-                     .filter(function (p) { return req[p[0]]; });
+    // [fileId, name]: the fixed stage-1/2 files plus, for N-stage flows (Flow C), one CSV
+    // (+ SOX evidence xlsx) per dependent query recorded in stages_json.
+    var extraction = [[req.csv_file_id, 'query1_result.csv'], [req.xlsx_file_id, 'query1_evidence.xlsx'],
+                      [req.csv2_file_id, 'query2_result.csv'], [req.xlsx2_file_id, 'query2_evidence.xlsx']];
+    var stg = parseJson_(req.stages_json); if (!Array.isArray(stg)) stg = [];
+    stg.forEach(function (s) { extraction.push([s.csvId, (s.tag || 'stage') + '_result.csv']); extraction.push([s.xlsxId, (s.tag || 'stage') + '_evidence.xlsx']); });
+    extraction = extraction.filter(function (p) { return p[0]; });
     var extFolder = extraction.length ? outFolder.createFolder('Extraction') : null;
-    extraction.forEach(function (p) { try { DriveApp.getFileById(req[p[0]]).makeCopy(p[1], extFolder); } catch (e) {} });
+    extraction.forEach(function (p) { try { DriveApp.getFileById(p[0]).makeCopy(p[1], extFolder); } catch (e) {} });
 
     var dirCache = {}, copied = 0, missing = 0, totalBytes = 0;
     var evRoot = evFiles.length ? outFolder.createFolder('Evidence') : null;
@@ -769,7 +822,7 @@ function auditExport(requestId) {
     if (totalBytes <= 30 * 1024 * 1024) {
       try {
         var zipBlobs = [xlsxBlob.copyBlob().setName(zipName + '.xlsx')];
-        extraction.forEach(function (p) { try { var b = DriveApp.getFileById(req[p[0]]).getBlob().copyBlob(); b.setName('Extraction/' + p[1]); zipBlobs.push(b); } catch (e) {} });
+        extraction.forEach(function (p) { try { var b = DriveApp.getFileById(p[0]).getBlob().copyBlob(); b.setName('Extraction/' + p[1]); zipBlobs.push(b); } catch (e) {} });
         evFiles.forEach(function (f) { try { var b = DriveApp.getFileById(f.fileId).getBlob().copyBlob(); b.setName('Evidence/' + f.soi + '/' + f.task + '/' + f.fileName); zipBlobs.push(b); } catch (e) {} });
         var zip = Utilities.zip(zipBlobs, zipName + '.zip');
         download = { name: zip.getName(), mime: 'application/zip', dataUrl: 'data:application/zip;base64,' + Utilities.base64Encode(zip.getBytes()) };
