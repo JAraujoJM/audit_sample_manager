@@ -636,7 +636,7 @@ function recomputeRequestStatus_(requestId) {
  * The workbook is built in a throwaway Google Sheet, exported to .xlsx, then zipped.
  */
 function auditExport(requestId) {
-  requireRole_([ROLES.AUDITOR, ROLES.ADMIN]);
+  var me = requireRole_([ROLES.AUDITOR, ROLES.ADMIN]);
   var ds = dataSs_();
   var tz = ds.getSpreadsheetTimeZone();
   var req = findRequest_(requestId);
@@ -651,9 +651,9 @@ function auditExport(requestId) {
     // Tab 1 (Samples & Tasks) + Tab 3 rows (Evidence index) + evidence blobs, one pass.
     var H1 = ['Sample (SOI)', 'Company', 'Subpopulation', 'Sample status', 'Task / evidence', 'Payment no', 'Amount', 'Payment date', 'Bank account', 'Payment reference', 'Order no', 'Gateway / provider', 'Assigned to', 'Task status', 'Evidence files'];
     var R1 = [H1];
-    var H3 = ['Sample (SOI)', 'Task / evidence', 'Payment no', 'Slot', 'File name', 'Uploaded by', 'Uploaded at', 'Path in ZIP'];
+    var H3 = ['Sample (SOI)', 'Task / evidence', 'Payment no', 'Slot', 'File name', 'Uploaded by', 'Uploaded at', 'Path in export'];
     var R3 = [H3];
-    var zipBlobs = [];
+    var evFiles = [];   // {fileId, soi, task, fileName} — copied into the Drive folder later
     lines.forEach(function (l) {
       var det = parseJson_(l.detail_json);
       var la = asg.filter(function (a) { return String(a.line_id) === String(l.line_id); });
@@ -668,10 +668,9 @@ function auditExport(requestId) {
           [det.jp_gateway, det.jp_provider].filter(Boolean).join(' / '), a.assigned_to || '', a.status,
           files.map(function (e) { return e.file_name; }).join(', ')]);
         files.forEach(function (e) {
-          var path = 'Evidence/' + sanitizeName_(l.document_no) + '/' + sanitizeName_(taskLabel) + '/' + sanitizeName_(e.file_name);
-          var ok = true;
-          try { var b = DriveApp.getFileById(e.file_id).getBlob().copyBlob(); b.setName(path); zipBlobs.push(b); } catch (err) { ok = false; }
-          R3.push([l.document_no, a.evidence_type, u.payment_no || '', e.slot || '', e.file_name, e.uploaded_by || '', toDateStr_(e.uploaded_at, tz), ok ? path : '(file missing)']);
+          var soiDir = sanitizeName_(l.document_no), taskDir = sanitizeName_(taskLabel), fName = sanitizeName_(e.file_name);
+          evFiles.push({ fileId: e.file_id, soi: soiDir, task: taskDir, fileName: fName });
+          R3.push([l.document_no, a.evidence_type, u.payment_no || '', e.slot || '', e.file_name, e.uploaded_by || '', toDateStr_(e.uploaded_at, tz), 'Evidence/' + soiDir + '/' + taskDir + '/' + fName]);
         });
       });
     });
@@ -724,30 +723,88 @@ function auditExport(requestId) {
     var resp = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + ss.getId() + '/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
     if (resp.getResponseCode() >= 300) throw new Error('Could not build the Excel file (HTTP ' + resp.getResponseCode() + ').');
-    zipBlobs.unshift(resp.getBlob().setName(zipName + '.xlsx'));
+    var xlsxBlob = resp.getBlob().setName(zipName + '.xlsx');
 
-    // Gateway extraction files (raw data + SOX evidence workbooks).
-    [['csv_file_id', 'Extraction/query1_result.csv'], ['xlsx_file_id', 'Extraction/query1_evidence.xlsx'],
-     ['csv2_file_id', 'Extraction/query2_result.csv'], ['xlsx2_file_id', 'Extraction/query2_evidence.xlsx']].forEach(function (p) {
-      var fid = req[p[0]]; if (!fid) return;
-      try { var b = DriveApp.getFileById(fid).getBlob().copyBlob(); b.setName(p[1]); zipBlobs.push(b); } catch (e) {}
+    // ---- Assemble the export as REAL files in a Drive folder ----------------
+    // Evidence is copied Drive-side (makeCopy), one file at a time — so the run
+    // never holds the whole export in memory and there is no ~50 MB blob ceiling.
+    // The folder is the reliable deliverable; the ZIP below is a bonus for small runs.
+    var exportsId = PropertiesService.getScriptProperties().getProperty(PROP.EXPORTS);
+    if (!exportsId) throw new Error('Exports folder not provisioned — run setup().');
+    var stamp = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH-mm');
+    var reqFolder = getOrCreateFolder_(DriveApp.getFolderById(exportsId), requestId);
+    var outFolder = reqFolder.createFolder(zipName + ' (' + stamp + ')');
+    outFolder.createFile(xlsxBlob);
+
+    var extraction = [['csv_file_id', 'query1_result.csv'], ['xlsx_file_id', 'query1_evidence.xlsx'],
+                      ['csv2_file_id', 'query2_result.csv'], ['xlsx2_file_id', 'query2_evidence.xlsx']]
+                     .filter(function (p) { return req[p[0]]; });
+    var extFolder = extraction.length ? outFolder.createFolder('Extraction') : null;
+    extraction.forEach(function (p) { try { DriveApp.getFileById(req[p[0]]).makeCopy(p[1], extFolder); } catch (e) {} });
+
+    var dirCache = {}, copied = 0, missing = 0, totalBytes = 0;
+    var evRoot = evFiles.length ? outFolder.createFolder('Evidence') : null;
+    evFiles.forEach(function (f) {
+      try {
+        var soiF = dirCache[f.soi] || (dirCache[f.soi] = evRoot.createFolder(f.soi));
+        var tk = f.soi + ' ' + f.task;
+        var taskF = dirCache[tk] || (dirCache[tk] = soiF.createFolder(f.task));
+        var src = DriveApp.getFileById(f.fileId);
+        try { totalBytes += Number(src.getSize()) || 0; } catch (e) {}
+        src.makeCopy(f.fileName, taskF); copied++;
+      } catch (err) { missing++; }
     });
 
-    var zip = Utilities.zip(zipBlobs, zipName + '.zip');
-    var bytes = zip.getBytes();
+    // Auto-share with the requester + the request's reviewer/auditor, so they can
+    // open it straight from the Drive without asking anyone for access.
+    var recipients = [me.email, req.auditor_email, req.reviewer_email]
+      .filter(function (x) { return x; })
+      .map(function (x) { return String(x).toLowerCase().trim(); })
+      .filter(function (x, i, a) { return x && a.indexOf(x) === i; });
+    var shared = shareFileWith_(outFolder.getId(), recipients);
 
-    // Keep a copy in Exports/{reqId}/ for the record.
-    try {
-      var exportsId = PropertiesService.getScriptProperties().getProperty(PROP.EXPORTS);
-      if (exportsId) getOrCreateFolder_(DriveApp.getFolderById(exportsId), requestId).createFile(zip.copyBlob().setName(zipName + '.zip'));
-    } catch (e) {}
-    logActivity('AUDIT_EXPORT', 'request', requestId, 'zip ' + Math.round(bytes.length / 1024) + ' KB, ' + (zipBlobs.length) + ' file(s)');
-
-    if (bytes.length > 40 * 1024 * 1024) {
-      throw new Error('The export is ' + Math.round(bytes.length / 1048576) + ' MB — too large to download in one go. A copy was saved to Exports/' + requestId + '/ on the Drive; ask an administrator to share it.');
+    // Convenience one-click ZIP — only for small exports (in-memory zip + base64
+    // return have a hard cap); larger exports are delivered via the Drive link.
+    var download = null;
+    if (totalBytes <= 30 * 1024 * 1024) {
+      try {
+        var zipBlobs = [xlsxBlob.copyBlob().setName(zipName + '.xlsx')];
+        extraction.forEach(function (p) { try { var b = DriveApp.getFileById(req[p[0]]).getBlob().copyBlob(); b.setName('Extraction/' + p[1]); zipBlobs.push(b); } catch (e) {} });
+        evFiles.forEach(function (f) { try { var b = DriveApp.getFileById(f.fileId).getBlob().copyBlob(); b.setName('Evidence/' + f.soi + '/' + f.task + '/' + f.fileName); zipBlobs.push(b); } catch (e) {} });
+        var zip = Utilities.zip(zipBlobs, zipName + '.zip');
+        download = { name: zip.getName(), mime: 'application/zip', dataUrl: 'data:application/zip;base64,' + Utilities.base64Encode(zip.getBytes()) };
+      } catch (e) { download = null; }   // fall back to the Drive link
     }
-    return { name: zip.getName(), mime: 'application/zip', dataUrl: 'data:application/zip;base64,' + Utilities.base64Encode(bytes) };
+
+    logActivity('AUDIT_EXPORT', 'request', requestId,
+      copied + ' file(s), ~' + Math.round(totalBytes / 1048576) + ' MB' + (missing ? (', ' + missing + ' missing') : '') + ', shared: ' + (shared.join(', ') || 'none'));
+    return {
+      folderUrl: outFolder.getUrl(), folderName: outFolder.getName(),
+      fileCount: copied, missing: missing, totalMb: Math.round(totalBytes / 1048576 * 10) / 10,
+      shared: shared, download: download
+    };
   } finally {
     try { DriveApp.getFileById(ss.getId()).setTrashed(true); } catch (e) {}
   }
+}
+
+/**
+ * Grant each email reader access to a Drive file/folder (works on Shared Drives).
+ * Uses the deployer's OAuth token + Drive REST so no extra scope is needed beyond
+ * the full-drive scope DriveApp already pulls in. Returns the emails actually shared.
+ */
+function shareFileWith_(fileId, emails) {
+  if (!emails || !emails.length) return [];
+  var token = ScriptApp.getOAuthToken();
+  var done = [];
+  emails.forEach(function (email) {
+    try {
+      var r = UrlFetchApp.fetch(
+        'https://www.googleapis.com/drive/v3/files/' + fileId + '/permissions?supportsAllDrives=true&sendNotificationEmail=false',
+        { method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + token },
+          payload: JSON.stringify({ role: 'reader', type: 'user', emailAddress: email }), muteHttpExceptions: true });
+      if (r.getResponseCode() < 300) done.push(email);
+    } catch (e) { /* leave it out of the shared list */ }
+  });
+  return done;
 }

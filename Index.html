@@ -1119,7 +1119,7 @@
       +'<div><h2 style="font-size:16px;margin:0 0 2px">'+esc(d.request.title)+'</h2>'
       +'<p class="sub" style="margin:0">'+esc(d.request.period||'')+' · '+lines.length+' samples'+(isB?(' · '+totalTasks+' tasks'):'')+'</p></div>'
       +'<span class="grow"></span>'
-      +(stage==='audit'?'<button class="btn primary sm" id="auditExportBtn" title="Excel + evidence ZIP for your working papers">Export</button>':'')
+      +(stage==='audit'?'<button class="btn primary sm" id="auditExportBtn" title="Excel + all evidence, saved to a Drive folder and shared with you (plus a ZIP download when small enough)">Export</button>':'')
       +'</div></div>';
     var toggle='<div class="row" style="margin-bottom:12px; gap:0; align-items:center">'
       +'<label class="switch"><input type="checkbox" class="pending-toggle"'+(pendingOnly?' checked':'')+'><span class="sw-track"><span class="sw-knob"></span></span></label>'
@@ -1164,9 +1164,23 @@
     var reqId=stageState.audit.reqId; if(!reqId) return;
     var o=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Exporting';
     toast('Building the export — this can take a moment…','info');
-    google.script.run.withSuccessHandler(function(f){ btn.disabled=false; btn.innerHTML=o; downloadBlob(f); toast('Export ready','ok'); })
-      .withFailureHandler(function(e){ btn.disabled=false; btn.innerHTML=o; toast(e.message,'warn'); })
+    google.script.run.withSuccessHandler(function(r){
+      btn.disabled=false; btn.innerHTML=o;
+      if(r.download) downloadBlob(r.download);          // small enough for a one-click download
+      showExportResult_(btn, r);                        // always: the Drive folder link
+      toast(r.download?'Export ready':('Export saved to Drive · '+r.totalMb+' MB'),'ok');
+    }).withFailureHandler(function(e){ btn.disabled=false; btn.innerHTML=o; toast(e.message,'warn'); })
       .auditExport(reqId);
+  }
+  // Persistent result line under the Export button: link to the shared Drive folder.
+  function showExportResult_(btn, r){
+    var host=btn.parentNode, box=host.querySelector('#auditExportLink');
+    if(!box){ box=document.createElement('div'); box.id='auditExportLink'; box.style.cssText='width:100%; margin-top:8px; font-size:12.5px; color:var(--text-2)'; host.appendChild(box); }
+    var shared=(r.shared&&r.shared.length)?(' · shared with '+r.shared.map(esc).join(', ')):'';
+    box.innerHTML='<a href="'+esc(r.folderUrl||'#')+'" target="_blank" rel="noopener">Open export folder in Drive</a>'
+      +' · '+(r.fileCount||0)+' file(s) · '+(r.totalMb||0)+' MB'
+      +(r.missing?(' · '+r.missing+' file(s) missing'):'')+shared
+      +(r.download?'':' · too large for a direct download — open it in Drive');
   }
   function downloadBlob(f){
     try{ var url=toBlobUrl(f); var a=document.createElement('a'); a.href=url; a.download=f.name||'download'; document.body.appendChild(a); a.click();

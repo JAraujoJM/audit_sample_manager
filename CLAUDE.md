@@ -77,9 +77,16 @@ to Excel** (`exportMyTasks`, Prepare.js — one-tab xlsx checklist, Export butto
 
 **Auditor export** (`auditExport(requestId)`, Review.js; Export button in the Audit request detail): builds
 a temp Google Sheet → exports `.xlsx` (tabs: Samples & Tasks enriched / IPE with queries + SHA-256 + checks /
-Evidence index) → zips it with `Extraction/` (gateway CSVs + SOX xlsx) + `Evidence/<soi>/<task>/<file>` via
-`Utilities.zip`, saves a copy to `Exports/{reqId}/`, returns base64 (client downloads via blob). >40MB guard.
-Uses existing scopes only.
+Evidence index), then **assembles the export as real files in a Drive folder** `Exports/{reqId}/{name} (stamp)/`
+— the xlsx at the root, `Extraction/` (gateway CSVs + SOX xlsx) and `Evidence/<soi>/<task>/<file>` copied
+**Drive-side via `makeCopy`**, one file at a time (no in-memory aggregate, so no size ceiling). The folder is
+**auto-shared** (reader) with the current user + the request's reviewer/auditor via Drive REST
+`permissions.create` (`supportsAllDrives`, `shareFileWith_`), and the client shows its link. A convenience
+one-click **ZIP download is produced only when the evidence totals ≤30 MB** (`Utilities.zip` + base64 return
+have a ~50 MB blob cap); larger exports are delivered by the Drive link alone — it never throws on size.
+Return shape: `{ folderUrl, folderName, fileCount, missing, totalMb, shared[], download|null }`. Uses existing
+scopes only (full-drive, already pulled in by DriveApp). **Do NOT revert to zipping everything in memory** —
+that was the 70 MB failure (and the fragile `zip.copyBlob()` left an empty Exports folder).
 
 ## Flow A routing rules (the decision the engine encodes)
 Two facts decide each line:
