@@ -613,36 +613,151 @@ function flowCFinalize_(mapped, ctx) {
 }
 
 /* ============================== WORKBOOK ============================== *
- * Sheets: the two summaries (the reviewer's checks, one row per sample) followed by
- * the raw extracts, so the workbook stands on its own as evidence. */
+ * Modelled on the reviewer's own "Reconciliation - Marketplace and retail.xlsx":
+ *   REC - MPL / REC - Retail  — logo, title, period; four numbered sections per sheet
+ *                               (sample → each check), orange header band, Calibri 8, no
+ *                               gridlines, frozen at the header; every number is a LIVE
+ *                               formula into the raw tabs (VLOOKUP / SUMIFS), so the
+ *                               reviewer can trace any figure to its source rows.
+ *   Data Extractions ->       — divider tab
+ *   SOI, NAV_PostedSalesInvoices, NAV_PostedSalesInvoiceLine, NAV_Retail, RING, NAV
+ *                             — the raw extracts (bold frozen header, filter, dates)
+ * The workbook's 4th check ("NAV completeness": the G/L document nets to zero) lives in
+ * the file only — the app's own checks are the three per population (see flowCFinalize_).
+ * Column letters in the formulas are those of the raw tabs' query columns — keep in sync
+ * with the SELECT lists above if columns are added or reordered.
+ */
+var FLOWC_WB = {
+  orange: '#FF6D01', white: '#FFFFFF', grey: '#BFBFBF', black: '#000000',
+  font: { family: 'Calibri', size: 8 },
+  numFmt: '#,##0 ;(#,##0);"-" ',          // integers, negatives in parentheses, zero as a dash (no decimals)
+  widths: { margin: 25, data: 114, gap: 74 },
+  rowH: { title: 21, header: 30, data: 15 },
+  firstDataRow: 11
+};
 function flowCWorkbook_(mapped, ctx) {
   var d = ctx.data || {};
-  var v = function (x) { return (x === null || x === undefined) ? '' : x; };
-  var res = function (cs) { return cs.every(function (c) { return c.status === 'match'; }) ? 'OK' : cs.some(function (c) { return c.status === 'missing'; }) ? 'MISSING DATA' : 'VARIANCE'; };
-  var retail = [['ID_COMPANY', 'COD_OMS_SALES_ORDER_ITEM', 'COD_BOB_SALES_ORDER_ITEM', 'COD_SKU', 'PACKAGE_NUMBER', 'MTR_UNIT_PRICE',
-                 'Invoice No_', 'NAV invoice item incl. VAT', 'Check 1: NAV invoice item VS SOI', 'Invoice items total', 'Invoice header incl. VAT', 'Check 2: Invoice header VS Invoice items',
-                 'NAV GL receivables (' + FLOWC_RETAIL_AR_ACCOUNTS.join('+') + ')', 'NAV GL document total (all accounts)', 'Check 3: Invoice header VS NAV GL entries', 'Result']];
-  var mpl = [['ID_COMPANY', 'COD_OMS_SALES_ORDER_ITEM', 'COD_SKU', 'PACKAGE_NUMBER', 'MTR_UNIT_PRICE', 'Item Price Credit (RING)', 'Check 1: Item Price Credit (RING) VS SOI',
-              'Payout_Statement_Code', 'Statement Opening Balance', 'LIABILITIES', 'REVENUES', 'Other', 'Statement Closing Balance', 'Check 2: RING transactions VS RING statement',
-              'NAV document', 'NAV revenue (' + FLOWC_NAV_ACCOUNT + ')', 'NAV document total (all accounts)', 'Check 3: NAV revenue VS RING revenue', 'MPL type', 'Return Protection Fee on statement', 'Paid_At_Date', 'Payout_Method', 'Payment_Reference', 'PO_NUMBER', 'Down payment', 'Result']];
-  mapped.forEach(function (mr) {
-    if (!mr.found) return;
-    var m = mr.mapped, c = m.checks || [];
-    if (m.subpopulation === 'Retail') {
-      retail.push([m.company, m.document_no, m.bob_soi, m.sku, m.package_number, v(flowCNum_(m.amount)), v(m.inv_no), v(m.inv_line_amount), v(c[0] && c[0].diff), v(m.inv_lines_total), v(m.inv_total), v(c[1] && c[1].diff),
-                   v(m.glr_receivable), v(m.glr_total), v(c[2] && c[2].diff), res(c)]);
-    } else {
-      mpl.push([m.company, m.document_no, m.sku, m.package_number, v(flowCNum_(m.amount)), v(m.ipc_amount), v(c[0] && c[0].diff),
-                v(m.statement), v(m.opening_balance), v(m.stmt_liabilities), v(m.stmt_revenues), v(m.stmt_other), v(m.closing_balance), v(c[1] && c[1].diff),
-                v(m.nav_doc), v(m.nav_amount), v(m.nav_total), v(c[2] && c[2].diff), v(m.mpl), v(m.has_rpf), v(m.paid_at), v(m.payout_method), v(m.payment_ref), v(m.po), v(m.downpay), res(c)]);
-    }
-  });
-  var sheets = [{ name: 'Summary - Retail', rows: retail }, { name: 'Summary - MPL', rows: mpl }];
-  if (ctx.csv1) sheets.push({ name: 'SOI', rows: ctx.csv1 });
-  if (d.invRows)  sheets.push({ name: 'NAV_PostedSalesInvoices', rows: d.invRows });
-  if (d.invlRows) sheets.push({ name: 'NAV_PostedSalesInvoiceLine', rows: d.invlRows });
-  if (d.glrRows)  sheets.push({ name: 'NAV_Retail', rows: d.glrRows });
-  if (d.ringRows) sheets.push({ name: 'RING', rows: d.ringRows });
-  if (d.glRows)   sheets.push({ name: 'NAV', rows: d.glRows });
+  var title = 'Marketplace and retail revenues';
+  var sub = [(ctx.period && ctx.period.name) || '', (ctx.requestRef || '').trim()].filter(Boolean).join(' · ');
+  var mplLines = [], retailLines = [];
+  mapped.forEach(function (mr) { if (!mr.found) return; (mr.mapped.subpopulation === 'Retail' ? retailLines : mplLines).push(mr.mapped); });
+  var sheets = [
+    flowCRecSheet_('REC - MPL', title, sub, flowCMplLayout_(), mplLines),
+    flowCRecSheet_('REC - Retail', title, sub, flowCRetailLayout_(), retailLines),
+    { name: 'Data Extractions ->', rows: [], header: false, tabColor: FLOWC_WB.white }
+  ];
+  var raw = function (name, rows) { if (rows && rows.length) sheets.push({ name: name, rows: rows, autoFilter: true, dateCols: 'auto' }); };
+  raw('SOI', ctx.csv1); raw('NAV_PostedSalesInvoices', d.invRows); raw('NAV_PostedSalesInvoiceLine', d.invlRows);
+  raw('NAV_Retail', d.glrRows); raw('RING', d.ringRows); raw('NAV', d.glRows);
   return { name: 'Reconciliation - ' + ((ctx.requestRef || '').trim() || (ctx.flow && ctx.flow.name) || 'Flow C'), sheets: sheets };
+}
+
+/* ---- REC sheet layouts: one entry per column B..V; null = a narrow gap column ----
+ * { h: header, sec: section index, check: true → italic un-filled header, num: true → number
+ *   format, v(m, r): cell value — a string starting with '=' is a formula; r = the row number. */
+function flowCMplLayout_() {
+  var S = function (k, r) { return "SUMIFS(RING!I:I,RING!M:M,K" + r + ",RING!H:H,\"" + k + "\")"; };
+  return {
+    sections: ['1. Selected Marketplace samples:', '2. Item Price Credit (RING) VS SOI:', '3. RING Transactions VS RING Statements:', '4. RING VS NAV:'],
+    cols: [
+      { h: 'ID_COMPANY', sec: 0, v: function (m) { return m.company; } },
+      { h: 'COD_OMS_SALES_ORDER_ITEM', sec: 0, v: function (m) { return flowCNum_(m.document_no) !== null ? flowCNum_(m.document_no) : m.document_no; } },
+      { h: 'COD_SKU', sec: 0, v: function (m) { return m.sku || ''; } },
+      { h: 'PACKAGE_NUMBER', sec: 0, v: function (m) { return m.package_number || ''; } },
+      { h: 'MTR_UNIT_PRICE', sec: 0, num: true, v: function (m, r) { return '=IFERROR(VLOOKUP(B' + r + '&C' + r + ',SOI!B:H,7,FALSE),0)'; } },
+      null,
+      { h: 'Item Price Credit (RING)', sec: 1, num: true, v: function (m, r) { return '=SUMIFS(RING!I:I,RING!J:J,C' + r + ',RING!G:G,"Item Price Credit")'; } },
+      { h: 'Check 1', sec: 1, check: true, num: true, v: function (m, r) { return '=H' + r + '-F' + r; } },
+      null,
+      { h: 'Payout_Statement_Code', sec: 2, v: function (m) { return m.statement || ''; } },
+      { h: 'Statement Opening Balance', sec: 2, num: true, v: function (m, r) { return '=IFERROR(VLOOKUP(K' + r + ',RING!M:V,9,FALSE),0)'; } },
+      { h: 'Statement Closing Balance', sec: 2, num: true, v: function (m, r) { return '=IFERROR(VLOOKUP(K' + r + ',RING!M:V,10,FALSE),0)'; } },
+      { h: 'Transactions - Liabilities', sec: 2, num: true, v: function (m, r) { return '=' + S('LIABILITIES', r); } },
+      { h: 'Transactions - Revenues', sec: 2, num: true, v: function (m, r) { return '=' + S('REVENUES', r); } },
+      { h: 'Check 2', sec: 2, check: true, num: true, v: function (m, r) { return '=(M' + r + '-L' + r + ')-SUM(N' + r + ':O' + r + ')'; } },
+      null,
+      { h: 'NAV document', sec: 3, v: function (m) { return m.nav_doc || (m.statement ? flowCIsDoc_(m.statement) : ''); } },
+      { h: 'NAV (' + FLOWC_NAV_ACCOUNT + ')', sec: 3, num: true, v: function (m, r) { return '=SUMIFS(NAV!F:F,NAV!G:G,' + FLOWC_NAV_ACCOUNT + ',NAV!C:C,R' + r + ')'; } },
+      { h: 'NAV (other accounts)', sec: 3, num: true, v: function (m, r) { return '=SUMIFS(NAV!F:F,NAV!G:G,"<>' + FLOWC_NAV_ACCOUNT + '",NAV!C:C,R' + r + ')'; } },
+      { h: 'Check 3: NAV VS RING', sec: 3, check: true, num: true, v: function (m, r) { return '=S' + r + '+O' + r; } },
+      { h: 'Check 4: NAV completeness', sec: 3, check: true, num: true, v: function (m, r) { return '=SUM(S' + r + ':T' + r + ')'; } }
+    ]
+  };
+}
+function flowCRetailLayout_() {
+  var L = 'NAV_PostedSalesInvoiceLine', I = 'NAV_PostedSalesInvoices', G = 'NAV_Retail';
+  var ar = function (r) { return FLOWC_RETAIL_AR_ACCOUNTS.map(function (a) { return 'SUMIFS(' + G + '!F:F,' + G + '!A:A,B' + r + ',' + G + '!C:C,R' + r + ',' + G + '!G:G,' + a + ')'; }).join('+'); };
+  return {
+    sections: ['1. Selected Retail samples:', '2. NAV invoice item VS SOI:', '3. Invoice header VS Invoice items:', '4. Invoice header VS NAV GL entries:'],
+    cols: [
+      { h: 'ID_COMPANY', sec: 0, v: function (m) { return m.company; } },
+      { h: 'COD_OMS_SALES_ORDER_ITEM', sec: 0, v: function (m) { return flowCNum_(m.document_no) !== null ? flowCNum_(m.document_no) : m.document_no; } },
+      { h: 'COD_BOB_SALES_ORDER_ITEM', sec: 0, v: function (m) { return flowCNum_(m.bob_soi) !== null ? flowCNum_(m.bob_soi) : (m.bob_soi || ''); } },
+      { h: 'COD_SKU', sec: 0, v: function (m) { return m.sku || ''; } },
+      { h: 'PACKAGE_NUMBER', sec: 0, v: function (m) { return m.package_number || ''; } },
+      { h: 'MTR_UNIT_PRICE', sec: 0, num: true, v: function (m, r) { return '=IFERROR(VLOOKUP(B' + r + '&C' + r + ',SOI!B:H,7,FALSE),0)'; } },
+      null,
+      { h: 'Invoice No_', sec: 1, v: function (m) { return m.package_number || ''; } },
+      { h: 'NAV invoice item incl. VAT', sec: 1, num: true, v: function (m, r) { return '=SUMIFS(' + L + '!I:I,' + L + '!A:A,B' + r + ',' + L + '!B:B,I' + r + ',' + L + '!C:C,D' + r + ')'; } },
+      { h: 'Check 1', sec: 1, check: true, num: true, v: function (m, r) { return '=J' + r + '-G' + r; } },
+      null,
+      { h: 'Invoice No_', sec: 2, v: function (m) { return m.package_number || ''; } },
+      { h: 'Invoice items total', sec: 2, num: true, v: function (m, r) { return '=SUMIFS(' + L + '!I:I,' + L + '!A:A,B' + r + ',' + L + '!B:B,M' + r + ')'; } },
+      { h: 'Invoice header incl. VAT', sec: 2, num: true, v: function (m, r) { return '=SUMIFS(' + I + '!F:F,' + I + '!A:A,B' + r + ',' + I + '!B:B,M' + r + ')'; } },
+      { h: 'Check 2', sec: 2, check: true, num: true, v: function (m, r) { return '=O' + r + '-N' + r; } },
+      null,
+      { h: 'Invoice No_', sec: 3, v: function (m) { return m.package_number || ''; } },
+      { h: 'NAV GL receivables (' + FLOWC_RETAIL_AR_ACCOUNTS.join('+') + ')', sec: 3, num: true, v: function (m, r) { return '=' + ar(r); } },
+      { h: 'NAV (other accounts)', sec: 3, num: true, v: function (m, r) { return '=SUMIFS(' + G + '!F:F,' + G + '!A:A,B' + r + ',' + G + '!C:C,R' + r + ')-S' + r; } },
+      { h: 'Check 3: Invoice header VS GL entries', sec: 3, check: true, num: true, v: function (m, r) { return '=S' + r + '-O' + r; } },
+      { h: 'Check 4: NAV completeness', sec: 3, check: true, num: true, v: function (m, r) { return '=SUM(S' + r + ':T' + r + ')'; } }
+    ]
+  };
+}
+
+/** Render one REC sheet spec (grid + styles + logo) from a layout and its lines. Column A is a
+ *  margin; layout columns start at B. Rows: 1-5 logo, 6 title, 7 period, 9 sections, 10 headers, 11+ data. */
+function flowCRecSheet_(name, title, sub, layout, lines) {
+  var W = FLOWC_WB, first = W.firstDataRow, cols = layout.cols, width = cols.length + 1;
+  var col = function (i) { return String.fromCharCode(65 + i + 1); };            // layout index → letter (B..)
+  var blank = function () { var r = []; for (var i = 0; i < width; i++) r.push(''); return r; };
+  var rows = [];
+  for (var r = 1; r < first; r++) rows.push(blank());
+  rows[5][1] = title; rows[6][1] = sub;                                          // B6, B7
+  cols.forEach(function (c, i) { if (c) rows[9][i + 1] = c.h; });                // row 10 headers
+  // Section titles on row 9, one per section at its first column.
+  var secStart = {}, secEnd = {};
+  cols.forEach(function (c, i) { if (!c) return; if (secStart[c.sec] === undefined) secStart[c.sec] = i; secEnd[c.sec] = i; });
+  layout.sections.forEach(function (t, s) { if (secStart[s] !== undefined) rows[8][secStart[s] + 1] = t; });
+  lines.forEach(function (m, k) {
+    var rn = first + k, row = blank();
+    cols.forEach(function (c, i) { if (c) { var v = c.v(m, rn); row[i + 1] = (v === null || v === undefined) ? '' : v; } });
+    rows.push(row);
+  });
+  var last = first + Math.max(lines.length, 1) - 1;
+
+  var styles = [
+    { range: 'B6', bold: true }, { range: 'B7', bold: true }
+  ];
+  layout.sections.forEach(function (t, s) {
+    if (secStart[s] === undefined) return;
+    styles.push({ range: col(secStart[s]) + '9:' + col(secEnd[s]) + '9', bold: true, italic: true, border: { bottom: true, color: W.black, style: 'medium' } });
+  });
+  var widths = [W.widths.margin];
+  cols.forEach(function (c, i) {
+    var letter = col(i);
+    if (!c) { widths.push(W.widths.gap); return; }
+    widths.push(W.widths.data);
+    if (c.check) styles.push({ range: letter + '10', italic: true, wrap: true, valign: 'middle' });
+    else styles.push({ range: letter + '10', bg: W.orange, color: W.white, bold: true, wrap: true, valign: 'middle', border: { top: true, left: true, bottom: true, right: true, color: W.grey, style: 'thin' } });
+    if (c.num && lines.length) styles.push({ range: letter + first + ':' + letter + last, numberFormat: W.numFmt });
+  });
+  var rowHeights = { 6: W.rowH.title, 7: W.rowH.title, 9: W.rowH.title, 10: W.rowH.header };
+  for (var k = first; k <= last; k++) rowHeights[k] = W.rowH.data;
+
+  return {
+    name: name, rows: rows, header: false, freezeRows: first - 1, gridlines: false,
+    font: W.font, colWidths: widths, rowHeights: rowHeights, styles: styles,
+    images: [{ b64: (typeof JUMIA_LOGO_PNG_B64 === 'string') ? JUMIA_LOGO_PNG_B64 : '', mime: 'image/png', name: 'jumia.png', col: 1, row: 1, offX: 9, offY: 7, width: 264, height: 79 }].filter(function (im) { return im.b64; })
+  };
 }

@@ -185,11 +185,17 @@ unpaid; same insurance-join method as Flow A). Routing seeded by `seedFlowC()` /
 statement/NAV windows are bounded by hop-1 dates (`flowCWindow_`: RING −1/+1 month, NAV −1/+3 months — NAV's
 index leads on `Posting Date, Chart of Accounts No_`). Literal statement codes beat an `IN (subquery)` (412 s vs
 605 s); the unbounded literal shapes ran 5–7 min, so expect the first executions to return *pending* and resume.
-Evidence = ONE workbook per request (`Summary - Retail`, `Summary - MPL`, raw `SOI` / `NAV_PostedSalesInvoices` /
-`NAV_PostedSalesInvoiceLine` / `NAV_Retail` / `RING` / `NAV` tabs) attached to every system task; the auditor
-export copies it **once** into `Reconciliation (system)/` at the export root (every sample's row points there —
-`auditExport` dedupes by file id). Workbook styling/formulas/logo are a planned later pass. Deep detail in the
-**`flow-c-revenue-soi` memory**.
+Evidence = ONE workbook per request, modelled on the reviewer's own file: `REC - MPL` / `REC - Retail` (Jumia
+logo from `Assets.js` over A1:D5, title + period, four numbered section bands with a medium bottom rule, orange
+`#FF6D01` header band with white bold text, Calibri 8, gridlines off, frozen at row 10, `#,##0 ;(#,##0);"-" `
+— **no decimals**, every figure a **live formula** into the raw tabs: `VLOOKUP` on `SOI!B:H` for the unit price,
+`SUMIFS` on RING / NAV / invoice tabs; a 4th **workbook-only** check "NAV completeness" = document nets to zero),
+a `Data Extractions ->` divider tab, then raw `SOI` / `NAV_PostedSalesInvoices` / `NAV_PostedSalesInvoiceLine` /
+`NAV_Retail` / `RING` / `NAV` (bold frozen header, autofilter, `yyyy-mm-dd`). Layouts live in `flowCMplLayout_` /
+`flowCRetailLayout_` (column letters = the raw tabs' query columns — keep in sync with the SELECTs); the
+renderer is the generic `buildXlsxFile_` sheet spec (rows with `=` formulas, styles, widths, images…). The
+auditor export copies the workbook **once** into `Reconciliation (system)/` at the export root (every sample's
+row points there — `auditExport` dedupes by file id). Deep detail in the **`flow-c-revenue-soi` memory**.
 
 ## Roadmap / next
 - **Flow C first real run**: `setup()` (adds `Requests.stages_json`) → `seedFlowC()` → run the H1 2026 sample on

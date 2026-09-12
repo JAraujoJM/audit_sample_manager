@@ -336,41 +336,99 @@ function runStages_(mod, mapped, qp, st, p, deadline, ctx) {
 }
 
 /**
- * Build an .xlsx from plain row arrays: a throwaway Google Sheet (one tab per sheet,
- * written in chunks, numeric-looking text coerced to numbers), exported through Drive
- * and saved into `folder`. Used for the system-evidence workbook (Flow C). Returns the File.
+ * Build an .xlsx from sheet specs: a throwaway Google Sheet (one tab per spec), exported
+ * through Drive and saved into `folder`. Returns the File. Used for the system-evidence
+ * workbook (Flow C).
+ *
+ * Minimal spec = { name, rows }: a grid of values. Strings beginning with '=' are FORMULAS
+ * (SpreadsheetApp parses them, numbers and dates, like typed input). Optional presentation,
+ * all of which survives the .xlsx export:
+ *   header      bold first row (default true)        freezeRows  (default 1 when header)
+ *   autoFilter  filter on the grid                    tabColor    '#rrggbb'
+ *   gridlines   false hides them                      font        { family, size } for the grid
+ *   colWidths   [px, px, …] by column (0 = leave)     rowHeights  { rowNumber: px }
+ *   dateCols    'auto' → every column whose header contains "date" gets yyyy-mm-dd
+ *   styles      [{ range:'B10:F10', bg, color, bold, italic, wrap, valign, halign, numberFormat,
+ *                  border:{ top,left,bottom,right (bool), color, style:'thin'|'medium' } }]
+ *   images      [{ b64, mime, col, row, offX, offY, width, height }] — over-grid pictures
+ * Formulas are evaluated before the export so the file opens with values already in it.
  */
 function buildXlsxFile_(name, sheets, folder) {
   var ss = SpreadsheetApp.create(name);
   try {
-    var first = true;
+    var first = true, hasFormula = false;
     sheets.forEach(function (sh) {
       var rows = (sh.rows || []).filter(function (r) { return r && r.length; });
       var width = 0; rows.forEach(function (r) { if (r.length > width) width = r.length; });
       var s = first ? ss.getSheets()[0].setName(String(sh.name).slice(0, 99)) : ss.insertSheet(String(sh.name).slice(0, 99));
       first = false;
-      if (!rows.length || !width) return;
-      var CH = 4000;
-      for (var r0 = 0; r0 < rows.length; r0 += CH) {
-        var chunk = rows.slice(r0, r0 + CH).map(function (r, i) {
-          var o = r.slice(0, width); while (o.length < width) o.push('');
-          return o.map(function (v) {
-            if (v === null || v === undefined) return '';
-            if (r0 + i > 0 && typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v) && v.length < 16) return Number(v);
-            return v;
+      if (sh.tabColor) s.setTabColor(sh.tabColor);
+      if (sh.gridlines === false) s.setHiddenGridlines(true);
+      var header = sh.header !== false;
+      if (rows.length && width) {
+        var CH = 4000;
+        for (var r0 = 0; r0 < rows.length; r0 += CH) {
+          var chunk = rows.slice(r0, r0 + CH).map(function (r, i) {
+            var o = r.slice(0, width); while (o.length < width) o.push('');
+            return o.map(function (v) {
+              if (v === null || v === undefined) return '';
+              if (typeof v === 'string' && v.charAt(0) === '=') { hasFormula = true; return v; }
+              if (r0 + i > 0 && typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v) && v.length < 16) return Number(v);
+              return v;
+            });
           });
-        });
-        s.getRange(r0 + 1, 1, chunk.length, width).setValues(chunk);
+          s.getRange(r0 + 1, 1, chunk.length, width).setValues(chunk);
+        }
+        if (header) s.getRange(1, 1, 1, width).setFontWeight('bold');
+        var fr = (sh.freezeRows !== undefined) ? sh.freezeRows : (header ? 1 : 0);
+        if (fr) s.setFrozenRows(fr);
+        if (sh.autoFilter && rows.length > 1) { try { s.getRange(1, 1, rows.length, width).createFilter(); } catch (e) {} }
+        if (sh.dateCols === 'auto' && header && rows.length > 1) {
+          rows[0].forEach(function (h, i) { if (/date/i.test(String(h))) s.getRange(2, i + 1, rows.length - 1, 1).setNumberFormat('yyyy-mm-dd'); });
+        }
+        if (sh.font) {
+          var all = s.getRange(1, 1, rows.length, width);
+          if (sh.font.family) all.setFontFamily(sh.font.family);
+          if (sh.font.size) all.setFontSize(sh.font.size);
+        }
       }
-      s.setFrozenRows(1); s.getRange(1, 1, 1, width).setFontWeight('bold');
+      (sh.colWidths || []).forEach(function (px, i) { if (px) s.setColumnWidth(i + 1, px); });
+      Object.keys(sh.rowHeights || {}).forEach(function (r) { s.setRowHeight(Number(r), sh.rowHeights[r]); });
+      (sh.styles || []).forEach(function (st) { try { applyCellStyle_(s.getRange(st.range), st); } catch (e) {} });
+      (sh.images || []).forEach(function (im) {
+        try {
+          var blob = Utilities.newBlob(Utilities.base64Decode(im.b64), im.mime || 'image/png', im.name || 'image.png');
+          var img = s.insertImage(blob, im.col || 1, im.row || 1, im.offX || 0, im.offY || 0);
+          if (im.width) img.setWidth(im.width);
+          if (im.height) img.setHeight(im.height);
+        } catch (e) { logActivity('WORKBOOK_IMAGE_FAILED', 'file', name, String(e)); }
+      });
     });
     SpreadsheetApp.flush();
+    if (hasFormula) { try { ss.getSheets().forEach(function (s) { s.getDataRange().getValues(); }); } catch (e) {} }   // force the calc so the export carries values
     var resp = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + ss.getId() + '/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
     if (resp.getResponseCode() >= 300) throw new Error('Could not export the workbook (HTTP ' + resp.getResponseCode() + ').');
     return folder.createFile(resp.getBlob().setName(sanitizeName_(name) + '.xlsx'));
   } finally {
     try { DriveApp.getFileById(ss.getId()).setTrashed(true); } catch (e) {}
+  }
+}
+/** One style directive of a buildXlsxFile_ sheet spec applied to a Range. */
+function applyCellStyle_(rg, st) {
+  if (st.bg) rg.setBackground(st.bg);
+  if (st.color) rg.setFontColor(st.color);
+  if (st.bold !== undefined) rg.setFontWeight(st.bold ? 'bold' : 'normal');
+  if (st.italic !== undefined) rg.setFontStyle(st.italic ? 'italic' : 'normal');
+  if (st.fontSize) rg.setFontSize(st.fontSize);
+  if (st.wrap) rg.setWrap(true);
+  if (st.valign) rg.setVerticalAlignment(st.valign);
+  if (st.halign) rg.setHorizontalAlignment(st.halign);
+  if (st.numberFormat) rg.setNumberFormat(st.numberFormat);
+  if (st.border) {
+    var b = st.border, f = function (v) { return v === undefined ? null : !!v; };
+    rg.setBorder(f(b.top), f(b.left), f(b.bottom), f(b.right), f(b.vertical), f(b.horizontal),
+      b.color || '#000000', b.style === 'medium' ? SpreadsheetApp.BorderStyle.SOLID_MEDIUM : SpreadsheetApp.BorderStyle.SOLID);
   }
 }
 
