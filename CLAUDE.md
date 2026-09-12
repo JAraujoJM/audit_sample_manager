@@ -167,13 +167,17 @@ subpopulations, owners, phase-by-phase build log) is in the **`flow-b-cash-ancho
 Input = `ID_COMPANY` + `COD_OMS_SALES_ORDER_ITEM` (Flow B's paste format). **Stage 1** `RPT_SOI` (the base
 TABLE — `V_RPT_SOI` lacks `IS_MARKETPLACE`) → unit price + Retail/Marketplace split (`subpopulation`).
 **Retail**: NAV `Posted Sales Invoices` + `Posted Sales Invoice Line` (`AIG_Nav_DW`, keyed on
-`id_company` + `No_`/`Document No_` = `PACKAGE_NUMBER`; sampled line = `Line No_` = `COD_BOB_SALES_ORDER_ITEM`);
-checks: line amount incl. VAT = unit price; header = Σ lines. **Marketplace**: hop 1 `ringcodes` (item → statement
-code, + PO/down payment for those few items — the text `notes` join lives HERE, not on the big query), then in
-parallel hop 2 `ring` (all transactions of those statements: MPL type via the insurance join, payout, balances)
-and `gl` (NAV `G_L Entries`, account **18314**, `Document No_` = `'IS' + code.slice(2)`, source PURCHASES);
-checks: Item Price Credit = unit price; opening + Σ by `Nav_Type` = closing; NAV 18314 = −REVENUES. Tolerance
-`FLOWC_TOLERANCE = 5` (|diff| ≤ 5 → match; else variance — verdict `uncertain`, never reject). Then Flow A's
+`id_company` + `No_`/`Document No_` = `PACKAGE_NUMBER`; sampled line = `Line No_` = `COD_BOB_SALES_ORDER_ITEM`;
+lines with `Quantity = 0` are filtered out) + `glr` = the invoice's `G_L Entries` (source **SALES**, all accounts;
+the receivable accounts `FLOWC_RETAIL_AR_ACCOUNTS = ['13003','13005']` sum to the invoice total incl. VAT).
+Checks: *NAV invoice item VS SOI*; *Invoice header VS Invoice items*; *Invoice header VS NAV GL entries*.
+**Marketplace**: hop 1 `ringcodes` (item → statement code, + PO/down payment for those few items — the text
+`notes` join lives HERE, not on the big query), then in parallel hop 2 `ring` (all transactions of those
+statements: MPL type via the insurance join, payout, balances) and `gl` (NAV `G_L Entries`, **all accounts** of
+`Document No_` = `'IS' + code.slice(2)`, source PURCHASES — 18314 is the reconciled one, the rest shows the
+document nets to zero). Checks: *Item Price Credit (RING) VS SOI*; *RING transactions VS RING statement*;
+*NAV revenue VS RING revenue*. Tolerance `FLOWC_TOLERANCE = 5` (|diff| ≤ 5 → match; else variance — verdict
+`uncertain`, never reject). Then Flow A's
 task rules on the marketplace items (advance → contract + down-payment; regular → PoP, or VC screenshot when
 unpaid; same insurance-join method as Flow A). Routing seeded by `seedFlowC()` / `reseedFlowCRouting()`.
 **Query performance rules (measured on the gateway):** every WHERE names the sampled companies
@@ -182,7 +186,9 @@ statement/NAV windows are bounded by hop-1 dates (`flowCWindow_`: RING −1/+1 m
 index leads on `Posting Date, Chart of Accounts No_`). Literal statement codes beat an `IN (subquery)` (412 s vs
 605 s); the unbounded literal shapes ran 5–7 min, so expect the first executions to return *pending* and resume.
 Evidence = ONE workbook per request (`Summary - Retail`, `Summary - MPL`, raw `SOI` / `NAV_PostedSalesInvoices` /
-`NAV_PostedSalesInvoiceLine` / `RING` / `NAV` tabs) attached to every system task. Deep detail in the
+`NAV_PostedSalesInvoiceLine` / `NAV_Retail` / `RING` / `NAV` tabs) attached to every system task; the auditor
+export copies it **once** into `Reconciliation (system)/` at the export root (every sample's row points there —
+`auditExport` dedupes by file id). Workbook styling/formulas/logo are a planned later pass. Deep detail in the
 **`flow-c-revenue-soi` memory**.
 
 ## Roadmap / next

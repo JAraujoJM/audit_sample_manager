@@ -716,10 +716,15 @@ function auditExport(requestId) {
           String(u.payment_date || '').slice(0, 10), u.bank_account || '', u.payment_ref || '', det.order_nr || '',
           [det.jp_gateway, det.jp_provider].filter(Boolean).join(' / '), a.assigned_to || '', a.status,
           files.map(function (e) { return e.file_name; }).join(', ')]);
+        // App-produced evidence (Flow C's reconciliation workbook) is ONE file shared by every
+        // system task of the request: it goes once into 'Reconciliation (system)/' at the export
+        // root and every sample's row points to that same path — no per-sample copies.
+        var isSystem = u.kind === 'system';
         files.forEach(function (e) {
           var soiDir = sanitizeName_(l.document_no), taskDir = sanitizeName_(taskLabel), fName = sanitizeName_(e.file_name);
-          evFiles.push({ fileId: e.file_id, soi: soiDir, task: taskDir, fileName: fName });
-          R3.push([l.document_no, a.evidence_type, u.payment_no || '', e.slot || '', e.file_name, e.uploaded_by || '', toDateStr_(e.uploaded_at, tz), 'Evidence/' + soiDir + '/' + taskDir + '/' + fName]);
+          var path = isSystem ? ('Reconciliation (system)/' + fName) : ('Evidence/' + soiDir + '/' + taskDir + '/' + fName);
+          evFiles.push({ fileId: e.file_id, soi: soiDir, task: taskDir, fileName: fName, system: isSystem, path: path });
+          R3.push([l.document_no, a.evidence_type, u.payment_no || '', e.slot || '', e.file_name, e.uploaded_by || '', toDateStr_(e.uploaded_at, tz), path]);
         });
       });
     });
@@ -795,16 +800,23 @@ function auditExport(requestId) {
     var extFolder = extraction.length ? outFolder.createFolder('Extraction') : null;
     extraction.forEach(function (p) { try { DriveApp.getFileById(p[0]).makeCopy(p[1], extFolder); } catch (e) {} });
 
-    var dirCache = {}, copied = 0, missing = 0, totalBytes = 0;
-    var evRoot = evFiles.length ? outFolder.createFolder('Evidence') : null;
+    var dirCache = {}, copied = 0, missing = 0, totalBytes = 0, seenFile = {};
+    var evRoot = evFiles.some(function (f) { return !f.system; }) ? outFolder.createFolder('Evidence') : null;
+    var sysRoot = null;
     evFiles.forEach(function (f) {
+      if (seenFile[f.fileId]) return;                       // one Drive copy per distinct file
       try {
-        var soiF = dirCache[f.soi] || (dirCache[f.soi] = evRoot.createFolder(f.soi));
-        var tk = f.soi + ' ' + f.task;
-        var taskF = dirCache[tk] || (dirCache[tk] = soiF.createFolder(f.task));
+        var dest;
+        if (f.system) {
+          dest = sysRoot || (sysRoot = outFolder.createFolder('Reconciliation (system)'));
+        } else {
+          var soiF = dirCache[f.soi] || (dirCache[f.soi] = evRoot.createFolder(f.soi));
+          var tk = f.soi + ' ' + f.task;
+          dest = dirCache[tk] || (dirCache[tk] = soiF.createFolder(f.task));
+        }
         var src = DriveApp.getFileById(f.fileId);
         try { totalBytes += Number(src.getSize()) || 0; } catch (e) {}
-        src.makeCopy(f.fileName, taskF); copied++;
+        src.makeCopy(f.fileName, dest); copied++; seenFile[f.fileId] = true;
       } catch (err) { missing++; }
     });
 
@@ -823,7 +835,8 @@ function auditExport(requestId) {
       try {
         var zipBlobs = [xlsxBlob.copyBlob().setName(zipName + '.xlsx')];
         extraction.forEach(function (p) { try { var b = DriveApp.getFileById(p[0]).getBlob().copyBlob(); b.setName('Extraction/' + p[1]); zipBlobs.push(b); } catch (e) {} });
-        evFiles.forEach(function (f) { try { var b = DriveApp.getFileById(f.fileId).getBlob().copyBlob(); b.setName('Evidence/' + f.soi + '/' + f.task + '/' + f.fileName); zipBlobs.push(b); } catch (e) {} });
+        var zipped = {};
+        evFiles.forEach(function (f) { if (zipped[f.fileId]) return; try { var b = DriveApp.getFileById(f.fileId).getBlob().copyBlob(); b.setName(f.path); zipBlobs.push(b); zipped[f.fileId] = true; } catch (e) {} });
         var zip = Utilities.zip(zipBlobs, zipName + '.zip');
         download = { name: zip.getName(), mime: 'application/zip', dataUrl: 'data:application/zip;base64,' + Utilities.base64Encode(zip.getBytes()) };
       } catch (e) { download = null; }   // fall back to the Drive link

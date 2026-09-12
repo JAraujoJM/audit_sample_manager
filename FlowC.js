@@ -41,6 +41,9 @@
  */
 var FLOWC_TOLERANCE = 5;          // |difference| at or below this is a match (currency units)
 var FLOWC_NAV_ACCOUNT = '18314';  // G/L account carrying the marketplace revenue per statement
+// Retail: the receivable-side accounts of a posted sales invoice in NAV — their sum equals the
+// invoice total incl. VAT (the auditor's "(Multiple Items)" filter). Adjust here if the chart changes.
+var FLOWC_RETAIL_AR_ACCOUNTS = ['13003', '13005'];
 
 function flowC_() {
   return {
@@ -87,6 +90,12 @@ function flowC_() {
         refs: function (mapped) { return flowCRetailPackages_(mapped); },
         buildQuery: function (refs, p) { return flowCQueryInvoiceLines_(refs, p); },
         fold: function (csv, cell, mapped, ctx) { flowCFoldInvoiceLines_(csv, cell, mapped, ctx); }
+      },
+      {
+        tag: 'glr', label: 'NAV G/L entries (retail invoices)', server: 'finrec', database: 'AIG_Nav_DW',
+        refs: function (mapped, ctx) { ctx.data.retailDates = flowCRetailDates_(mapped); return flowCRetailPackages_(mapped); },
+        buildQuery: function (refs, p, ctx) { return flowCQueryGlRetail_(refs, p, ctx); },
+        fold: function (csv, cell, mapped, ctx) { flowCFoldGlRetail_(csv, cell, mapped, ctx); }
       },
       {
         tag: 'ringcodes', label: 'RING — sampled items → statements', server: 'finrec', database: 'AIG_Nav_Jumia_Reconciliation',
@@ -178,6 +187,17 @@ function flowCRetailPackages_(mapped) {
   });
   return out;
 }
+/** Delivered-date span of the retail items — bounds the retail G/L posting window. */
+function flowCRetailDates_(mapped) {
+  var min = '', max = '';
+  mapped.forEach(function (mr) {
+    if (!mr.found || mr.mapped.subpopulation !== 'Retail') return;
+    var d = String(mr.mapped.delivered_date || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+    if (!min || d < min) min = d; if (!max || d > max) max = d;
+  });
+  return min ? { min: min, max: max } : null;
+}
 function flowCMplItems_(mapped) {
   var out = [];
   mapped.forEach(function (mr) {
@@ -244,14 +264,66 @@ function flowCQueryInvoiceLines_(refs, p) {
 "      ,l.[Amount]",
 "      ,l.[Amount Including VAT]",
 "      ,l.[VAT Base Amount]",
+"      ,l.[VAT Prod_ Posting Group]",
 "      ,l.[OMS Order No_]",
 "      ,l.[Order Line No_]",
 "      ,CONVERT(date, l.[Posting Date]) AS 'Posting Date'",
 "  FROM [AIG_Nav_DW].[dbo].[Posted Sales Invoice Line] l",
 " WHERE l.[id_company] IN (" + flowCCompanyList_(refs) + ")",
 "   AND l.[Posting Date] >= " + S,
+"   AND l.[Quantity] <> 0",                       // zero-quantity lines carry no amount — noise for the reconciliation
 "   AND " + flowCTuples_(refs, 'l.[id_company]', 'l.[Document No_]', 'package', false)
   ].join('\n');
+}
+/** Retail G/L: every entry of each posted sales invoice (source SALES, document = package number),
+ *  all accounts — the document must net to zero, and the receivable accounts must equal the
+ *  invoice total incl. VAT. Posting window = the items' delivered dates −1 / +3 months. */
+function flowCQueryGlRetail_(refs, p, ctx) {
+  var W = flowCWindow_(p, ctx, 1, 3, 'retailDates');
+  return [
+"SELECT g.[id_company]",
+"      ,g.[Entry No_]",
+"      ,g.[Document No_]",
+"      ,CONVERT(date, g.[Posting Date]) AS 'Posting Date'",
+"      ,g.[Document Type]",
+"      ,g.[Amount]",
+"      ,g.[Chart of Accounts No_]",
+"      ,g.[Account Name]",
+"      ,g.[Bal_ Account Type]",
+"      ,g.[Bal_ Account No_]",
+"      ,g.[Source Code]",
+"      ,g.[Source Type]",
+"      ,g.[Source No]",
+"      ,g.[Document Description]",
+"      ,g.[External Document No_]",
+"      ,g.[VAT Amount]",
+"      ,g.[VAT Prod_ Posting Group]",
+"      ,g.[VAT Bus_ Posting Group]",
+"  FROM [AIG_Nav_DW].[dbo].[G_L Entries] g",
+" WHERE g.[Posting Date] >= " + W.lo,
+"   AND g.[Posting Date] <  " + W.hi,
+"   AND g.[id_company] IN (" + flowCCompanyList_(refs) + ")",
+"   AND g.[Source Code] = 'SALES'",
+"   AND " + flowCTuples_(refs, 'g.[id_company]', 'g.[Document No_]', 'package', false)
+  ].join('\n');
+}
+function flowCFoldGlRetail_(csv, cell, mapped, ctx) {
+  var g = {};
+  for (var r = 1; r < csv.length; r++) {
+    var row = csv[r]; if (!row || row.length < 2) continue;
+    var c = cell(row), k = flowCUp_(c('id_company')) + '|' + flowCUp_(c('Document No_'));
+    var a = g[k] = g[k] || { total: 0, ar: 0, n: 0 };
+    var amt = flowCNum_(c('Amount')) || 0;
+    a.total = flowCRound_(a.total + amt); a.n++;
+    if (FLOWC_RETAIL_AR_ACCOUNTS.indexOf(String(c('Chart of Accounts No_')).trim()) !== -1) a.ar = flowCRound_(a.ar + amt);
+  }
+  ctx.data.glrRows = csv;
+  mapped.forEach(function (mr) {
+    if (!mr.found || mr.mapped.subpopulation !== 'Retail') return;
+    var m = mr.mapped, a = g[flowCUp_(m.company) + '|' + flowCUp_(m.package_number)];
+    if (!a) return;
+    m.glr_receivable = a.ar; m.glr_total = a.total; m.glr_entries = a.n;
+  });
 }
 function flowCFoldInvoices_(csv, cell, mapped, ctx) {
   var inv = {};
@@ -336,8 +408,8 @@ function flowCQueryRingCodes_(refs, p) {
 /** Date window for the statement-level queries: the sampled items' RING dates ± a margin
  *  (a statement's transactions all fall in its own week; NAV posts shortly after it closes).
  *  Falls back to the period when hop 1 gave no dates. Returns SQL literals. */
-function flowCWindow_(p, ctx, beforeMonths, afterMonths) {
-  var d = ctx && ctx.data && ctx.data.codeDates;
+function flowCWindow_(p, ctx, beforeMonths, afterMonths, key) {
+  var d = ctx && ctx.data && ctx.data[key || 'codeDates'];
   var lo = (d && d.min) ? d.min : p.fyStart, hi = (d && d.max) ? d.max : p.fyEnd;
   return { lo: "DATEADD(MONTH, -" + beforeMonths + ", '" + lo + "')", hi: "DATEADD(MONTH, " + afterMonths + ", '" + hi + "')" };
 }
@@ -390,10 +462,10 @@ function flowCQueryRing_(refs, p, ctx) {
 "   AND " + flowCTuples_(refs, 't.[ID_Company]', 't.[Payout_Statement_Code]', 'code', false)
   ].join('\n');
 }
-/** NAV G/L: the 'IS…' document of each statement (source PURCHASES) on the revenue account.
- *  The table's index leads on (Posting Date, Chart of Accounts No_), so bounding the posting
- *  window to the statements' dates (-1 / +3 months) AND naming the account is what makes this
- *  a seek instead of a multi-minute scan. */
+/** NAV G/L: every entry of the 'IS…' document of each statement (source PURCHASES), ALL accounts —
+ *  the reconciliation uses account 18314, the rest shows the document nets to zero. The table's
+ *  index leads on Posting Date, so bounding the posting window to the statements' dates
+ *  (-1 / +3 months) is what keeps this a range seek instead of a multi-minute scan. */
 function flowCQueryGl_(refs, p, ctx) {
   var W = flowCWindow_(p, ctx, 1, 3);
   var isRefs = refs.map(function (r) { return { company: r.company, isdoc: flowCIsDoc_(r.code) }; });
@@ -415,7 +487,6 @@ function flowCQueryGl_(refs, p, ctx) {
 "  FROM [AIG_Nav_DW].[dbo].[G_L Entries] g",
 " WHERE g.[Posting Date] >= " + W.lo,
 "   AND g.[Posting Date] <  " + W.hi,
-"   AND g.[Chart of Accounts No_] = " + sqlLiteral_(FLOWC_NAV_ACCOUNT),
 "   AND g.[id_company] IN (" + flowCCompanyList_(isRefs) + ")",
 "   AND g.[Source Code] = 'PURCHASES'",
 "   AND " + flowCTuples_(isRefs, 'g.[id_company]', 'g.[Document No_]', 'isdoc', false)
@@ -518,16 +589,17 @@ function flowCFinalize_(mapped, ctx) {
     var m = mr.mapped, price = flowCNum_(m.amount), checks;
     if (m.subpopulation === 'Retail') {
       checks = [
-        flowCCheck_('Invoice line (BOB item) = unit price', m.inv_line_amount, price, m.inv_line_amount === undefined ? 'No invoice line found for the BOB item' : ''),
-        flowCCheck_('Invoice total = sum of its lines', m.inv_total, m.inv_lines_total, m.inv_total === undefined ? 'No posted sales invoice found for the package' : '')
+        flowCCheck_('NAV invoice item VS SOI', m.inv_line_amount, price, m.inv_line_amount === undefined ? 'No invoice line found for the BOB item' : ''),
+        flowCCheck_('Invoice header VS Invoice items', m.inv_total, m.inv_lines_total, m.inv_total === undefined ? 'No posted sales invoice found for the package' : ''),
+        flowCCheck_('Invoice header VS NAV GL entries', m.inv_total, m.glr_receivable, m.glr_receivable === undefined ? 'No G/L entries (SALES) found for the invoice' : (m.glr_total ? 'G/L document does not net to zero (' + m.glr_total + ')' : ''))
       ];
     } else {
       var stmtSum = (m.opening_balance === undefined || m.opening_balance === null) ? null
         : flowCRound_((m.opening_balance || 0) + (m.stmt_liabilities || 0) + (m.stmt_revenues || 0) + (m.stmt_other || 0));
       checks = [
-        flowCCheck_('Item Price Credit (RING) = unit price', m.ipc_amount, price, m.ipc_amount === undefined ? 'No Item Price Credit transaction found for the item' : ''),
-        flowCCheck_('Statement transactions = closing balance', stmtSum, m.closing_balance, !m.statement ? 'Item not found on any statement' : ''),
-        flowCCheck_('NAV revenue (' + FLOWC_NAV_ACCOUNT + ') = statement revenues', m.nav_amount, (m.stmt_revenues === undefined ? null : -m.stmt_revenues), m.nav_amount === undefined ? 'No G/L entries found for ' + (m.nav_doc || 'the statement document') : '')
+        flowCCheck_('Item Price Credit (RING) VS SOI', m.ipc_amount, price, m.ipc_amount === undefined ? 'No Item Price Credit transaction found for the item' : ''),
+        flowCCheck_('RING transactions VS RING statement', stmtSum, m.closing_balance, !m.statement ? 'Item not found on any statement' : ''),
+        flowCCheck_('NAV revenue VS RING revenue', m.nav_amount, (m.stmt_revenues === undefined ? null : -m.stmt_revenues), m.nav_amount === undefined ? 'No G/L entries found for ' + (m.nav_doc || 'the statement document') : (m.nav_total ? 'G/L document does not net to zero (' + m.nav_total + ')' : ''))
       ];
     }
     m.checks = checks;
@@ -548,25 +620,28 @@ function flowCWorkbook_(mapped, ctx) {
   var v = function (x) { return (x === null || x === undefined) ? '' : x; };
   var res = function (cs) { return cs.every(function (c) { return c.status === 'match'; }) ? 'OK' : cs.some(function (c) { return c.status === 'missing'; }) ? 'MISSING DATA' : 'VARIANCE'; };
   var retail = [['ID_COMPANY', 'COD_OMS_SALES_ORDER_ITEM', 'COD_BOB_SALES_ORDER_ITEM', 'COD_SKU', 'PACKAGE_NUMBER', 'MTR_UNIT_PRICE',
-                 'Invoice No_', 'Invoice line amount incl. VAT (BOB item)', 'Check 1: line − unit price', 'Invoice lines total', 'Invoice header total incl. VAT', 'Check 2: header − lines', 'Result']];
-  var mpl = [['ID_COMPANY', 'COD_OMS_SALES_ORDER_ITEM', 'COD_SKU', 'PACKAGE_NUMBER', 'MTR_UNIT_PRICE', 'Item Price Credit (RING)', 'Check 1: IPC − unit price',
-              'Payout_Statement_Code', 'Statement Opening Balance', 'LIABILITIES', 'REVENUES', 'Other', 'Statement Closing Balance', 'Check 2: transactions − closing',
-              'NAV document', 'NAV ' + FLOWC_NAV_ACCOUNT + ' amount', 'Check 3: NAV − (−REVENUES)', 'MPL type', 'Return Protection Fee on statement', 'Paid_At_Date', 'Payout_Method', 'Payment_Reference', 'PO_NUMBER', 'Down payment', 'Result']];
+                 'Invoice No_', 'NAV invoice item incl. VAT', 'Check 1: NAV invoice item VS SOI', 'Invoice items total', 'Invoice header incl. VAT', 'Check 2: Invoice header VS Invoice items',
+                 'NAV GL receivables (' + FLOWC_RETAIL_AR_ACCOUNTS.join('+') + ')', 'NAV GL document total (all accounts)', 'Check 3: Invoice header VS NAV GL entries', 'Result']];
+  var mpl = [['ID_COMPANY', 'COD_OMS_SALES_ORDER_ITEM', 'COD_SKU', 'PACKAGE_NUMBER', 'MTR_UNIT_PRICE', 'Item Price Credit (RING)', 'Check 1: Item Price Credit (RING) VS SOI',
+              'Payout_Statement_Code', 'Statement Opening Balance', 'LIABILITIES', 'REVENUES', 'Other', 'Statement Closing Balance', 'Check 2: RING transactions VS RING statement',
+              'NAV document', 'NAV revenue (' + FLOWC_NAV_ACCOUNT + ')', 'NAV document total (all accounts)', 'Check 3: NAV revenue VS RING revenue', 'MPL type', 'Return Protection Fee on statement', 'Paid_At_Date', 'Payout_Method', 'Payment_Reference', 'PO_NUMBER', 'Down payment', 'Result']];
   mapped.forEach(function (mr) {
     if (!mr.found) return;
     var m = mr.mapped, c = m.checks || [];
     if (m.subpopulation === 'Retail') {
-      retail.push([m.company, m.document_no, m.bob_soi, m.sku, m.package_number, v(flowCNum_(m.amount)), v(m.inv_no), v(m.inv_line_amount), v(c[0] && c[0].diff), v(m.inv_lines_total), v(m.inv_total), v(c[1] && c[1].diff), res(c)]);
+      retail.push([m.company, m.document_no, m.bob_soi, m.sku, m.package_number, v(flowCNum_(m.amount)), v(m.inv_no), v(m.inv_line_amount), v(c[0] && c[0].diff), v(m.inv_lines_total), v(m.inv_total), v(c[1] && c[1].diff),
+                   v(m.glr_receivable), v(m.glr_total), v(c[2] && c[2].diff), res(c)]);
     } else {
       mpl.push([m.company, m.document_no, m.sku, m.package_number, v(flowCNum_(m.amount)), v(m.ipc_amount), v(c[0] && c[0].diff),
                 v(m.statement), v(m.opening_balance), v(m.stmt_liabilities), v(m.stmt_revenues), v(m.stmt_other), v(m.closing_balance), v(c[1] && c[1].diff),
-                v(m.nav_doc), v(m.nav_amount), v(c[2] && c[2].diff), v(m.mpl), v(m.has_rpf), v(m.paid_at), v(m.payout_method), v(m.payment_ref), v(m.po), v(m.downpay), res(c)]);
+                v(m.nav_doc), v(m.nav_amount), v(m.nav_total), v(c[2] && c[2].diff), v(m.mpl), v(m.has_rpf), v(m.paid_at), v(m.payout_method), v(m.payment_ref), v(m.po), v(m.downpay), res(c)]);
     }
   });
   var sheets = [{ name: 'Summary - Retail', rows: retail }, { name: 'Summary - MPL', rows: mpl }];
   if (ctx.csv1) sheets.push({ name: 'SOI', rows: ctx.csv1 });
   if (d.invRows)  sheets.push({ name: 'NAV_PostedSalesInvoices', rows: d.invRows });
   if (d.invlRows) sheets.push({ name: 'NAV_PostedSalesInvoiceLine', rows: d.invlRows });
+  if (d.glrRows)  sheets.push({ name: 'NAV_Retail', rows: d.glrRows });
   if (d.ringRows) sheets.push({ name: 'RING', rows: d.ringRows });
   if (d.glRows)   sheets.push({ name: 'NAV', rows: d.glRows });
   return { name: 'Reconciliation - ' + ((ctx.requestRef || '').trim() || (ctx.flow && ctx.flow.name) || 'Flow C'), sheets: sheets };
