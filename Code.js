@@ -356,12 +356,21 @@ function runStages_(mod, mapped, qp, st, p, deadline, ctx) {
 function buildXlsxFile_(name, sheets, folder) {
   var ss = SpreadsheetApp.create(name);
   try {
-    var first = true, hasFormula = false;
-    sheets.forEach(function (sh) {
+    // Formulas are parsed the moment they are written, so every tab they may point at must
+    // already exist: create ALL tabs first (in the requested order), fill the plain-data tabs,
+    // and only then write the tabs that contain formulas. US formula syntax regardless of the
+    // deployer's locale.
+    try { ss.setSpreadsheetLocale('en_US'); } catch (e) {}
+    var hasFormula = false;
+    var isFormulaSheet = function (sh) { return (sh.rows || []).some(function (r) { return (r || []).some(function (v) { return typeof v === 'string' && v.charAt(0) === '='; }); }); };
+    var tabs = sheets.map(function (sh, i) {
+      return i === 0 ? ss.getSheets()[0].setName(String(sh.name).slice(0, 99)) : ss.insertSheet(String(sh.name).slice(0, 99), i);
+    });
+    var order = sheets.map(function (sh, i) { return i; }).sort(function (a, b) { return (isFormulaSheet(sheets[a]) ? 1 : 0) - (isFormulaSheet(sheets[b]) ? 1 : 0); });
+    order.forEach(function (idx) {
+      var sh = sheets[idx], s = tabs[idx];
       var rows = (sh.rows || []).filter(function (r) { return r && r.length; });
       var width = 0; rows.forEach(function (r) { if (r.length > width) width = r.length; });
-      var s = first ? ss.getSheets()[0].setName(String(sh.name).slice(0, 99)) : ss.insertSheet(String(sh.name).slice(0, 99));
-      first = false;
       if (sh.tabColor) s.setTabColor(sh.tabColor);
       if (sh.gridlines === false) s.setHiddenGridlines(true);
       var header = sh.header !== false;
