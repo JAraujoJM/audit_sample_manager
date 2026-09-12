@@ -348,6 +348,7 @@ function runStages_(mod, mapped, qp, st, p, deadline, ctx) {
  *   gridlines   false hides them                      font        { family, size } for the grid
  *   colWidths   [px, px, …] by column (0 = leave)     rowHeights  { rowNumber: px }
  *   dateCols    'auto' → every column whose header contains "date" gets yyyy-mm-dd
+ *   footNotes   ['text', …] written in column A one blank row below the table (plain font)
  *   styles      [{ range:'B10:F10', bg, color, bold, italic, wrap, valign, halign, numberFormat,
  *                  border:{ top,left,bottom,right (bool), color, style:'thin'|'medium' } }]
  *   images      [{ b64, mime, col, row, offX, offY, width, height }] — over-grid pictures
@@ -394,6 +395,10 @@ function buildXlsxFile_(name, sheets, folder) {
         if (sh.autoFilter && rows.length > 1) { try { s.getRange(1, 1, rows.length, width).createFilter(); } catch (e) {} }
         if (sh.dateCols === 'auto' && header && rows.length > 1) {
           rows[0].forEach(function (h, i) { if (/date/i.test(String(h))) s.getRange(2, i + 1, rows.length - 1, 1).setNumberFormat('yyyy-mm-dd'); });
+        }
+        // footNotes: plain-text lines in column A, one blank row below the table (outside the filter range).
+        if (sh.footNotes && sh.footNotes.length) {
+          s.getRange(rows.length + 2, 1, sh.footNotes.length, 1).setValues(sh.footNotes.map(function (t) { return [String(t)]; })).setFontWeight('normal');
         }
         if (sh.font) {
           var all = s.getRange(1, 1, rows.length, width);

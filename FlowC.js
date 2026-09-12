@@ -633,7 +633,7 @@ var FLOWC_WB = {
   numFmt: '#,##0 ;(#,##0);"-" ',          // integers, negatives in parentheses, zero as a dash (no decimals)
   widths: { margin: 25, data: 114, gap: 74 },
   rowH: { title: 21, header: 30, data: 15 },
-  firstDataRow: 11
+  titleRow: 6, subRow: 7, sectionRow: 9, headerRow: 11, firstDataRow: 12   // row 10 = spacer between sections and headers
 };
 function flowCWorkbook_(mapped, ctx) {
   var d = ctx.data || {};
@@ -646,9 +646,20 @@ function flowCWorkbook_(mapped, ctx) {
     flowCRecSheet_('REC - Retail', title, sub, flowCRetailLayout_(), retailLines),
     { name: 'Data Extractions ->', rows: [], header: false, tabColor: FLOWC_WB.white }
   ];
-  var raw = function (name, rows) { if (rows && rows.length) sheets.push({ name: name, rows: rows, autoFilter: true, dateCols: 'auto' }); };
-  raw('SOI', ctx.csv1); raw('NAV_PostedSalesInvoices', d.invRows); raw('NAV_PostedSalesInvoiceLine', d.invlRows);
-  raw('NAV_Retail', d.glrRows); raw('RING', d.ringRows); raw('NAV', d.glRows);
+  // Each raw tab ends with a source note pointing at the gateway files as they are named in the
+  // audit export's Extraction/ folder (query1_* = stage 1, <stage tag>_* = the dependent queries).
+  var note = function (tag, extra) {
+    return "Source: see files '" + tag + "_result.csv' and '" + tag + "_evidence.xlsx' for the original extraction files, queries and IPEs." + (extra ? ' ' + extra : '');
+  };
+  var raw = function (name, rows, tag, extra) {
+    if (rows && rows.length) sheets.push({ name: name, rows: rows, autoFilter: true, dateCols: 'auto', footNotes: [note(tag, extra)] });
+  };
+  raw('SOI', ctx.csv1, 'query1');
+  raw('NAV_PostedSalesInvoices', d.invRows, 'inv');
+  raw('NAV_PostedSalesInvoiceLine', d.invlRows, 'invl');
+  raw('NAV_Retail', d.glrRows, 'glr');
+  raw('RING', d.ringRows, 'ring', "The statement codes were resolved from the sampled items via 'ringcodes_result.csv' / 'ringcodes_evidence.xlsx'.");
+  raw('NAV', d.glRows, 'gl');
   return { name: 'Reconciliation - ' + ((ctx.requestRef || '').trim() || (ctx.flow && ctx.flow.name) || 'Flow C'), sheets: sheets };
 }
 
@@ -716,19 +727,20 @@ function flowCRetailLayout_() {
 }
 
 /** Render one REC sheet spec (grid + styles + logo) from a layout and its lines. Column A is a
- *  margin; layout columns start at B. Rows: 1-5 logo, 6 title, 7 period, 9 sections, 10 headers, 11+ data. */
+ *  margin; layout columns start at B. Rows (FLOWC_WB): 1-5 logo, 6 title, 7 period, 9 sections,
+ *  10 spacer, 11 headers, 12+ data. */
 function flowCRecSheet_(name, title, sub, layout, lines) {
-  var W = FLOWC_WB, first = W.firstDataRow, cols = layout.cols, width = cols.length + 1;
+  var W = FLOWC_WB, first = W.firstDataRow, HR = W.headerRow, SR = W.sectionRow, cols = layout.cols, width = cols.length + 1;
   var col = function (i) { return String.fromCharCode(65 + i + 1); };            // layout index → letter (B..)
   var blank = function () { var r = []; for (var i = 0; i < width; i++) r.push(''); return r; };
   var rows = [];
   for (var r = 1; r < first; r++) rows.push(blank());
-  rows[5][1] = title; rows[6][1] = sub;                                          // B6, B7
-  cols.forEach(function (c, i) { if (c) rows[9][i + 1] = c.h; });                // row 10 headers
-  // Section titles on row 9, one per section at its first column.
+  rows[W.titleRow - 1][1] = title; rows[W.subRow - 1][1] = sub;
+  cols.forEach(function (c, i) { if (c) rows[HR - 1][i + 1] = c.h; });
+  // Section titles, one per section at its first column.
   var secStart = {}, secEnd = {};
   cols.forEach(function (c, i) { if (!c) return; if (secStart[c.sec] === undefined) secStart[c.sec] = i; secEnd[c.sec] = i; });
-  layout.sections.forEach(function (t, s) { if (secStart[s] !== undefined) rows[8][secStart[s] + 1] = t; });
+  layout.sections.forEach(function (t, s) { if (secStart[s] !== undefined) rows[SR - 1][secStart[s] + 1] = t; });
   lines.forEach(function (m, k) {
     var rn = first + k, row = blank();
     cols.forEach(function (c, i) { if (c) { var v = c.v(m, rn); row[i + 1] = (v === null || v === undefined) ? '' : v; } });
@@ -737,26 +749,27 @@ function flowCRecSheet_(name, title, sub, layout, lines) {
   var last = first + Math.max(lines.length, 1) - 1;
 
   var styles = [
-    { range: 'B6', bold: true }, { range: 'B7', bold: true }
+    { range: 'B' + W.titleRow, bold: true }, { range: 'B' + W.subRow, bold: true }
   ];
   layout.sections.forEach(function (t, s) {
     if (secStart[s] === undefined) return;
-    styles.push({ range: col(secStart[s]) + '9:' + col(secEnd[s]) + '9', bold: true, italic: true, border: { bottom: true, color: W.black, style: 'medium' } });
+    styles.push({ range: col(secStart[s]) + SR + ':' + col(secEnd[s]) + SR, bold: true, italic: true, border: { bottom: true, color: W.black, style: 'medium' } });
   });
   var widths = [W.widths.margin];
   cols.forEach(function (c, i) {
     var letter = col(i);
     if (!c) { widths.push(W.widths.gap); return; }
     widths.push(W.widths.data);
-    if (c.check) styles.push({ range: letter + '10', italic: true, wrap: true, valign: 'middle' });
-    else styles.push({ range: letter + '10', bg: W.orange, color: W.white, bold: true, wrap: true, valign: 'middle', border: { top: true, left: true, bottom: true, right: true, color: W.grey, style: 'thin' } });
+    if (c.check) styles.push({ range: letter + HR, italic: true, wrap: true, valign: 'middle' });
+    else styles.push({ range: letter + HR, bg: W.orange, color: W.white, bold: true, wrap: true, valign: 'middle', border: { top: true, left: true, bottom: true, right: true, color: W.grey, style: 'thin' } });
     if (c.num && lines.length) styles.push({ range: letter + first + ':' + letter + last, numberFormat: W.numFmt });
   });
-  var rowHeights = { 6: W.rowH.title, 7: W.rowH.title, 9: W.rowH.title, 10: W.rowH.header };
+  var rowHeights = {};
+  rowHeights[W.titleRow] = W.rowH.title; rowHeights[W.subRow] = W.rowH.title; rowHeights[SR] = W.rowH.title; rowHeights[HR] = W.rowH.header;
   for (var k = first; k <= last; k++) rowHeights[k] = W.rowH.data;
 
   return {
-    name: name, rows: rows, header: false, freezeRows: first - 1, gridlines: false,
+    name: name, rows: rows, header: false, freezeRows: HR, gridlines: false,
     font: W.font, colWidths: widths, rowHeights: rowHeights, styles: styles,
     images: [{ b64: (typeof JUMIA_LOGO_PNG_B64 === 'string') ? JUMIA_LOGO_PNG_B64 : '', mime: 'image/png', name: 'jumia.png', col: 1, row: 1, offX: 9, offY: 7, width: 264, height: 79 }].filter(function (im) { return im.b64; })
   };
