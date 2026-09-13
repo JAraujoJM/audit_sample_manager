@@ -414,10 +414,18 @@ function flowCWindow_(p, ctx, beforeMonths, afterMonths, key) {
   return { lo: "DATEADD(MONTH, -" + beforeMonths + ", '" + lo + "')", hi: "DATEADD(MONTH, " + afterMonths + ", '" + hi + "')" };
 }
 /** Hop 2: every transaction of those statements with Flow A's evidence columns (insured =
- *  MPL type, payout = paid, statement balances). Literal codes per company; raw ON-driven
- *  joins only; window = the items' dates ± 1 month. */
+ *  MPL type, payout = paid, statement balances). Literal codes per company; window = the
+ *  items' dates ± 1 month.
+ *  The three side tables are joined ONE ROW PER KEY on purpose: RPT_PAYOUT / the statement
+ *  table can carry more than one row for a statement (seen in production: a second payout
+ *  row doubled every transaction of PS260119KE11ESN), and a plain LEFT JOIN would multiply
+ *  the transactions. Each side table is pre-filtered by the literal statement codes (a seek,
+ *  not the year-scanning derived-table shape) and reduced with ROW_NUMBER() = 1 / DISTINCT. */
 function flowCQueryRing_(refs, p, ctx) {
-  var DB = 'AIG_Nav_Jumia_Reconciliation', S = "'" + p.fyStart + "'", W = flowCWindow_(p, ctx, 1, 1);
+  var DB = 'AIG_Nav_Jumia_Reconciliation', W = flowCWindow_(p, ctx, 1, 1);
+  var cos = flowCCompanyList_(refs);
+  var codes = {}; refs.forEach(function (r) { if (r.code) codes[String(r.code).trim()] = true; });
+  var codeList = Object.keys(codes).map(sqlLiteral_).join(',') || "''";
   return [
 "SELECT t.[ID_Company]",
 "      ,t.[Transaction_No]",
@@ -442,21 +450,32 @@ function flowCQueryRing_(refs, p, ctx) {
 "      ,st.[Opening_Balance] AS [Statement Opening Balance]",
 "      ,st.[Closing_Balance] AS [Statement Closing Balance]",
 "  FROM [" + DB + "].[dbo].[RPT_TRANSACTIONS_SELLER] t",
-"  LEFT JOIN [" + DB + "].[RING].[RPT_TARGET_VARIABLE] insured",
+"  LEFT JOIN (SELECT DISTINCT Company_ID, Target_code",
+"               FROM [" + DB + "].[RING].[RPT_TARGET_VARIABLE]",
+"              WHERE [type] = 'SELLER' AND Variable = 'Damaged Items Insurance - Active'",
+"                AND Company_ID IN (" + cos + ")) insured",
 "         ON insured.Company_ID  = t.ID_Company",
 "        AND insured.Target_code = t.Vendor_Short_Code",
-"        AND insured.[type]      = 'SELLER'",
-"        AND insured.Variable    = 'Damaged Items Insurance - Active'",
-"  LEFT JOIN [" + DB + "].[dbo].[RPT_PAYOUT] payouts",
+"  LEFT JOIN (SELECT ID_Company, Account_Statement_Number, Paid_At_Date, Amount, Payout_Method, Source_Provider, Payment_Reference",
+"               FROM (SELECT p.ID_Company, p.Account_Statement_Number, p.Paid_At_Date, p.Amount, p.Payout_Method, p.Source_Provider, p.Payment_Reference,",
+"                            ROW_NUMBER() OVER (PARTITION BY p.ID_Company, p.Account_Statement_Number ORDER BY p.Paid_At_Date DESC) AS rn",
+"                       FROM [" + DB + "].[dbo].[RPT_PAYOUT] p",
+"                      WHERE p.Partner_Type = 'SELLER'",
+"                        AND p.ID_Company IN (" + cos + ")",
+"                        AND p.Account_Statement_Number IN (" + codeList + ")) x",
+"              WHERE rn = 1) payouts",
 "         ON payouts.ID_Company              = t.ID_Company",
 "        AND payouts.Account_Statement_Number = t.Payout_Statement_Code",
-"        AND payouts.Partner_Type            = 'SELLER'",
-"        AND payouts.Paid_At_Date           >= " + S,
-"  LEFT JOIN [" + DB + "].[dbo].[RPT_SELLER_STATEMENTS_PAYOUT] st",
+"  LEFT JOIN (SELECT ID_Company, ID_Transaction_Statement, Start_Date, End_Date, Opening_Balance, Closing_Balance",
+"               FROM (SELECT s.ID_Company, s.ID_Transaction_Statement, s.Start_Date, s.End_Date, s.Opening_Balance, s.Closing_Balance,",
+"                            ROW_NUMBER() OVER (PARTITION BY s.ID_Company, s.ID_Transaction_Statement ORDER BY s.End_Date DESC) AS rn",
+"                       FROM [" + DB + "].[dbo].[RPT_SELLER_STATEMENTS_PAYOUT] s",
+"                      WHERE s.ID_Company IN (" + cos + ")",
+"                        AND s.Transaction_Statement_No IN (" + codeList + ")) x",
+"              WHERE rn = 1) st",
 "         ON st.ID_Company               = t.ID_Company",
 "        AND st.ID_Transaction_Statement = t.ID_Account_Statement",
-"        AND st.[Start_Date]            >= " + W.lo,
-" WHERE t.[ID_Company] IN (" + flowCCompanyList_(refs) + ")",
+" WHERE t.[ID_Company] IN (" + cos + ")",
 "   AND t.[Created_Date] >= " + W.lo,
 "   AND t.[Created_Date] <  " + W.hi,
 "   AND " + flowCTuples_(refs, 't.[ID_Company]', 't.[Payout_Statement_Code]', 'code', false)
@@ -527,9 +546,15 @@ function flowCFoldRingCodes_(csv, cell, mapped, ctx) {
 }
 function flowCFoldRing_(csv, cell, mapped, ctx) {
   var st = {};        // company|code → aggregate
+  // Defensive: a RING transaction appears once. Should a side join ever fan out again, drop
+  // the repeats here so neither the checks nor the workbook's SUMIFS double-count.
+  var seenTxn = {}, unique = [csv[0]], dropped = 0;
   for (var r = 1; r < csv.length; r++) {
     var row = csv[r]; if (!row || row.length < 2) continue;
-    var c = cell(row), k = flowCUp_(c('ID_Company')) + '|' + String(c('Payout_Statement_Code') || '').trim();
+    var c = cell(row), tk = flowCUp_(c('ID_Company')) + '|' + String(c('Transaction_No') || '').trim();
+    if (c('Transaction_No') && seenTxn[tk]) { dropped++; continue; }
+    seenTxn[tk] = true; unique.push(row);
+    var k = flowCUp_(c('ID_Company')) + '|' + String(c('Payout_Statement_Code') || '').trim();
     var a = st[k] = st[k] || { byNav: {}, n: 0, opening: null, closing: null, paid_at: '', paid_amount: null, method: '', ref: '', provider: '', mpl: 'Regular', rpf: false, vendor: '', start: '', end: '' };
     var nav = flowCUp_(c('Nav_Type')) || 'OTHER', amt = flowCNum_(c('Transaction_Amount')) || 0;
     a.byNav[nav] = flowCRound_((a.byNav[nav] || 0) + amt); a.n++;
@@ -541,7 +566,8 @@ function flowCFoldRing_(csv, cell, mapped, ctx) {
     if (!a.vendor) a.vendor = c('Vendor_Name');
     if (!a.start) { a.start = String(c('Statement Start Date') || '').slice(0, 10); a.end = String(c('Statement End Date') || '').slice(0, 10); }
   }
-  ctx.data.ringRows = csv;
+  ctx.data.ringRows = unique;
+  ctx.data.ringDupsDropped = dropped;
   mapped.forEach(function (mr) {
     if (!mr.found || mr.mapped.subpopulation !== 'Marketplace' || !mr.mapped.statement) return;
     var m = mr.mapped, a = st[flowCUp_(m.company) + '|' + String(m.statement).trim()];
@@ -658,7 +684,8 @@ function flowCWorkbook_(mapped, ctx) {
   raw('NAV_PostedSalesInvoices', d.invRows, 'inv');
   raw('NAV_PostedSalesInvoiceLine', d.invlRows, 'invl');
   raw('NAV_Retail', d.glrRows, 'glr');
-  raw('RING', d.ringRows, 'ring', "The statement codes were resolved from the sampled items via 'ringcodes_result.csv' / 'ringcodes_evidence.xlsx'.");
+  raw('RING', d.ringRows, 'ring', "The statement codes were resolved from the sampled items via 'ringcodes_result.csv' / 'ringcodes_evidence.xlsx'."
+    + (d.ringDupsDropped ? (' ' + d.ringDupsDropped + ' duplicated transaction row(s) returned by the source were removed from this tab.') : ''));
   raw('NAV', d.glRows, 'gl');
   return { name: 'Reconciliation - ' + ((ctx.requestRef || '').trim() || (ctx.flow && ctx.flow.name) || 'Flow C'), sheets: sheets };
 }
