@@ -325,10 +325,14 @@ function reseedFlowBRouting() {
  * flowBLineAmount_). Touches ONLY Sample_Lines.amount of the listed subpopulations; statuses,
  * tasks, evidence and every other column are untouched. Idempotent — a second run updates 0.
  * Every change is written to the Activity_Log (AMOUNT_FIX), so it shows in Sample history.
- *   Usage (Apps Script editor):  fixFlowBAmounts('REQ_b16a4636')
+ *   The editor's Run button cannot pass arguments — run the wrapper below, or call this one
+ *   with the id from another function. The result is written to the execution log.
  */
+function repairFlowBAmounts_REQ_b16a4636() { return fixFlowBAmounts('REQ_b16a4636'); }
+
 function fixFlowBAmounts(requestId, subpopulations) {
   requireRole_([ROLES.ADMIN]);
+  if (!requestId) throw new Error('fixFlowBAmounts needs a request id — the editor\'s Run button passes none. Run repairFlowBAmounts_REQ_b16a4636() (or add a similar one-line wrapper for another request).');
   var req = findRequest_(requestId);
   if (!req) throw new Error('Request not found: ' + requestId);
   if (String(req.flow_id) !== 'flowB') throw new Error('Not a Cash Anchor request (flow ' + req.flow_id + ').');
@@ -359,5 +363,7 @@ function fixFlowBAmounts(requestId, subpopulations) {
     updated++;
   });
   logActivity('AMOUNT_FIX', 'request', requestId, updated + ' sample amount(s) corrected, ' + unchanged + ' already right, ' + notFound + ' not found in the extraction');
-  return { requestId: requestId, updated: updated, unchanged: unchanged, notFound: notFound, changes: changes };
+  var result = { requestId: requestId, updated: updated, unchanged: unchanged, notFound: notFound, changes: changes };
+  Logger.log(JSON.stringify(result, null, 2));   // the editor shows logs, not return values
+  return result;
 }
