@@ -984,12 +984,19 @@
     var commentBlock = editable
       ? '<textarea class="prep-note" data-aid="'+esc(t.assignment_id)+'" rows="2" placeholder="Optional comment for the reviewer — e.g. a known variance and why it is expected">'+esc(t.preparer_note||'')+'</textarea>'
       : (t.preparer_note ? '<div class="prep-note-view"><b>Your comment:</b> '+esc(t.preparer_note)+'</div>' : '');
+    // Flow C Marketplace, Regular MPL seller (proof of payment / VC screenshot): the seller is
+    // identified by its RING short code ("CI10929 :: ETS HIRO") and the PO is irrelevant.
+    // MPL-advance tasks (contract / down-payment) keep the shared spec untouched.
+    var regularMpl = t.subpopulation==='Marketplace' && /regular/i.test(String(t.mpl_type||''));
+    var ven = t.vendor||'';
+    if(regularMpl){ var sc=caVal('vendor_short_code', t, t.detail, t.unit); ven=[sc, ven].filter(Boolean).join(' :: '); }
     var facts;
     if(t.subpopulation && CA_FIELDS[t.subpopulation]){
       // Lead with the company (country code) — the preparer needs it to know which
       // country portal to pull the evidence from (e.g. the Voucher BOB/OMS screenshots).
       var cty = t.company ? '<span>Company <b>'+esc(t.company)+'</b></span>' : '';
-      facts = '<div class="task-facts">'+cty+CA_FIELDS[t.subpopulation].map(function(f){
+      var spec = regularMpl ? CA_FIELDS[t.subpopulation].filter(function(f){ return f[1]!=='po'; }) : CA_FIELDS[t.subpopulation];
+      facts = '<div class="task-facts">'+cty+spec.map(function(f){
         var v=caVal(f[1], t, t.detail, t.unit);
         return '<span>'+esc(f[0])+' <b>'+(f[1]==='amount'?fmtNum(v):esc(v||'—'))+'</b></span>';
       }).join('')+'</div>';
@@ -1003,7 +1010,7 @@
       +(t.due_date?' · due '+esc(t.due_date):'')
       +(t.subpopulation?' · '+esc(t.subpopulation):'')+' · '+esc(t.request_title);
     return '<div class="task-card">'
-      +'<div class="task-head"><span class="doc">'+esc(t.document_no)+'</span><span class="ven">'+esc(t.vendor||'')+'</span>'
+      +'<div class="task-head"><span class="doc">'+esc(t.document_no)+'</span><span class="ven">'+esc(ven)+'</span>'
         +'<span class="grow"></span>'+statusPill(t.status)+'</div>'
       +'<div class="task-evi">'+eviLine+'</div>'
       +facts

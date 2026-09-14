@@ -521,7 +521,7 @@ function flowCFoldRingCodes_(csv, cell, mapped, ctx) {
     var c = cell(row), k = flowCUp_(c('ID_Company')) + '|' + String(c('OMS_ID_Sales_Order_Item')).trim();
     (bySoi[k] = bySoi[k] || []).push({
       code: String(c('Payout_Statement_Code') || '').trim(), type: c('Transaction_Type'), amount: flowCNum_(c('Transaction_Amount')),
-      txn: c('Transaction_No'), vendor: c('Vendor_Name'), po: c('PO_NUMBER'), dp_txn: c('Down Payment Transaction'), dp_amount: flowCNum_(c('Down Payment Amount'))
+      txn: c('Transaction_No'), vendor: c('Vendor_Name'), short_code: c('Vendor_Short_Code'), po: c('PO_NUMBER'), dp_txn: c('Down Payment Transaction'), dp_amount: flowCNum_(c('Down Payment Amount'))
     });
     var d = String(c('Created_Date') || '').slice(0, 10);
     if (/^\d{4}-\d{2}-\d{2}$/.test(d)) { if (!minD || d < minD) minD = d; if (!maxD || d > maxD) maxD = d; }
@@ -535,7 +535,7 @@ function flowCFoldRingCodes_(csv, cell, mapped, ctx) {
     if (!rows || !rows.length) return;
     var ipc = rows.filter(function (x) { return /^item price credit$/i.test(String(x.type || '')); })[0];
     var pick = ipc || rows.filter(function (x) { return x.code; })[0] || rows[0];
-    m.statement = pick.code; m.vendor = m.vendor || pick.vendor;
+    m.statement = pick.code; m.vendor = m.vendor || pick.vendor; m.vendor_short_code = m.vendor_short_code || pick.short_code;
     if (ipc) { m.ipc_amount = ipc.amount; m.ipc_txn = ipc.txn; }
     var withPo = rows.filter(function (x) { return x.po; })[0] || pick;
     if (withPo.po) m.po = withPo.po;
@@ -555,7 +555,7 @@ function flowCFoldRing_(csv, cell, mapped, ctx) {
     if (c('Transaction_No') && seenTxn[tk]) { dropped++; continue; }
     seenTxn[tk] = true; unique.push(row);
     var k = flowCUp_(c('ID_Company')) + '|' + String(c('Payout_Statement_Code') || '').trim();
-    var a = st[k] = st[k] || { byNav: {}, n: 0, opening: null, closing: null, paid_at: '', paid_amount: null, method: '', ref: '', provider: '', mpl: 'Regular', rpf: false, vendor: '', start: '', end: '' };
+    var a = st[k] = st[k] || { byNav: {}, n: 0, opening: null, closing: null, paid_at: '', paid_amount: null, method: '', ref: '', provider: '', mpl: 'Regular', rpf: false, vendor: '', short_code: '', start: '', end: '' };
     var nav = flowCUp_(c('Nav_Type')) || 'OTHER', amt = flowCNum_(c('Transaction_Amount')) || 0;
     a.byNav[nav] = flowCRound_((a.byNav[nav] || 0) + amt); a.n++;
     if (a.opening === null && c('Statement Opening Balance') !== '') a.opening = flowCNum_(c('Statement Opening Balance'));
@@ -564,6 +564,7 @@ function flowCFoldRing_(csv, cell, mapped, ctx) {
     if (/advance/i.test(String(c('MPL type')))) a.mpl = 'MPL advance';
     if (/^return protection fee$/i.test(String(c('Transaction_Type')))) a.rpf = true;
     if (!a.vendor) a.vendor = c('Vendor_Name');
+    if (!a.short_code) a.short_code = c('Vendor_Short_Code');
     if (!a.start) { a.start = String(c('Statement Start Date') || '').slice(0, 10); a.end = String(c('Statement End Date') || '').slice(0, 10); }
   }
   ctx.data.ringRows = unique;
@@ -578,7 +579,7 @@ function flowCFoldRing_(csv, cell, mapped, ctx) {
     m.opening_balance = a.opening; m.closing_balance = a.closing;
     m.stmt_start = a.start; m.stmt_end = a.end;
     m.paid_at = a.paid_at; m.paid_amount = a.paid_amount; m.payout_method = a.method; m.payment_ref = a.ref; m.source_provider = a.provider;
-    m.mpl = a.mpl; m.has_rpf = a.rpf ? 'yes' : 'no'; m.vendor = a.vendor || m.vendor;
+    m.mpl = a.mpl; m.has_rpf = a.rpf ? 'yes' : 'no'; m.vendor = a.vendor || m.vendor; m.vendor_short_code = a.short_code || m.vendor_short_code;
     m.facts.mpl = /advance/i.test(m.mpl) ? 'advance' : 'regular';     // same method as Flow A
     m.facts.paid = m.paid_at ? 'yes' : 'no';
   });
