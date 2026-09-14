@@ -78,7 +78,7 @@ function flowB_() {
         payment_type:    type,
         payment_method:  method,
         subpopulation:   sub,
-        amount:          cell('OMS_Payment_Amount'),   // generic amount column (cash received)
+        amount:          flowBLineAmount_(sub, cell),  // the SAMPLE's amount — depends on the subpopulation (see helper)
         collection_partner: cell('COLLECTION_PARTNER'),
         order_nr:        cell('ORDER_NR'),
         package_number:  cell('PACKAGE_NUMBER'),
@@ -175,6 +175,21 @@ function flowBSubpopulation_(isPrepaid, method, bankJp) {
   if (m === 'jumiapay on delivery') return 'Postpaid - JumiaPay on delivery';
   if (m === 'cash' && bankJp)       return 'Postpaid - Cash - 3PL via JPay';
   return 'Postpaid - Cash & POS';   // Cash / POS / MTN / M-Pesa / Netplus / Other
+}
+
+/* ---------- the line's amount, per subpopulation ----------
+ * Prepaid - JumiaPay: the customer's prepayment ('Prepaid amount' = RPT_CUSTOMER_PRE_PAYMENTS);
+ *   OMS_Payment_Amount is empty for prepaid items.
+ * Postpaid - JumiaPay on delivery: what was received for THIS package (OMS_Package_Amount_Received);
+ *   OMS_Payment_Amount there is the whole JumiaPay → Jumia settlement payment covering many
+ *   packages (e.g. 556,077,916 vs a 1,020 package) — not the sample.
+ * Everything else keeps the payment amount: Cash & POS is reconciled per payment (its units carry
+ *   the per-payment amounts), Voucher / Other have none.
+ * Corrected 2026-09-14; earlier Cash Anchor requests were repaired with fixFlowBAmounts(). */
+function flowBLineAmount_(sub, cell) {
+  if (sub === 'Prepaid - JumiaPay')              return cell('Prepaid amount');
+  if (sub === 'Postpaid - JumiaPay on delivery') return cell('OMS_Package_Amount_Received');
+  return cell('OMS_Payment_Amount');
 }
 
 /* ---------- stage-2 reference (the master file's DAX, ported) ----------

@@ -317,3 +317,47 @@ function reseedFlowBRouting() {
   logActivity('ROUTING_RESEED', 'flow', 'flowB', 'Reseeded Cash Anchor routing (real evidence per subpopulation)');
   return getRouting('flowB');
 }
+
+/**
+ * Admin-run, one-off DATA REPAIR: recompute the `amount` of a Cash Anchor request's samples
+ * from the request's own stored query-1 extraction, using the CURRENT FlowB.mapRow (the
+ * amount rule for the JumiaPay subpopulations was corrected on 2026-09-14 — see
+ * flowBLineAmount_). Touches ONLY Sample_Lines.amount of the listed subpopulations; statuses,
+ * tasks, evidence and every other column are untouched. Idempotent — a second run updates 0.
+ * Every change is written to the Activity_Log (AMOUNT_FIX), so it shows in Sample history.
+ *   Usage (Apps Script editor):  fixFlowBAmounts('REQ_b16a4636')
+ */
+function fixFlowBAmounts(requestId, subpopulations) {
+  requireRole_([ROLES.ADMIN]);
+  var req = findRequest_(requestId);
+  if (!req) throw new Error('Request not found: ' + requestId);
+  if (String(req.flow_id) !== 'flowB') throw new Error('Not a Cash Anchor request (flow ' + req.flow_id + ').');
+  if (!req.csv_file_id) throw new Error('This request has no stored extraction (csv_file_id) to recompute from.');
+  var subs = subpopulations || ['Prepaid - JumiaPay', 'Postpaid - JumiaPay on delivery'];
+  var ds = dataSs_();
+  var lines = readObjects_(ds, 'Sample_Lines').filter(function (l) {
+    return String(l.request_id) === String(requestId) && subs.indexOf(String(l.subpopulation || '')) !== -1;
+  });
+  if (!lines.length) return { requestId: requestId, updated: 0, unchanged: 0, notFound: 0, changes: [], note: 'No samples in ' + subs.join(' / ') };
+
+  var csv = parseCsv_(DriveApp.getFileById(req.csv_file_id));
+  var mod = flowModule_('flowB');
+  var items = lines.map(function (l) {
+    return { key: (String(l.company || '') + String(l.document_no || '')).toUpperCase(), company: l.company, soi: l.document_no, line: l };
+  });
+  var mapped = mapStage1Rows_(mod, csv, items);
+  var updated = 0, unchanged = 0, notFound = 0, changes = [];
+  var norm = function (v) { return (v === null || v === undefined) ? '' : String(v).trim(); };
+  mapped.forEach(function (mr) {
+    var l = mr.item.line;
+    if (!mr.found) { notFound++; return; }
+    var next = norm(mr.mapped.amount), prev = norm(l.amount);
+    if (next === prev) { unchanged++; return; }
+    updateRowById_(ds, 'Sample_Lines', 'line_id', l.line_id, { amount: next });
+    logActivity('AMOUNT_FIX', 'line', l.line_id, l.subpopulation + ': amount ' + (prev || '(empty)') + ' → ' + (next || '(empty)') + ' — recomputed from the stored extraction');
+    changes.push({ line_id: l.line_id, document_no: l.document_no, subpopulation: l.subpopulation, from: prev, to: next });
+    updated++;
+  });
+  logActivity('AMOUNT_FIX', 'request', requestId, updated + ' sample amount(s) corrected, ' + unchanged + ' already right, ' + notFound + ' not found in the extraction');
+  return { requestId: requestId, updated: updated, unchanged: unchanged, notFound: notFound, changes: changes };
+}

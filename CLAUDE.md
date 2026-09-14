@@ -160,8 +160,13 @@ sales-order-item into a **subpopulation** (Prepaid/Postpaid × JumiaPay / Vouche
 Q2 on `PAY_DWH` (server `pay`) enriches the JumiaPay subpopulations up to the wallet transfer. Composite
 sample key `concat(ID_COMPANY, COD_OMS_SALES_ORDER_ITEM)`. Routing sends each subpopulation to one of two
 owner teams as **document-slot tasks** (Voucher/JumiaPay = one task with several named upload slots;
-Cash & POS = one Proof-of-payment task **per payment**, fanned via `mapGroup`). Full detail (queries,
-subpopulations, owners, phase-by-phase build log) is in the **`flow-b-cash-anchor` memory**.
+Cash & POS = one Proof-of-payment task **per payment**, fanned via `mapGroup`). **Sample amount per
+subpopulation** (`flowBLineAmount_`): Prepaid – JumiaPay → `Prepaid amount`; Postpaid – JumiaPay on delivery →
+`OMS_Package_Amount_Received` (NOT `OMS_Payment_Amount`, which is the whole JumiaPay settlement payment);
+everything else → `OMS_Payment_Amount`. Corrected 2026-09-14; earlier requests are repaired with the admin-run
+`fixFlowBAmounts(requestId)` (Setup.js — recomputes from the stored extraction, only `Sample_Lines.amount`,
+idempotent, logged as `AMOUNT_FIX`). Full detail (queries, subpopulations, owners, phase-by-phase build log)
+is in the **`flow-b-cash-anchor` memory**.
 
 ## Flow C — Marketplace revenues / COGS by sales-order item (built, not yet seeded)
 Input = `ID_COMPANY` + `COD_OMS_SALES_ORDER_ITEM` (Flow B's paste format). **Stage 1** `RPT_SOI` (the base
