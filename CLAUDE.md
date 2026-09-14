@@ -161,9 +161,10 @@ Q2 on `PAY_DWH` (server `pay`) enriches the JumiaPay subpopulations up to the wa
 sample key `concat(ID_COMPANY, COD_OMS_SALES_ORDER_ITEM)`. Routing sends each subpopulation to one of two
 owner teams as **document-slot tasks** (Voucher/JumiaPay = one task with several named upload slots;
 Cash & POS = one Proof-of-payment task **per payment**, fanned via `mapGroup`). **Sample amount per
-subpopulation** (`flowBLineAmount_`): Prepaid – JumiaPay → `Prepaid amount`; Postpaid – JumiaPay on delivery →
-`OMS_Package_Amount_Received` (NOT `OMS_Payment_Amount`, which is the whole JumiaPay settlement payment);
-everything else → `OMS_Payment_Amount`. Corrected 2026-09-14; earlier requests are repaired with the admin-run
+subpopulation**: Prepaid – JumiaPay and Postpaid – JumiaPay on delivery take it from **query 2's
+`Amount_Transactions`** (`stage2.merge`), falling back to stage 1 (`flowBLineAmount_`: `Prepaid amount` /
+`OMS_Package_Amount_Received`) only when query 2 has no row — never `OMS_Payment_Amount`, which for JumiaPay on
+delivery is the whole settlement payment; everything else → `OMS_Payment_Amount`. Corrected 2026-09-14; earlier requests are repaired with the admin-run
 `fixFlowBAmounts(requestId)` (Setup.js — recomputes from the stored extraction, only `Sample_Lines.amount`,
 idempotent, logged as `AMOUNT_FIX`). Full detail (queries, subpopulations, owners, phase-by-phase build log)
 is in the **`flow-b-cash-anchor` memory**.

@@ -350,11 +350,32 @@ function fixFlowBAmounts(requestId, subpopulations) {
     return { key: (String(l.company || '') + String(l.document_no || '')).toUpperCase(), company: l.company, soi: l.document_no, line: l };
   });
   var mapped = mapStage1Rows_(mod, csv, items);
+
+  // Replay query 2 exactly as enrich() does (buildResults_): the JumiaPay amount comes from it.
+  var byRef = null, cell2 = null;
+  if (req.csv2_file_id && mod.stage2) {
+    var csv2 = parseCsv_(DriveApp.getFileById(req.csv2_file_id));
+    if (csv2 && csv2.length > 1) {
+      var idx2 = {}; csv2[0].forEach(function (h, i) { idx2[String(h).trim()] = i; });
+      cell2 = function (row) { return function (name) { return idx2[name] === undefined ? '' : row[idx2[name]]; }; };
+      byRef = {};
+      for (var r = 1; r < csv2.length; r++) {
+        var row2 = csv2[r]; if (!row2 || !row2.length) continue;
+        var k2 = String(cell2(row2)(mod.stage2.keyCol)).toUpperCase();
+        if (k2 && !byRef[k2]) byRef[k2] = row2;
+      }
+    }
+  }
+
   var updated = 0, unchanged = 0, notFound = 0, changes = [];
   var norm = function (v) { return (v === null || v === undefined) ? '' : String(v).trim(); };
   mapped.forEach(function (mr) {
     var l = mr.item.line;
     if (!mr.found) { notFound++; return; }
+    if (byRef) {
+      var ref = mod.stage2.refOf(mr.mapped);
+      if (ref) { var r2 = byRef[String(ref).toUpperCase()]; if (r2) mod.stage2.merge(mr.mapped, mod.stage2.mapRow2(cell2(r2))); }
+    }
     var next = norm(mr.mapped.amount), prev = norm(l.amount);
     if (next === prev) { unchanged++; return; }
     updateRowById_(ds, 'Sample_Lines', 'line_id', l.line_id, { amount: next });

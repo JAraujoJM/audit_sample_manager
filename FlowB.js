@@ -156,10 +156,18 @@ function flowB_() {
           jp_amount_mtr:  cell('Amount_Merchants')
         };
       },
-      merge: function (line, row2) { for (var k in row2) if (row2.hasOwnProperty(k)) line[k] = row2[k]; }
+      merge: function (line, row2) {
+        for (var k in row2) if (row2.hasOwnProperty(k)) line[k] = row2[k];
+        // The JumiaPay samples' amount is the PAY_DWH transaction amount (Amount_Transactions);
+        // stage 1's value (flowBLineAmount_) only stands when query 2 returned nothing for the item.
+        if (flowBAmountFromStage2_(line.subpopulation) && row2.jp_amount_txn !== '' && row2.jp_amount_txn !== null && row2.jp_amount_txn !== undefined) {
+          line.amount = row2.jp_amount_txn;
+        }
+      }
     }
   };
 }
+function flowBAmountFromStage2_(sub) { return sub === 'Prepaid - JumiaPay' || sub === 'Postpaid - JumiaPay on delivery'; }
 
 /* ---------- subpopulation classifier ----------
  * Mirrors the master file's "Payment method" CASE + the Payments-mapping lookup,
@@ -177,12 +185,13 @@ function flowBSubpopulation_(isPrepaid, method, bankJp) {
   return 'Postpaid - Cash & POS';   // Cash / POS / MTN / M-Pesa / Netplus / Other
 }
 
-/* ---------- the line's amount, per subpopulation ----------
- * Prepaid - JumiaPay: the customer's prepayment ('Prepaid amount' = RPT_CUSTOMER_PRE_PAYMENTS);
- *   OMS_Payment_Amount is empty for prepaid items.
- * Postpaid - JumiaPay on delivery: what was received for THIS package (OMS_Package_Amount_Received);
- *   OMS_Payment_Amount there is the whole JumiaPay → Jumia settlement payment covering many
- *   packages (e.g. 556,077,916 vs a 1,020 package) — not the sample.
+/* ---------- the line's amount, per subpopulation (stage-1 value) ----------
+ * Prepaid - JumiaPay and Postpaid - JumiaPay on delivery take their FINAL amount from query 2
+ *   (PAY_DWH Amount_Transactions — see stage2.merge). The stage-1 values below are the fallback
+ *   when query 2 has no row for the item: the customer's prepayment ('Prepaid amount') and the
+ *   amount received for THIS package (OMS_Package_Amount_Received). Never OMS_Payment_Amount for
+ *   these two — for JumiaPay on delivery that is the whole JumiaPay → Jumia settlement payment
+ *   covering many packages (e.g. 556,077,916 vs a 1,021 package).
  * Everything else keeps the payment amount: Cash & POS is reconciled per payment (its units carry
  *   the per-payment amounts), Voucher / Other have none.
  * Corrected 2026-09-14; earlier Cash Anchor requests were repaired with fixFlowBAmounts(). */
