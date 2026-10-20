@@ -24,8 +24,26 @@ var QUERY_MODE     = 'full';         // 'lean' = routing only (fastest) | 'full'
 var POLL_BUDGET_MS = 330000;         // 5.5 min
 var POLL_INTERVAL  = 4000;
 
+/**
+ * The page arrives with the caller already resolved (email, role, dashboard access),
+ * so the client starts its first screen at once instead of waiting ~3 s for a
+ * getCurrentUser round trip (Executions log, 14–20 Oct 2026). When the dashboard
+ * payload is already cached it rides along too. The open itself is logged by the
+ * client beacon (logUi → Access_Log) right after the first screen draws.
+ */
 function doGet() {
-  return HtmlService.createHtmlOutputFromFile('Index')
+  var t0 = Date.now(), boot = { v: 1 };
+  try {
+    var u = getCurrentUser();
+    boot.user = { email: u.email, role: u.role, isSetup: u.isSetup, canDash: !!u.canDash };
+    if (u.canDash) boot.dash = dashboardPeek_();
+  } catch (e) {
+    boot.err = String(e && e.message || e);
+  }
+  boot.srvMs = Date.now() - t0;
+  var html = HtmlService.createHtmlOutputFromFile('Index').getContent()
+    .replace('"__ASM_BOOT__"', function () { return JSON.stringify(boot).replace(/</g, '\\u003c'); });   // a function, so '$' in the data is never read as a replace pattern
+  return HtmlService.createHtmlOutput(html)
     .setTitle('Audit Samples Manager')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }

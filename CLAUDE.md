@@ -224,6 +224,33 @@ renderer is the generic `buildXlsxFile_` sheet spec (rows with `=` formulas, sty
 auditor export copies the workbook **once** into `Reconciliation (system)/` at the export root (every sample's
 row points there — `auditExport` dedupes by file id). Deep detail in the **`flow-c-revenue-soi` memory**.
 
+## Load times, CFO dashboard, access log (20 Oct 2026, Gonçalo)
+Measured on the Executions log (149 calls, 14–20 Oct): every call opened Config for the role, then Data, and read
+3–4 whole tabs; a screen cost 4–5 s server-side and the first open ~12.5 s. Now:
+- **`Cache.js`**: `readTabsCached_(names)` serves tabs from CacheService. Config tabs: 5-min TTL (BankRec roster
+  pattern). Data tabs: keyed on a per-tab version `DV_<tab>` (script property) that **every** Db write helper
+  (`appendObject_`/`updateRowById_`/`deleteRowById_`) bumps via `noteTabWrite_` **after** `SpreadsheetApp.flush()`.
+  **Only read paths use the cache** (lists, details, dashboard, getUsers/getFlows/getRouting/getPeriods/getSetting).
+  Actions (submit/review/close/return/assign/enrich/export/AI) keep `readObjects_` on the sheet — never decide on a
+  cached copy. A new write path that bypasses the three helpers MUST call `noteTabWrite_(tab)`. Hand edits of the
+  sheets: run `flushAppCache()` in the editor (or wait for the TTL). Spreadsheets open once per execution (`__ssOpen_`).
+- **Boot**: `doGet` embeds `{user, canDash, dash?}` into Index.html (string placeholder `"__ASM_BOOT__"` — a
+  `/*comment*/` placeholder does NOT survive HtmlService), so the client skips the getCurrentUser round trip; the
+  client starts the first screen on the next tick (stage configs must be defined first). pdf.js loads on first PDF.
+- **Client**: `RUN()` = timed `google.script.run` (Proxy); screens keep their last copy (`MEMO`) and refresh quietly;
+  the Request screen is one call (`requestScreen`).
+- **CFO dashboard** (`Dashboard.js`, first tab): Administrators + Settings `dashboard_viewers` (comma list), never
+  Auditors (`canSeeDashboard_`). No AI output. Orphan Sample_Lines (deleted requests) flagged "Data check first".
+- **Access_Log** (Data tab, created on first write; also in SCHEMA): every open / call / dashboard view with user,
+  role, outcome (served/refused), server_ms, client_ms, scope, visit — client beacon `logUi`, refusals server-side.
+  Read it for before/after numbers. Activity_Log stays the SOX trail.
+- **SoD fixes**: `reviewDetail(…,'audit')` strips `ai_verdict/ai_summary` server-side (they used to reach the
+  auditor's browser, hidden only by the UI); `taskTimeline` refuses Auditors; screens get the Requests row without
+  `ipe_json`/`stages_json` (`slimRequest_`).
+- **Look**: BankRec direction C (white top bar with tabs, orange underline = chrome only; state colours
+  `--st-done/audit/review/todo/nf` on progress bars, tiles and charts). Offline harness + tests in the 20 Oct
+  side-session notes (`harness.js`/`test.js`: real server code, mocked services, real Data export).
+
 ## Roadmap / next
 - **Flow C first real run**: `setup()` (adds `Requests.stages_json`) → `seedFlowC()` → run the H1 2026 sample on
   the `/dev` deployment → check the gateway timings + the workbook → then promote to prod.

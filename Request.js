@@ -18,14 +18,23 @@ function requestFormConfig() {
   };
 }
 
+/**
+ * The Request screen in ONE call (was three: requestOverview + requestFormConfig +
+ * listPreparers, each re-opening Config). Later refreshes call requestOverview alone.
+ */
+function requestScreen() {
+  requireRole_([ROLES.ADMIN]);
+  return { requests: requestOverview(), form: requestFormConfig(), preparers: listPreparers() };
+}
+
 /** Every request, newest first, with a line-status breakdown for the progress view. */
 function requestOverview() {
   requireRole_([ROLES.ADMIN]);
-  var ds = dataSs_();
-  var tz = ds.getSpreadsheetTimeZone();
-  var lines = readObjects_(ds, 'Sample_Lines');
-  var asg = readObjects_(ds, 'Assignments');
-  return readObjects_(ds, 'Requests').map(function (r) {
+  var tz = Session.getScriptTimeZone();
+  var t = readTabsCached_(['Sample_Lines', 'Assignments', 'Requests']);
+  var lines = t.Sample_Lines;
+  var asg = t.Assignments;
+  return t.Requests.map(function (r) {
     var rid = String(r.request_id);
     var rl = lines.filter(function (l) { return String(l.request_id) === rid; });
     var ra = asg.filter(function (a) { return String(a.request_id) === rid; });
@@ -44,9 +53,10 @@ function requestOverview() {
 /** One request in full: header, progress, which files are stored, and the IPE snapshot. */
 function requestReport(requestId) {
   requireRole_([ROLES.ADMIN]);
-  var r = findRequest_(requestId);
+  var t = readTabsCached_(['Requests', 'Sample_Lines']);
+  var r = t.Requests.filter(function (x) { return String(x.request_id) === String(requestId); })[0];
   if (!r) throw new Error('Request not found.');
-  var lines = readObjects_(dataSs_(), 'Sample_Lines').filter(function (l) { return String(l.request_id) === String(requestId); });
+  var lines = t.Sample_Lines.filter(function (l) { return String(l.request_id) === String(requestId); });
   var ipe = null;
   if (r.ipe_json) { try { ipe = JSON.parse(r.ipe_json); } catch (e) {} }
   return {

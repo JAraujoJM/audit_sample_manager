@@ -8,17 +8,31 @@
 
 /** Callable from the client: who am I, and is the app provisioned yet. */
 function getCurrentUser() {
+  if (__me_) return __me_;
   var email = Session.getActiveUser().getEmail() || '';
-  return {
-    email: email,
-    role: isSetupDone_() ? getRole(email) : null,
-    isSetup: isSetupDone_()
-  };
+  var setup = isSetupDone_();
+  var u = { email: email, role: setup ? getRole(email) : null, isSetup: setup };
+  u.canDash = setup ? canSeeDashboard_(u) : false;
+  __me_ = u;
+  return u;
 }
+var __me_ = null;   // resolved once per execution (the role comes from the 5-minute Users cache)
 
 function isSetupDone_() {
-  var p = PropertiesService.getScriptProperties();
-  return !!(p.getProperty(PROP.CONFIG_SS) && p.getProperty(PROP.DATA_SS));
+  return !!(scriptProp_(PROP.CONFIG_SS) && scriptProp_(PROP.DATA_SS));
+}
+
+/**
+ * Who may open the CFO dashboard: every Administrator, plus the emails listed in the
+ * Settings row `dashboard_viewers` (comma-separated). Auditors never, even if listed —
+ * the dashboard is Jumia's internal view of where the audit stands.
+ */
+function canSeeDashboard_(u) {
+  if (!u || !u.email) return false;
+  if (u.role === ROLES.AUDITOR) return false;
+  if (u.role === ROLES.ADMIN) return true;
+  var list = String(getSetting('dashboard_viewers') || '').toLowerCase().split(/[,;\s]+/).filter(String);
+  return list.indexOf(String(u.email).toLowerCase()) !== -1;
 }
 
 /** Throw unless the current user holds one of `roles`. Returns the user on pass. */

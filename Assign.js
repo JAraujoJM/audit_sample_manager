@@ -11,10 +11,10 @@
 /** Every request, newest first, annotated with line / assignment progress. */
 function listRequests() {
   requireRole_([ROLES.ADMIN, ROLES.REVIEWER]);
-  var ds = dataSs_();
-  var lines = readObjects_(ds, 'Sample_Lines');
-  var asg = readObjects_(ds, 'Assignments');
-  return readObjects_(ds, 'Requests').map(function (r) {
+  var t = readTabsCached_(['Sample_Lines', 'Assignments', 'Requests']);
+  var lines = t.Sample_Lines;
+  var asg = t.Assignments;
+  return t.Requests.map(function (r) {
     var rid = String(r.request_id);
     var rLines = lines.filter(function (l) { return String(l.request_id) === rid; });
     var rAsg = asg.filter(function (a) { return String(a.request_id) === rid; });
@@ -30,17 +30,17 @@ function listRequests() {
 /** A request with its lines, each carrying its assignment list. */
 function getRequestDetail(requestId) {
   requireRole_([ROLES.ADMIN, ROLES.REVIEWER]);
-  var ds = dataSs_();
-  var req = readObjects_(ds, 'Requests').filter(function (r) { return String(r.request_id) === String(requestId); })[0];
+  var t = readTabsCached_(['Requests', 'Assignments', 'Sample_Lines']);
+  var req = t.Requests.filter(function (r) { return String(r.request_id) === String(requestId); })[0];
   if (!req) throw new Error('Request not found.');
-  var tz = ds.getSpreadsheetTimeZone();
+  var tz = Session.getScriptTimeZone();
 
   var byLine = {};
-  readObjects_(ds, 'Assignments')
+  t.Assignments
     .filter(function (a) { return String(a.request_id) === String(requestId); })
     .forEach(function (a) { (byLine[a.line_id] = byLine[a.line_id] || []).push(a); });
 
-  var lines = readObjects_(ds, 'Sample_Lines')
+  var lines = t.Sample_Lines
     .filter(function (l) { return String(l.request_id) === String(requestId); })
     .map(function (l) {
       return {
@@ -58,7 +58,14 @@ function getRequestDetail(requestId) {
         })
       };
     });
-  return { request: req, lines: lines };
+  return { request: slimRequest_(req), lines: lines };
+}
+
+/** The Requests row without the heavy JSON cells (IPE snapshot, stage list): screens never read them. */
+function slimRequest_(r) {
+  var o = {};
+  Object.keys(r || {}).forEach(function (k) { if (k !== 'ipe_json' && k !== 'stages_json') o[k] = r[k]; });
+  return o;
 }
 
 /** Active preparers — suggestions for the assignee field. */

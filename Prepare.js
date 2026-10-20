@@ -10,15 +10,17 @@
 /* ---------- read ---------- */
 function listMyAssignments() {
   var me = requireRole_([ROLES.PREPARER, ROLES.ADMIN]);
-  var ds = dataSs_();
   var email = me.email.toLowerCase();
-  var tz = ds.getSpreadsheetTimeZone();
+  var tz = Session.getScriptTimeZone();
+  // Cached read: a write in this same execution (upload / submit / withdraw) has already
+  // moved the tab versions on, so the list returned after an action is always fresh.
+  var t = readTabsCached_(['Sample_Lines', 'Requests', 'Evidence', 'Assignments']);
 
-  var lines = {}; readObjects_(ds, 'Sample_Lines').forEach(function (l) { lines[String(l.line_id)] = l; });
-  var reqs  = {}; readObjects_(ds, 'Requests').forEach(function (r) { reqs[String(r.request_id)] = r; });
-  var evidence = readObjects_(ds, 'Evidence');
+  var lines = {}; t.Sample_Lines.forEach(function (l) { lines[String(l.line_id)] = l; });
+  var reqs  = {}; t.Requests.forEach(function (r) { reqs[String(r.request_id)] = r; });
+  var evidence = t.Evidence;
 
-  return readObjects_(ds, 'Assignments')
+  return t.Assignments
     .filter(function (a) { return String(a.assigned_to || '').toLowerCase() === email; })
     .filter(function (a) { return parseJson_(a.detail_json).kind !== 'system'; })   // app-produced reconciliations are reviewed, not prepared
     .map(function (a) {

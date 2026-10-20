@@ -81,6 +81,9 @@ var SCHEMA = {
                    'due_date', 'submitted_at', 'notes', 'created_at', 'optional', 'detail_json', 'slots_json',
                    'ai_verdict', 'ai_summary', 'ai_checked_at', 'preparer_note'],
     Evidence:     ['evidence_id', 'assignment_id', 'line_id', 'request_id', 'file_id', 'file_name', 'mime', 'uploaded_by', 'uploaded_at', 'status', 'slot'],
-    Activity_Log: ['ts', 'actor', 'action', 'entity_type', 'entity_id', 'details']
+    Activity_Log: ['ts', 'actor', 'action', 'entity_type', 'entity_id', 'details'],
+    // One row per page open / screen / dashboard view (who, served or refused, server and browser ms, scope).
+    // Usage + load-time log (FinOps rule 8); the SOX trail of actions stays in Activity_Log.
+    Access_Log:   ['ts', 'user', 'role', 'event', 'view', 'outcome', 'server_ms', 'client_ms', 'scope', 'detail', 'visit']
   }
 };

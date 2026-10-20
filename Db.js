@@ -7,13 +7,16 @@
  */
 
 /* ---------- open the provisioned spreadsheets ---------- */
+// Opened at most once per execution (openById was ~1 s of every call before 20 Oct 2026).
+var __ssOpen_ = {};
 function configSs_() { return openSsByProp_(PROP.CONFIG_SS, 'Config'); }
 function dataSs_()   { return openSsByProp_(PROP.DATA_SS,   'Data'); }
 
 function openSsByProp_(key, label) {
-  var id = PropertiesService.getScriptProperties().getProperty(key);
+  var id = scriptProp_(key);
   if (!id) throw new Error('The ' + label + ' spreadsheet is not provisioned yet — run setup() first.');
-  return SpreadsheetApp.openById(id);
+  if (!__ssOpen_[id]) __ssOpen_[id] = SpreadsheetApp.openById(id);
+  return __ssOpen_[id];
 }
 
 /* ---------- generic row <-> object mapping ---------- */
@@ -45,6 +48,7 @@ function appendObject_(ss, sheetName, obj) {
   var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   var row = headers.map(function (h) { return obj.hasOwnProperty(h) ? obj[h] : ''; });
   sh.appendRow(row);
+  noteTabWrite_(sheetName);
   return row;
 }
 
@@ -62,6 +66,7 @@ function updateRowById_(ss, sheetName, idCol, idValue, patch) {
         var c = headers.indexOf(k);
         if (c !== -1) sh.getRange(r + 1, c + 1).setValue(patch[k]);
       });
+      noteTabWrite_(sheetName);
       return true;
     }
   }
@@ -76,7 +81,7 @@ function deleteRowById_(ss, sheetName, idCol, idValue) {
   var idIdx = values[0].indexOf(idCol);
   if (idIdx === -1) throw new Error('No column "' + idCol + '" in ' + sheetName);
   for (var r = values.length - 1; r >= 1; r--) {
-    if (String(values[r][idIdx]) === String(idValue)) { sh.deleteRow(r + 1); return true; }
+    if (String(values[r][idIdx]) === String(idValue)) { sh.deleteRow(r + 1); noteTabWrite_(sheetName); return true; }
   }
   return false;
 }
@@ -85,8 +90,10 @@ function nowIso_() {
   return Utilities.formatDate(new Date(), 'UTC', "yyyy-MM-dd'T'HH:mm:ss'Z'");
 }
 
-/* ---------- config: users / flows / routing / settings ---------- */
-function getUsers() { return readObjects_(configSs_(), 'Users'); }
+/* ---------- config: users / flows / routing / settings ----------
+ * Read through the 5-minute config cache (Cache.js). App writes to these tabs bump
+ * their version, so a change made in the app is live at once. */
+function getUsers() { return readTabCached_('Users'); }
 
 function getRole(email) {
   if (!email) return null;
@@ -101,7 +108,7 @@ function getRole(email) {
   return null;
 }
 
-function getFlows() { return readObjects_(configSs_(), 'Flows'); }
+function getFlows() { return readTabCached_('Flows'); }
 
 function getFlow(flowId) {
   var hits = getFlows().filter(function (f) { return String(f.flow_id) === String(flowId); });
@@ -109,21 +116,21 @@ function getFlow(flowId) {
 }
 
 function getRouting(flowId) {
-  return readObjects_(configSs_(), 'Routing').filter(function (r) {
+  return readTabCached_('Routing').filter(function (r) {
     return String(r.flow_id) === String(flowId) && r.active !== false && String(r.active) !== 'FALSE';
   });
 }
 
 function getSetting(key) {
-  var hit = readObjects_(configSs_(), 'Settings').filter(function (s) { return String(s.key) === String(key); });
+  var hit = readTabCached_('Settings').filter(function (s) { return String(s.key) === String(key); });
   return hit.length ? hit[0].value : null;
 }
 
 /** Active audit periods for a flow, with dates normalised to yyyy-MM-dd strings. */
 function getPeriods(flowId) {
-  var cfg = configSs_();
-  var tz = cfg.getSpreadsheetTimeZone();
-  return readObjects_(cfg, 'Periods')
+  // readObjects_ already turned date cells into ISO strings, so the zone only matters for a raw Date.
+  var tz = Session.getScriptTimeZone();
+  return readTabCached_('Periods')
     .filter(function (p) { return String(p.flow_id) === String(flowId) && p.active !== false && String(p.active) !== 'FALSE'; })
     .map(function (p) { return { name: String(p.name), start: toDateStr_(p.start_date, tz), end: toDateStr_(p.end_date, tz) }; });
 }
@@ -193,6 +200,7 @@ function addUser(email, role) {
       var rowNum = i + 2;                          // +1 header, +1 to 1-based
       sh.getRange(rowNum, roleCol).setValue(role);
       sh.getRange(rowNum, statusCol).setValue('active');
+      noteTabWrite_('Users');
       logActivity('USER_UPSERT', 'user', email, 'role=' + role + ' (updated)');
       return getRole(email);
     }

@@ -24,11 +24,11 @@ function stageRoles_(stage) {
 function reviewQueue(stage) {
   var me = requireRole_(stageRoles_(stage));
   var actTask = stage === 'audit' ? 'reviewed' : 'submitted';   // the TASK status this role acts on
-  var ds = dataSs_();
-  var tz = ds.getSpreadsheetTimeZone();
-  var lines = readObjects_(ds, 'Sample_Lines');
-  var asg = readObjects_(ds, 'Assignments');
-  return readObjects_(ds, 'Requests').filter(function (r) {
+  var tz = Session.getScriptTimeZone();
+  var t = readTabsCached_(['Sample_Lines', 'Assignments', 'Requests']);
+  var lines = t.Sample_Lines;
+  var asg = t.Assignments;
+  return t.Requests.filter(function (r) {
     // The reviewer is set per request; a Reviewer sees only their own (admins see all).
     return stage !== 'review' || me.role === ROLES.ADMIN ||
            String(r.reviewer_email || '').toLowerCase() === me.email.toLowerCase();
@@ -55,9 +55,12 @@ function reviewQueue(stage) {
 
 function reviewDetail(requestId, stage) {
   var me = requireRole_(stageRoles_(stage));
-  var ds = dataSs_();
-  var req = readObjects_(ds, 'Requests').filter(function (r) { return String(r.request_id) === String(requestId); })[0];
+  var t = readTabsCached_(['Requests', 'Evidence', 'Assignments', 'Sample_Lines']);
+  var req = t.Requests.filter(function (r) { return String(r.request_id) === String(requestId); })[0];
   if (!req) throw new Error('Request not found.');
+  // SoD: the auditor never sees AI output — not on screen and not in the payload either
+  // (until 20 Oct 2026 the verdicts reached the auditor's browser and were only hidden there).
+  var noAi = stage === 'audit';
   if (stage === 'review' && me.role !== ROLES.ADMIN &&
       String(req.reviewer_email || '').toLowerCase() !== me.email.toLowerCase()) {
     throw new Error('This request is assigned to a different reviewer.');
@@ -66,7 +69,7 @@ function reviewDetail(requestId, stage) {
   // Evidence is served through the app (getEvidenceFile) — we no longer share
   // files on Drive, so reviewers/auditors get no "shared with you" emails.
   var evByAsg = {};
-  readObjects_(ds, 'Evidence')
+  t.Evidence
     .filter(function (e) { return String(e.request_id) === String(requestId); })
     .forEach(function (e) {
       (evByAsg[e.assignment_id] = evByAsg[e.assignment_id] || []).push({
@@ -75,12 +78,12 @@ function reviewDetail(requestId, stage) {
     });
 
   var asgByLine = {};
-  readObjects_(ds, 'Assignments')
+  t.Assignments
     .filter(function (a) { return String(a.request_id) === String(requestId); })
     .forEach(function (a) { (asgByLine[a.line_id] = asgByLine[a.line_id] || []).push(a); });
 
-  var tz = ds.getSpreadsheetTimeZone();
-  var lines = readObjects_(ds, 'Sample_Lines')
+  var tz = Session.getScriptTimeZone();
+  var lines = t.Sample_Lines
     .filter(function (l) { return String(l.request_id) === String(requestId); })
     .map(function (l) {
       return {
@@ -89,19 +92,19 @@ function reviewDetail(requestId, stage) {
         amount: l.amount, closing_balance: l.closing_balance, paid_at: toDateStr_(l.paid_at, tz),
         status: l.status, note: l.note || '',
         subpopulation: l.subpopulation || '', detail: parseJson_(l.detail_json),
-        ai_verdict: l.ai_verdict || '', ai_summary: l.ai_summary || '', ai_checked_at: l.ai_checked_at || '',
+        ai_verdict: noAi ? '' : (l.ai_verdict || ''), ai_summary: noAi ? '' : (l.ai_summary || ''), ai_checked_at: noAi ? '' : (l.ai_checked_at || ''),
         assignments: (asgByLine[l.line_id] || []).map(function (a) {
           var slts = parseJson_(a.slots_json); if (!Array.isArray(slts)) slts = [];
           return { assignment_id: a.assignment_id, evidence_type: a.evidence_type, assigned_to: a.assigned_to, status: a.status,
                    optional: isOptional_(a.optional), unit: parseJson_(a.detail_json), slots: slts, files: evByAsg[a.assignment_id] || [],
-                   note: a.notes || '', ai_verdict: a.ai_verdict || '', ai_summary: a.ai_summary || '',
+                   note: a.notes || '', ai_verdict: noAi ? '' : (a.ai_verdict || ''), ai_summary: noAi ? '' : (a.ai_summary || ''),
                    // The preparer's comment is for the reviewer only — the auditor never sees it
                    // (the reviewer transcribes what's relevant into their own note to the auditor).
                    preparer_note: (stage === 'review') ? (a.preparer_note || '') : '' };
         })
       };
     });
-  return { request: req, stage: stage, actionable: STAGE_STATUS[stage], lines: lines };
+  return { request: slimRequest_(req), stage: stage, actionable: STAGE_STATUS[stage], lines: lines };
 }
 
 /**
@@ -111,7 +114,7 @@ function reviewDetail(requestId, stage) {
  */
 function getEvidenceFile(evidenceId) {
   var me = requireRole_([ROLES.REVIEWER, ROLES.AUDITOR, ROLES.ADMIN, ROLES.PREPARER]);
-  var ev = readObjects_(dataSs_(), 'Evidence').filter(function (e) { return String(e.evidence_id) === String(evidenceId); })[0];
+  var ev = readTabCached_('Evidence').filter(function (e) { return String(e.evidence_id) === String(evidenceId); })[0];
   if (!ev) throw new Error('File not found.');
   if (me.role === ROLES.PREPARER && String(ev.uploaded_by).toLowerCase() !== me.email.toLowerCase()) {
     throw new Error('That file is not yours.');
@@ -132,11 +135,13 @@ function getEvidenceFile(evidenceId) {
  * client can separate the per-task histories.
  */
 function taskTimeline(lineId) {
-  var me = requireRole_([ROLES.PREPARER, ROLES.REVIEWER, ROLES.AUDITOR, ROLES.ADMIN]);
-  var ds = dataSs_();
-  var line = findLine_(lineId);
+  // Auditors never get the history between the other roles: it carries the AI checks
+  // and the reviewer's decisions (the client never offers it in the audit stage).
+  var me = requireRole_([ROLES.PREPARER, ROLES.REVIEWER, ROLES.ADMIN]);
+  var t = readTabsCached_(['Sample_Lines', 'Assignments', 'Activity_Log']);
+  var line = t.Sample_Lines.filter(function (l) { return String(l.line_id) === String(lineId); })[0];
   if (!line) throw new Error('Sample not found.');
-  var asgs = getAssignments(lineId);
+  var asgs = t.Assignments.filter(function (a) { return String(a.line_id) === String(lineId); });
   if (me.role === ROLES.PREPARER &&
       !asgs.some(function (a) { return String(a.assigned_to || '').toLowerCase() === me.email.toLowerCase(); })) {
     throw new Error('This sample is not assigned to you.');
@@ -144,7 +149,7 @@ function taskTimeline(lineId) {
   var labelByAsg = {};
   asgs.forEach(function (a) { labelByAsg[String(a.assignment_id)] = parseJson_(a.detail_json).payment_no || a.evidence_type || 'Task'; });
 
-  var events = readObjects_(ds, 'Activity_Log').filter(function (e) {
+  var events = t.Activity_Log.filter(function (e) {
     return (String(e.entity_type) === 'line' && String(e.entity_id) === String(lineId)) ||
            (String(e.entity_type) === 'assignment' && labelByAsg[String(e.entity_id)] != null);
   }).map(function (e) {

@@ -4,7 +4,6 @@
 <base target="_top">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   :root{
     --bg:#F5F5F7; --surface:#FFFFFF;
@@ -292,24 +291,152 @@
   .slot-files{display:flex; flex-direction:column; gap:4px; margin-bottom:7px;}
   .slot-rev{margin-top:6px; font-size:12.5px;}
   .slot-rev .slot-l{margin-right:6px;}
+
+  /* ===== BankRec direction C re-skin + CFO dashboard (20 Oct 2026) =====================================
+   * Same look as the BankRec app: white top bar with the tabs in it (orange underline on the active one),
+   * light table headers, 12 px cards, Segoe UI, figures in monospace. Orange is CHROME only (active tab,
+   * primary button, brand mark); every data mark uses the workflow-state colours below, which are the same
+   * on the progress bars, the dashboard tiles and the charts. */
+  :root{
+    --bg:#F5F5F5; --surface:#FFFFFF; --surface-2:#FAFAFA;
+    --text:#1A1A1A; --text-2:#555555; --text-3:#767676;
+    --sep:#EEEEEE; --sep-strong:#DDDDDD;
+    --accent:#B34600; --accent-press:#8F3800; --accent-tint:#FFF3E6;     /* orange ink: links, focus, selection */
+    --orange:#FF6700; --orange-dk:#E05A00; --orange-lt:#FFF3E6; --orange-lt2:#FFE8CC;
+    --grad:linear-gradient(135deg,#FF6700 0%,#FFA500 100%);
+    --ink:#1A1A1A; --ink-soft:#333333;
+    --green:#2E7D32; --green-tint:#E8F5E9; --red:#D32F2F; --red-tint:#FDECEA; --blue:#2D6A8F; --blue-tint:#E7EFF5;
+    /* workflow states (BankRec seven-state set, validated 16 Oct 2026) */
+    --st-done:#1baf7a; --st-audit:#2a78d6; --st-review:#d98f00; --st-todo:#8a9099; --st-nf:#c62828;
+    --heat:69,68,63; --heat-max:.30;
+    --mono:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,monospace;
+    --shadow:0 1px 2px rgba(26,26,26,.05);
+  }
+  body{font-family:"Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif; font-size:13.5px;}
+  .topbar{display:block; padding:0 22px; background:#fff; backdrop-filter:none; border-bottom:1px solid var(--sep); box-shadow:0 1px 3px rgba(26,26,26,.05);}
+  .topbar-in{max-width:1180px; margin:0 auto; display:flex; align-items:center; gap:6px; flex-wrap:wrap;}
+  .brand{padding:9px 14px 9px 0; gap:10px;}
+  .brand-mark{background:var(--grad); border-radius:8px; padding:4px;}
+  .brand-t{display:flex; flex-direction:column; line-height:1.2;}
+  .brand-t b{font-size:15px; font-weight:700;}
+  .brand-t small{font-size:10.5px; color:var(--text-3); font-weight:400;}
+  .tabs{display:flex;} .tabs-in{display:flex; gap:2px; flex-wrap:wrap;}
+  .tab{background:transparent; border:0; border-bottom:4px solid transparent; color:#666; font:inherit; font-size:13.5px; font-weight:600;
+       padding:15px 16px 13px; cursor:pointer;}
+  .tab:hover{color:var(--ink);}
+  .tab.active{color:var(--orange-dk); background:var(--orange-lt); border-bottom-color:var(--orange);}
+  .tab:focus-visible{outline:2px solid var(--blue); outline-offset:-2px;}
+  .who{margin-left:auto;}
+  .role{color:var(--accent); background:var(--orange-lt); border:1px solid var(--orange-lt2); border-radius:12px; font-weight:700;}
+  .wrap{max-width:1180px; padding-top:20px;}
+  h2{font-size:21px; font-weight:700;}
+  .card{border:1px solid var(--sep); box-shadow:var(--shadow); border-radius:12px;}
+  .btn{border:1px solid var(--sep-strong); background:#fff; font-weight:600;}
+  .btn:hover{background:#F7F7F7;}
+  .btn.primary{background:var(--grad); border-color:transparent; color:#fff; box-shadow:0 2px 8px rgba(255,103,0,.22);}
+  .btn.primary:hover{background:var(--grad); filter:brightness(.95);}
+  .btn:disabled{filter:none;}
+  th{background:var(--surface-2); color:var(--ink-soft); font-weight:600; box-shadow:inset 0 -2px 0 var(--sep-strong); border-bottom:0;}
+  td{padding:9px 10px;}
+  .segmented, .filter-bar{background:#F0F0F0;}
+  .filter-bar button.active{background:var(--ink); color:#fff; box-shadow:none;}
+  .chip.active{border-color:var(--ink); color:#fff; background:var(--ink);}
+  .chip:hover{border-color:var(--ink-soft);}
+  .switch input:checked + .sw-track{background:var(--ink);}
+  .pill.blue{background:var(--blue-tint); color:var(--blue);}
+  .dot.adv{background:var(--st-audit);} .tl-item.ai .tl-dot{background:var(--blue);}
+  .prep-note-view{background:var(--blue-tint); border-left-color:var(--blue);}
+  .seg-green{background:var(--st-done);} .seg-blue{background:var(--st-audit);} .seg-amber{background:var(--st-review);}
+  .seg-neutral{background:var(--st-todo);} .seg-gray{background:#e2e2e2;} .seg-red{background:var(--st-nf);}
+  .ring{border-top-color:var(--orange);}
+  .status.info{color:var(--blue);}
+
+  /* dashboard */
+  .dash-head{display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap; margin:0 0 14px;}
+  .dash-head .sub{margin:3px 0 0;}
+  .stamp{font-size:11.5px; color:var(--text-3); text-align:right;}
+  .stamp b{color:var(--ink-soft); font-weight:600;}
+  .kpis{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin:0 0 16px;}
+  .kpi{position:relative; overflow:hidden; background:var(--k-bg,#F4F4F4); border:1px solid var(--k-bd,#E4E4E4); border-radius:12px; padding:13px 15px;}
+  .kpi::before{content:""; position:absolute; left:0; right:0; top:0; height:3px; background:var(--k-c,#8a9099);}
+  .kpi .l{font-size:10px; letter-spacing:.09em; font-weight:700; color:var(--ink-soft); text-transform:uppercase; display:flex; align-items:center; gap:6px;}
+  .kpi .l i{width:9px; height:9px; border-radius:2px; background:var(--k-c,#8a9099); display:inline-block;}
+  .kpi .v{font-size:25px; font-weight:700; font-variant-numeric:tabular-nums; margin-top:6px; line-height:1.1;}
+  .kpi .u{font-size:11.5px; color:var(--text-2); margin-top:4px;}
+  .kpi.k-total{--k-c:#8a9099; --k-bg:#F4F4F4; --k-bd:#E4E4E4;}
+  .kpi.k-review{--k-c:var(--st-review); --k-bg:#FBF1DE; --k-bd:#F1DDB2;}
+  .kpi.k-audit{--k-c:var(--st-audit); --k-bg:#E8F0FB; --k-bd:#C9DAF3;}
+  .kpi.k-done{--k-c:var(--st-done); --k-bg:#E4F6EE; --k-bd:#BFE6D3;}
+  .kpi.k-late{--k-c:var(--red); --k-bg:var(--red-tint); --k-bd:#F5C6C2;}
+  .card h3{font-size:14px; font-weight:700; margin:0 0 2px;}
+  .cap{font-size:11.5px; color:var(--text-3); margin:0 0 10px;}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
+  .grid2 > .card{min-width:0;}
+  @media (max-width:860px){.grid2{grid-template-columns:1fr;}}
+  .scroll{overflow-x:auto;}
+  .dash-grid th.n, .dash-grid td.n{text-align:right; font-variant-numeric:tabular-nums;}
+  .dash-grid th.n{font-family:inherit; font-size:11.5px;}
+  .dash-grid td{white-space:nowrap; padding:8px 10px;}
+  .dash-grid tr.grp td{background:var(--surface-2); font-weight:700; border-top:2px solid var(--sep-strong);}
+  .dash-grid tr.tot td{font-weight:700; border-top:2px solid var(--sep-strong);}
+  .dash-grid td.z{color:#b9b9b9;}
+  .code{font-family:var(--mono); font-size:11.5px; color:var(--text-3);}
+  .sbar{display:flex; height:16px; border-radius:4px; overflow:hidden; gap:2px; background:var(--surface);}
+  .sbar i{display:block; height:100%;}
+  .brow{display:grid; grid-template-columns:minmax(90px,170px) 1fr 44px; gap:10px; align-items:center; margin:8px 0;}
+  .brow .k{font-size:12.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .brow .t{font-family:var(--mono); font-size:12px; text-align:right; color:var(--ink-soft);}
+  .legend{display:flex; flex-wrap:wrap; gap:6px 14px; font-size:11.5px; color:var(--text-2); margin-top:8px;}
+  .legend i{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:-1px;}
+  details.tv{margin-top:10px; font-size:12px;} details.tv summary{cursor:pointer; color:var(--text-3);}
+  .ctl{display:flex; flex-direction:column; gap:7px; font-size:12.5px;}
+  .ctl div{display:flex; gap:8px; align-items:baseline;}
+  .tag{font-size:10.5px; font-weight:700; padding:1px 7px; border-radius:5px; white-space:nowrap; background:var(--amber-tint); color:var(--amber);}
+  .tag.ok{background:var(--green-tint); color:var(--green);}
+  .tip{position:fixed; pointer-events:none; background:var(--ink); color:#fff; font-size:12px; padding:6px 9px; border-radius:6px; box-shadow:0 6px 18px rgba(0,0,0,.2); z-index:400; max-width:280px;}
 </style>
 </head>
 <body>
-  <header class="topbar">
+  <header class="topbar"><div class="topbar-in">
     <div class="brand"><span class="brand-mark" title="Jumia">
       <svg viewBox="0 0 1544 1548" width="26" height="26" aria-hidden="true" focusable="false">
         <path fill="#ffffff" d="m780.4 1404.5c-360.7 0-652.3-283.2-652.3-633.5 0-350.3 291.6-633.5 652.3-633.5 360.7 0 652.2 283.2 652.2 633.5 0 350.3-291.5 633.5-652.2 633.5z"/>
         <path fill="#f8991d" fill-rule="evenodd" d="m1432.6 374.2v0.2h1.6c73.1 120.3 111 259.6 109.3 400.7 0 141.7-38.1 281.1-109.8 402.9l-22 32.5-43.7 58.7-49.3 54.5c-14.8 16.8-36.3 31.2-54.4 49.2-28.5 22.5-59.2 43.7-90.8 62l-33.1 22c-113.5 59.9-239.5 91.3-368 90.9-128.7 0.7-255.5-32-367.6-95.1-21.8-9.8-42.7-22-61.8-36.4l-58.6-43.8c-38.1-31.6-73.6-66.7-105.2-105.3-16.6-18.7-31.4-39.9-43.8-61.9l-21.7-29-36.4-65.9c-15.9-34.2-29.4-69.1-40.5-105.3-23.1-74.3-35.3-151.7-36.4-229.8 0.5-52.7 6.3-104.8 18.1-156.5 21.3-111.2 67.5-216.3 135.7-306.6 21.3-30.3 45.7-58.2 72.9-83.7l25.7-25.7 58.6-49.3 61.8-40.5 32.5-18.1c112.3-63.3 239.3-96.2 368-94.7 128.9-0.4 255.4 32.1 368 94.7l32.5 18.1 58.5 40.5 58.2 49.3 25.7 25.7c27.2 25.1 51.6 53.2 72.9 83.7 15.9 19.7 30.5 40.2 43.8 62zm-481.5 152.8l-174.8-357.8-178.4 357.8-393.7 58.2 283.7 277.3-65.5 394.2 349.1-185.7 353.6 185.7-65.8-394.2 284.4-277.3z"/>
-      </svg></span><span>Audit Samples Manager</span></div>
+      </svg></span><span class="brand-t"><b>Audit Samples Manager</b><small>External audit samples · evidence · review</small></span></div>
+    <nav class="tabs" id="navWrap" hidden><div class="tabs-in" id="nav"></div></nav>
     <div class="who" id="who">…</div>
-  </header>
-
-  <div class="nav-wrap" id="navWrap" hidden>
-    <div class="segmented" id="nav"></div>
-  </div>
+  </div></header>
 
   <main class="wrap">
     <div class="gate" id="gate" hidden></div>
+
+    <!-- DASHBOARD (Administrators + dashboard_viewers; never Auditors) ------- -->
+    <section class="view" id="view-dash" hidden>
+      <div class="dash-head">
+        <div><h2>Where the audit stands</h2><p class="sub" id="dashSub">Loading…</p></div>
+        <div class="stamp" id="dashStamp"></div>
+      </div>
+      <div class="kpis" id="dashTiles"></div>
+      <div class="card">
+        <h3>Samples by stream, company and status</h3>
+        <p class="cap">Count of samples. Grey shading = how many (one scale for the whole grid). Tasks = evidence items behind those samples.</p>
+        <div class="scroll"><table class="dash-grid" id="dashGrid"></table></div>
+      </div>
+      <div class="grid2">
+        <div class="card"><h3>Samples by status, per stream</h3><p class="cap">Share of each stream's samples. Hover a segment for the count.</p>
+          <div id="dashStream"></div><div class="legend" id="dashLg1"></div>
+          <details class="tv"><summary>Table view</summary><div id="dashTv1"></div></details></div>
+        <div class="card"><h3>Samples by status, per country</h3><p class="cap">All streams together. Hover a segment for the count.</p>
+          <div id="dashCountry"></div><div class="legend" id="dashLg2"></div>
+          <details class="tv"><summary>Table view</summary><div id="dashTv2"></div></details></div>
+      </div>
+      <div class="grid2">
+        <div class="card"><h3>Tasks by status</h3><p class="cap">System tasks are the app's own reconciliations (Flow C): reviewed, never prepared.</p>
+          <div id="dashDesk"></div><div class="legend" id="dashLg3"></div></div>
+        <div class="card"><h3>Method &amp; controls</h3><p class="cap">Run every time the page opens.</p><div class="ctl" id="dashCtl"></div></div>
+      </div>
+      <p class="cap" id="dashFoot"></p>
+    </section>
 
     <!-- REQUEST (+ inline Assign detail) --------------------------------- -->
     <section class="view" id="view-enrich" hidden>
@@ -419,9 +546,67 @@
     </div>
   </div>
   <div id="toasts" class="toasts"></div>
+  <div class="tip" id="tip" hidden></div>
 
+<script>window.__BOOT__="__ASM_BOOT__"; if(typeof window.__BOOT__==='string') window.__BOOT__=null;</script>
 <script>
   function $(id){ return document.getElementById(id); }
+
+  /* ---- timed server calls + access beacon (20 Oct 2026) ----
+   * RUN() is google.script.run with a stopwatch: every call is timed (round trip and
+   * drawing) and logged, with each page open and dashboard view, to the Access_Log tab
+   * through logUi (batched, never blocks the page). The user and role are stamped on the
+   * server from the session. */
+  var BOOT=window.__BOOT__||null, VISIT=Math.random().toString(36).slice(2,8), LOGQ=[], logTimer=null, OPEN_LOGGED=false, currentView='';
+  function nowMs(){ return (window.performance&&performance.now)?performance.now():Date.now(); }
+  function logEv(e){
+    e.visit=VISIT; LOGQ.push(e);
+    if(LOGQ.length>=20) flushLog(); else if(!logTimer) logTimer=setTimeout(flushLog, 4000);
+  }
+  function flushLog(){
+    if(logTimer){ clearTimeout(logTimer); logTimer=null; }
+    if(!LOGQ.length) return;
+    var batch=LOGQ.splice(0,40);
+    try{ google.script.run.withFailureHandler(function(){}).logUi(batch); }catch(e){}
+  }
+  document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='hidden') flushLog(); });
+  function logOpenOnce(view, outcome, detail){
+    if(OPEN_LOGGED) return; OPEN_LOGGED=true;
+    var bootState = !BOOT ? 'boot=none' : (BOOT.user ? 'boot=user' : ('boot=nouser'+(BOOT.err?(':'+BOOT.err):'')));
+    logEv({event:'open', view:view||'', outcome:outcome||'served', server_ms:BOOT&&BOOT.srvMs, client_ms:Math.round(nowMs()),
+           scope:(currentUser&&currentUser.role)||'', detail:(detail||'')+';'+bootState});
+  }
+  function sizeKb(v){ try{ return Math.round(JSON.stringify(v).length/102.4)/10; }catch(e){ return ''; } }
+  function RUN(){ return timedRunner(null, null); }
+  function timedRunner(ok, fail){
+    if(typeof Proxy==='undefined'){ var r=google.script.run; if(ok) r=r.withSuccessHandler(ok); if(fail) r=r.withFailureHandler(fail); return r; }
+    return new Proxy({}, { get:function(_, fn){
+      if(fn==='withSuccessHandler') return function(h){ return timedRunner(h, fail); };
+      if(fn==='withFailureHandler') return function(h){ return timedRunner(ok, h); };
+      return function(){
+        var args=arguments, t0=nowMs(), view=currentView;
+        var r=google.script.run.withSuccessHandler(function(res){
+          var t1=nowMs(); try{ if(ok) ok.apply(null, arguments); } finally {
+            var t2=nowMs();
+            logEv({event:'call', view:fn, outcome:'ok', client_ms:Math.round(t1-t0), server_ms:(res&&res.srvMs)||'', scope:view,
+                   detail:'kb='+sizeKb(res)+';draw='+Math.round(t2-t1)});
+            logOpenOnce(view, 'served', 'first='+fn);
+          }
+        }).withFailureHandler(function(err){
+          var t1=nowMs(); try{ if(fail) fail.apply(null, arguments); else if(window.console) console.error(err); } finally {
+            logEv({event:'call', view:fn, outcome:'error', client_ms:Math.round(t1-t0), scope:view, detail:String(err&&err.message||err).slice(0,200)});
+          }
+        });
+        return r[fn].apply(r, args);
+      };
+    }});
+  }
+
+  /* ---- per-screen memory: a screen you have seen shows at once, then refreshes quietly ---- */
+  var MEMO={};
+  function memoKeep(key, data){ try{ MEMO[key]={d:data, s:JSON.stringify(data)}; }catch(e){} }
+  function memoShow(key, fn){ if(MEMO[key]){ fn(MEMO[key].d); return true; } return false; }
+  function memoFresh(key, data, fn){ var s=null; try{ s=JSON.stringify(data); }catch(e){} if(MEMO[key] && s!==null && MEMO[key].s===s) return; fn(data); }
   function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
   function fmtNum(v){ if(v===null||v===undefined||String(v).trim()==='') return '—'; var n=Number(v); return isNaN(n)?esc(v):n.toLocaleString(undefined,{maximumFractionDigits:2}); }
   function fmtDate(s){ if(!s) return '—'; var d=new Date(s); return isNaN(d)?esc(String(s).slice(0,10)):d.toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}); }
@@ -474,7 +659,7 @@
     setTimeout(function(){ el.classList.remove('on'); setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); }, 240); }, 3600);
   }
 
-  var VIEW_LABELS={enrich:'Request', assign:'Assign', tasks:'My tasks', review:'Review', audit:'Audit'};
+  var VIEW_LABELS={dash:'Dashboard', enrich:'Request', assign:'Assign', tasks:'My tasks', review:'Review', audit:'Audit'};
   var ROLE_VIEWS={
     'Administrator':['enrich','tasks','review','audit'],
     'Preparer':['tasks'],
@@ -484,16 +669,24 @@
   var currentUser=null, currentReqId=null, assignLoaded=false;
 
   /* ---------- boot ---------- */
-  google.script.run.withSuccessHandler(onUser).withFailureHandler(function(e){ gate('Could not start the app: '+e.message); }).getCurrentUser();
+  // Deferred one tick: the rest of this script (stage configs, view loaders) must be defined
+  // before the first screen starts; with getCurrentUser that wait came for free.
+  if(BOOT && BOOT.user) setTimeout(function(){ onUser(BOOT.user); }, 0);
+  else RUN().withSuccessHandler(onUser).withFailureHandler(function(e){ gate('Could not start the app: '+e.message); }).getCurrentUser();
 
   function onUser(u){
     currentUser=u;
     $('who').innerHTML = u.email ? esc(u.email)+' <span class="role">'+esc(u.role||'no role')+'</span>' : 'Unidentified';
     if(!u.isSetup){ gate('The app isn\'t set up yet. An administrator needs to run setup().'); return; }
-    var views = ROLE_VIEWS[u.role];
-    if(!views){
+    var views = (ROLE_VIEWS[u.role]||[]).slice();
+    // The Dashboard tab exists only for people who may open it (Administrators + Settings
+    // dashboard_viewers, never Auditors - decided on the server, canSeeDashboard_), and comes first.
+    if(u.canDash && u.role!=='Auditor') views.unshift('dash');
+    if(!views.length){
       gate(u.role ? ('Signed in as '+esc(u.role)+'. Your workspace is coming in a later phase.')
                   : 'You don\'t have access yet. Ask an administrator to add your email.');
+      logOpenOnce('', 'refused', u.role ? ('role='+u.role+' has no views') : 'not registered');
+      flushLog();
       return;
     }
     buildNav(views);
@@ -502,7 +695,7 @@
   function buildNav(views){
     var nav=$('nav'); nav.innerHTML='';
     views.forEach(function(v,i){
-      var b=document.createElement('button'); b.className='seg'+(i===0?' active':''); b.dataset.view=v; b.textContent=VIEW_LABELS[v]||v;
+      var b=document.createElement('button'); b.className='tab'+(i===0?' active':''); b.dataset.view=v; b.textContent=VIEW_LABELS[v]||v;
       b.addEventListener('click', function(){ showView(v); });
       nav.appendChild(b);
     });
@@ -514,16 +707,108 @@
 
   function showView(name){
     $('gate').hidden=true;
-    Array.prototype.forEach.call($('nav').querySelectorAll('.seg'), function(b){ b.classList.toggle('active', b.dataset.view===name); });
+    currentView=name;
+    Array.prototype.forEach.call($('nav').querySelectorAll('.tab'), function(b){ b.classList.toggle('active', b.dataset.view===name); });
+    $('view-dash').hidden   = name!=='dash';
     $('view-enrich').hidden = name!=='enrich';
     $('view-tasks').hidden  = name!=='tasks';
     $('view-review').hidden = name!=='review';
     $('view-audit').hidden  = name!=='audit';
+    if(name==='dash')   loadDash();
     if(name==='enrich') loadRequest();
     if(name==='tasks')  refreshTasks();
     if(name==='review') loadStage('review');
     if(name==='audit')  loadStage('audit');
   }
+
+
+  /* ---------- dashboard (CFO view) ---------- */
+  var DST=[['todo','With preparer','--st-todo'],['review','In review','--st-review'],['audit','In audit','--st-audit'],['done','Closed','--st-done'],['nf','Not found','--st-nf']];
+  var dashFirst=true;
+  function loadDash(){
+    if(dashFirst && BOOT && BOOT.dash){
+      dashFirst=false; renderDash(BOOT.dash);
+      logEv({event:'dashboard', view:'dash', outcome:'served', server_ms:BOOT.srvMs, client_ms:Math.round(nowMs()), scope:BOOT.dash.scope||'ALL', detail:'embedded in page'});
+      logOpenOnce('dash', 'served', 'first=dashboard (embedded)');
+      return;
+    }
+    dashFirst=false;
+    memoShow('dash', renderDash);
+    var t0=nowMs();
+    RUN().withSuccessHandler(function(d){
+      memoFresh('dash', d, renderDash);
+      logEv({event:'dashboard', view:'dash', outcome:'served', server_ms:d.srvMs, client_ms:Math.round(nowMs()-t0), scope:d.scope||'ALL', detail:d.fromCache?'cache':'built'});
+    }).withFailureHandler(function(e){ $('dashSub').textContent=e.message; }).getDashboard();
+  }
+  function dSum(o){ var n=0; for(var k in o) n+=o[k]; return n; }
+  function dPct(a,b){ return b?Math.round(100*a/b)+'%':'·'; }
+  function dBar(c, label, unit){
+    var n=dSum(c);
+    return DST.filter(function(s){ return c[s[0]]; }).map(function(s){
+      return '<i style="flex:'+c[s[0]]+' 0 0;background:var('+s[2]+')" data-tip="'+esc(label)+' · '+s[1]+': '+c[s[0]]+' of '+n+' '+unit+' ('+dPct(c[s[0]],n)+')"></i>';
+    }).join('');
+  }
+  function dRows(list, el, unit){ $(el).innerHTML=list.map(function(x){ return '<div class="brow"><div class="k" title="'+esc(x[0])+'">'+esc(x[0])+'</div><div class="sbar">'+dBar(x[1],x[0],unit)+'</div><div class="t">'+dSum(x[1])+'</div></div>'; }).join('') || '<div class="empty">No samples yet.</div>'; }
+  function dLegend(el, keys){ $(el).innerHTML=DST.filter(function(s){ return !keys||keys.indexOf(s[0])!==-1; }).map(function(s){ return '<span><i style="background:var('+s[2]+')"></i>'+s[1]+'</span>'; }).join(''); }
+  function dTable(el, list){ $(el).innerHTML='<div class="scroll"><table class="dash-grid"><thead><tr><th></th>'+DST.map(function(s){ return '<th class="n">'+s[1]+'</th>'; }).join('')+'</tr></thead><tbody>'
+    +list.map(function(x){ return '<tr><td>'+esc(x[0])+'</td>'+DST.map(function(s){ return '<td class="n">'+(x[1][s[0]]||'—')+'</td>'; }).join('')+'</tr>'; }).join('')+'</tbody></table></div>'; }
+  function dAdd(a,b){ var o={}; [a,b].forEach(function(x){ for(var k in x) o[k]=(o[k]||0)+x[k]; }); return o; }
+  function renderDash(d){
+    var reqs=d.requests||[], rows=d.rows||[];
+    var tot=reqs.reduce(function(o,r){ return dAdd(o,r.s); },{}), tk=reqs.reduce(function(o,r){ return dAdd(o,r.tk); },{});
+    var nS=dSum(tot), nT=dSum(tk), late=reqs.filter(function(r){ return r.daysLate>0; });
+    var revs=Object.keys(d.reviewers||{}).map(function(e){ return shortEmail(e); });
+    var cos={}; rows.forEach(function(r){ cos[r.company]=1; });
+    var flows={}; reqs.forEach(function(r){ flows[r.flow_id]=1; });
+    $('dashSub').textContent=nS+' samples in '+reqs.length+' request'+(reqs.length===1?'':'s')+'. '+(tot.audit||0)+' are with the auditors, '+(tot.review||0)+' are waiting on the Jumia reviewer, '+(tot.done||0)+' are closed.';
+    $('dashStamp').innerHTML='As of <b>'+esc(d.asOf)+' '+esc(d.tz==='Europe/Lisbon'?'Lisbon':d.tz)+'</b><br>Source: app Data sheet (Requests, Sample_Lines, Assignments)';
+    function tile(cls,label,val,sub){ return '<div class="kpi '+cls+'"><div class="l"><i></i>'+label+'</div><div class="v">'+val+'</div><div class="u">'+sub+'</div></div>'; }
+    $('dashTiles').innerHTML=
+      tile('k-total','Samples',nS, nT+' tasks · '+Object.keys(flows).length+' audit stream'+(Object.keys(flows).length===1?'':'s')+' · '+Object.keys(cos).length+' companies')
+     +tile('k-review','In review · Jumia',tot.review||0, (tot.review?('with '+esc(revs.join(', ')||'the reviewer')):'nothing waiting on the reviewer'))
+     +tile('k-audit','In audit · auditors',tot.audit||0, dPct(tot.audit||0,nS)+' of samples · reviewed, waiting for the auditors')
+     +tile('k-done','Closed',tot.done||0, dPct(tot.done||0,nS)+' of samples · '+(tk.done||0)+' tasks accepted')
+     +tile('k-late','Past due',late.length+' of '+reqs.length, late.length?late.map(function(r){ return esc(r.ref)+' '+r.daysLate+' d'; }).join(' · '):'no request past its due date');
+    // heat grid
+    var max=0; rows.forEach(function(r){ DST.forEach(function(s){ max=Math.max(max, r.s[s[0]]||0); }); });
+    var cs=getComputedStyle(document.documentElement), heat=cs.getPropertyValue('--heat').trim()||'69,68,63', hm=parseFloat(cs.getPropertyValue('--heat-max'))||.3;
+    function cell(v){ if(!v) return '<td class="n z">—</td>'; return '<td class="n" style="background:rgba('+heat+','+(Math.sqrt(v/max)*hm).toFixed(3)+')">'+v+'</td>'; }
+    var head='<thead><tr><th>Audit stream · company</th>'+DST.map(function(s){ return '<th class="n">'+s[1]+'</th>'; }).join('')+'<th class="n">Samples</th><th class="n">Tasks</th><th class="n">% closed</th><th>Due</th></tr></thead>';
+    var body='', byFlow={}, order=[];
+    rows.forEach(function(r){ if(!byFlow[r.flow_id]){ byFlow[r.flow_id]=[]; order.push(r.flow_id); } byFlow[r.flow_id].push(r); });
+    order.forEach(function(f){
+      var g=byFlow[f], gs=g.reduce(function(o,r){ return dAdd(o,r.s); },{}), gt=g.reduce(function(n,r){ return n+r.tasks; },0), n=dSum(gs);
+      var due=reqs.filter(function(r){ return r.flow_id===f; }).map(function(r){
+        return r.daysLate>0 ? '<span class="pill red">'+esc(r.due)+' · '+r.daysLate+' d late</span>' : (r.due?'<span class="pill neutral">'+esc(r.due)+'</span>':'');
+      }).join(' ');
+      body+='<tr class="grp"><td>'+esc(g[0].flow)+'</td>'+DST.map(function(s){ return '<td class="n">'+(gs[s[0]]||'—')+'</td>'; }).join('')
+        +'<td class="n">'+n+'</td><td class="n">'+gt+'</td><td class="n">'+dPct(gs.done||0,n)+'</td><td>'+due+'</td></tr>';
+      g.forEach(function(r){
+        body+='<tr><td>&nbsp;&nbsp;'+esc(r.country)+' <span class="code">'+esc(r.company)+'</span></td>'+DST.map(function(s){ return cell(r.s[s[0]]); }).join('')
+          +'<td class="n">'+r.samples+'</td><td class="n">'+r.tasks+'</td><td class="n">'+dPct(r.s.done||0,r.samples)+'</td><td></td></tr>';
+      });
+    });
+    body+='<tr class="tot"><td>All streams</td>'+DST.map(function(s){ return '<td class="n">'+(tot[s[0]]||'—')+'</td>'; }).join('')+'<td class="n">'+nS+'</td><td class="n">'+nT+'</td><td class="n">'+dPct(tot.done||0,nS)+'</td><td></td></tr>';
+    $('dashGrid').innerHTML=head+'<tbody>'+body+'</tbody>';
+    // charts
+    var byS=order.map(function(f){ return [byFlow[f][0].flow, byFlow[f].reduce(function(o,r){ return dAdd(o,r.s); },{})]; });
+    dRows(byS,'dashStream','samples'); dLegend('dashLg1'); dTable('dashTv1', byS);
+    var cty={}, names={}; rows.forEach(function(r){ cty[r.company]=dAdd(cty[r.company]||{}, r.s); names[r.company]=r.country; });
+    var byC=Object.keys(cty).map(function(k){ return [names[k]+' ('+k+')', cty[k]]; }).sort(function(a,b){ return dSum(b[1])-dSum(a[1]); });
+    dRows(byC,'dashCountry','samples'); dLegend('dashLg2'); dTable('dashTv2', byC);
+    var dk=d.desk||{prep:{},sys:{}};
+    dRows([['Preparer tasks ('+dSum(dk.prep)+')', dk.prep], ['System tasks ('+dSum(dk.sys)+')', dk.sys]].filter(function(x){ return dSum(x[1]); }),'dashDesk','tasks');
+    dLegend('dashLg3', ['todo','review','audit','done']);
+    $('dashCtl').innerHTML=(d.controls||[]).map(function(c){
+      return '<div><span class="tag'+(c.ok?' ok':'')+'">'+esc(c.ok?'OK':(c.tag||'Flag'))+'</span><span>'+esc(c.text)+'</span></div>'; }).join('');
+    $('dashFoot').textContent='Visible to Administrators and the dashboard viewers list (Settings: dashboard_viewers); never to Auditors. Every open is logged in Access_Log.';
+  }
+  document.addEventListener('mousemove', function(e){
+    var tip=$('tip'), t=e.target&&e.target.closest?e.target.closest('[data-tip]'):null;
+    if(!t){ if(!tip.hidden) tip.hidden=true; return; }
+    tip.textContent=t.getAttribute('data-tip'); tip.hidden=false;
+    tip.style.left=Math.min(e.clientX+12, window.innerWidth-290)+'px'; tip.style.top=(e.clientY+14)+'px';
+  });
 
   /* ---------- enrich ---------- */
   var LOADING_MSGS=["Submitting query to the gateway","Running the read-only extraction","Retrieving the result set","Verifying and hashing the evidence"];
@@ -541,17 +826,20 @@
   /* ---- new request form ---- */
   var formFlows=[], requestLoaded=false;
   function loadRequest(){
+    showListPane();
     if(!requestLoaded){
+      // One call for the whole screen (table + form options + preparer list); it used to be three.
       requestLoaded=true;
-      google.script.run.withSuccessHandler(function(cfg){
-        formFlows=(cfg&&cfg.flows)||[];
+      $('flowSel').addEventListener('change', populatePeriods);
+      RUN().withSuccessHandler(function(r){
+        formFlows=(r.form&&r.form.flows)||[];
         $('flowSel').innerHTML = formFlows.length ? formFlows.map(function(f){ return '<option value="'+esc(f.flow_id)+'">'+esc(f.name)+'</option>'; }).join('') : '<option value="">No flows configured</option>';
         populatePeriods();
-      }).withFailureHandler(function(e){ setStatus(e.message,'warn'); }).requestFormConfig();
-      google.script.run.withSuccessHandler(fillPreparers).withFailureHandler(function(){}).listPreparers();
-      $('flowSel').addEventListener('change', populatePeriods);
+        fillPreparers(r.preparers);
+        renderReqTable(r.requests);
+      }).withFailureHandler(function(e){ requestLoaded=false; $('reqTableWrap').innerHTML='<div class="card"><div class="empty">'+esc(e.message)+'</div></div>'; }).requestScreen();
+      return;
     }
-    showListPane();
     refreshHistory();
   }
   function fillPreparers(emails){ $('preparers').innerHTML = (emails||[]).map(function(e){ return '<option value="'+esc(e)+'">'; }).join(''); }
@@ -585,7 +873,7 @@
     $('timelineBody').innerHTML='<div class="empty">Loading…</div>';
     $('tlOverlay').hidden=false;
     tlData=null; tlTab='sample';
-    google.script.run.withSuccessHandler(function(d){ tlData=d; renderTimeline(d); })
+    RUN().withSuccessHandler(function(d){ tlData=d; renderTimeline(d); })
       .withFailureHandler(function(e){ $('timelineBody').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
       .taskTimeline(lineId);
   }
@@ -647,7 +935,7 @@
     if(!auditor){ setStatus('Enter auditor email(s).','warn'); return; }
     if(flowId==='flowC' && !reviewer){ setStatus('This flow needs a reviewer — the reconciliation task is assigned to them.','warn'); return; }
     $('run').disabled=true; clearStatus(); startLoader();
-    google.script.run.withSuccessHandler(handleEnrich)
+    RUN().withSuccessHandler(handleEnrich)
       .withFailureHandler(function(e){ stopLoader(); $('run').disabled=false; setStatus('Error: '+e.message,'warn'); })
       .enrich({ docs:docs, flowId:flowId, periodName:periodName, auditorEmail:auditor,
                 reviewerEmail:reviewer, dueDate:dueDate, requestRef:requestRef });
@@ -706,7 +994,8 @@
 
   /* ---- requests table ---- */
   function refreshHistory(){
-    google.script.run.withSuccessHandler(renderReqTable)
+    memoShow('reqs', renderReqTable);
+    RUN().withSuccessHandler(function(r){ memoFresh('reqs', r, renderReqTable); })
       .withFailureHandler(function(e){ $('reqTableWrap').innerHTML='<div class="card"><div class="empty">'+esc(e.message)+'</div></div>'; })
       .requestOverview();
   }
@@ -741,6 +1030,7 @@
     return leg ? '<div class="prog-legend" style="margin:0 2px 12px">'+leg+'<span class="prog-lbl" style="color:var(--text-3)">S samples · T tasks</span></div>' : '';
   }
   function renderReqTable(reqs){
+    memoKeep('reqs', reqs);
     var wrap=$('reqTableWrap');
     if(!reqs.length){ wrap.innerHTML='<div class="card"><div class="empty">No requests yet. Click “New request” to add one.</div></div>'; return; }
     var rows=reqs.map(function(r){
@@ -796,21 +1086,21 @@
     currentReqId=id;
     showDetailPane();
     $('assignWrap').innerHTML='<div class="empty">Loading…</div>';
-    google.script.run.withSuccessHandler(prepAssign).withFailureHandler(function(e){ $('assignWrap').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; }).getRequestDetail(id);
+    RUN().withSuccessHandler(prepAssign).withFailureHandler(function(e){ $('assignWrap').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; }).getRequestDetail(id);
   }
-  function reloadAssign(){ if(currentReqId) google.script.run.withSuccessHandler(prepAssign).withFailureHandler(function(){}).getRequestDetail(currentReqId); }
+  function reloadAssign(){ if(currentReqId) RUN().withSuccessHandler(prepAssign).withFailureHandler(function(){}).getRequestDetail(currentReqId); }
   $('backToReqs').addEventListener('click', function(){ showListPane(); refreshHistory(); });
 
   function openIpeModal(id){
     openModal('ipe');
     $('ipeModalBody').innerHTML='<div class="empty">Loading…</div>';
-    google.script.run.withSuccessHandler(function(rep){ $('ipeModalBody').innerHTML=ipeHtml(rep.ipe); wireCopy($('ipeModalBody')); })
+    RUN().withSuccessHandler(function(rep){ $('ipeModalBody').innerHTML=ipeHtml(rep.ipe); wireCopy($('ipeModalBody')); })
       .withFailureHandler(function(e){ $('ipeModalBody').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
       .requestReport(id);
   }
   function downloadRequestFile(id, which, btn){
     var o=btn.textContent; btn.disabled=true; btn.textContent='Preparing…';
-    google.script.run.withSuccessHandler(function(f){ btn.disabled=false; btn.textContent=o; openBlob(f); })
+    RUN().withSuccessHandler(function(f){ btn.disabled=false; btn.textContent=o; openBlob(f); })
       .withFailureHandler(function(e){ btn.disabled=false; btn.textContent=o; alert(e.message); })
       .getRequestFile(id, which);
   }
@@ -908,7 +1198,7 @@
     var updates=ids.map(function(id){ return { assignment_id:id, assigned_to:email }; });
     var btn=$('bulkAssign'); btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Assigning';
     function done(){ btn.disabled=false; btn.textContent='Assign to selected'; }
-    google.script.run.withSuccessHandler(function(){ done(); reloadAssign(); toast(ids.length+' task'+(ids.length>1?'s':'')+' '+(email?('assigned to '+email):'unassigned'),'ok'); })
+    RUN().withSuccessHandler(function(){ done(); reloadAssign(); toast(ids.length+' task'+(ids.length>1?'s':'')+' '+(email?('assigned to '+email):'unassigned'),'ok'); })
       .withFailureHandler(function(e){ done(); toast(e.message,'warn'); })
       .assignBatch(updates);
   }
@@ -923,7 +1213,8 @@
 
   /* ---------- my tasks (preparer) ---------- */
   function refreshTasks(){
-    google.script.run.withSuccessHandler(renderTasks)
+    memoShow('tasks', renderTasks);
+    RUN().withSuccessHandler(function(items){ memoFresh('tasks', items, renderTasks); })
       .withFailureHandler(function(e){ $('taskList').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
       .listMyAssignments();
   }
@@ -939,7 +1230,7 @@
       +'<button class="btn sm" id="myExportBtn" style="margin-left:auto" title="Download all your tasks as an Excel checklist">Export</button></div>';
   }
   function renderTasks(items){
-    if(items) myTasks=items;
+    if(items){ myTasks=items; memoKeep('tasks', items); }
     var all=myTasks;
     if(!all.length){ $('taskList').innerHTML='<div class="empty">No tasks assigned to you yet.</div>'; return; }
     var shown=filterMyTasks_(all);
@@ -1042,7 +1333,7 @@
     var reader=new FileReader();
     reader.onload=function(){
       var b64=String(reader.result).split(',')[1];
-      google.script.run.withSuccessHandler(function(items){ renderTasks(items); toast('File uploaded','ok'); })
+      RUN().withSuccessHandler(function(items){ renderTasks(items); toast('File uploaded','ok'); })
         .withFailureHandler(function(e){ msg.innerHTML=esc(e.message); Array.prototype.forEach.call(btns, function(b){ b.disabled=false; b.classList.remove('is-busy'); }); toast(e.message,'warn'); })
         .uploadEvidence(inp.dataset.aid, file.name, file.type, b64, inp.dataset.slot||'');
     };
@@ -1053,20 +1344,20 @@
   function taskCall(method, arg, btn, okMsg, busyLabel){
     var orig;
     if(btn){ orig=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>'+(busyLabel||''); }
-    google.script.run.withSuccessHandler(function(items){ renderTasks(items); if(okMsg) toast(okMsg,'ok'); })
+    RUN().withSuccessHandler(function(items){ renderTasks(items); if(okMsg) toast(okMsg,'ok'); })
       .withFailureHandler(function(e){ if(btn){ btn.disabled=false; btn.innerHTML=orig; } toast(e.message,'warn'); })[method](arg);
   }
   // Submit carries the preparer's optional comment (read from the card's textarea).
   function submitTask(btn){
     var card=btn.closest('.task-card'), ta=card&&card.querySelector('.prep-note'), note=ta?ta.value.trim():'';
     var orig=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Submitting';
-    google.script.run.withSuccessHandler(function(items){ renderTasks(items); toast('Submitted for review','ok'); })
+    RUN().withSuccessHandler(function(items){ renderTasks(items); toast('Submitted for review','ok'); })
       .withFailureHandler(function(e){ btn.disabled=false; btn.innerHTML=orig; toast(e.message,'warn'); })
       .submitAssignment(btn.dataset.aid, note);
   }
   function exportMyTasks_(btn){
     var o=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Exporting';
-    google.script.run.withSuccessHandler(function(f){ btn.disabled=false; btn.innerHTML=o; downloadBlob(f); toast('Export ready','ok'); })
+    RUN().withSuccessHandler(function(f){ btn.disabled=false; btn.innerHTML=o; downloadBlob(f); toast('Export ready','ok'); })
       .withFailureHandler(function(e){ btn.disabled=false; btn.innerHTML=o; toast(e.message,'warn'); })
       .exportMyTasks();
   }
@@ -1087,11 +1378,13 @@
   function loadStage(stage){
     var c=STAGE_CFG[stage];
     $(c.detailPane).hidden=true; $(c.listPane).hidden=false; animateSlide($(c.listPane),'slide-l');
-    google.script.run.withSuccessHandler(function(r){ renderStageQueue(stage,r); })
+    memoShow('q-'+stage, function(r){ renderStageQueue(stage, r); });
+    RUN().withSuccessHandler(function(r){ memoFresh('q-'+stage, r, function(x){ renderStageQueue(stage, x); }); })
       .withFailureHandler(function(e){ $(c.queueWrap).innerHTML='<div class="card"><div class="empty">'+esc(e.message)+'</div></div>'; })
       .reviewQueue(stage);
   }
   function renderStageQueue(stage, reqs){
+    memoKeep('q-'+stage, reqs);
     var wrap=$(STAGE_CFG[stage].queueWrap);
     if(!reqs.length){ wrap.innerHTML='<div class="card"><div class="empty">Nothing assigned to you here yet.</div></div>'; return; }
     var rows=reqs.map(function(r){
@@ -1116,7 +1409,7 @@
     stageState[stage].reqId=id; stageState[stage].pendingOnly=true;
     $(c.listPane).hidden=true; $(c.detailPane).hidden=false; animateSlide($(c.detailPane),'slide-r');
     $(c.tasksWrap).innerHTML='<div class="empty">Loading…</div>';
-    google.script.run.withSuccessHandler(function(d){ stageState[stage].detail=d; renderStageTasks(stage); })
+    RUN().withSuccessHandler(function(d){ stageState[stage].detail=d; renderStageTasks(stage); })
       .withFailureHandler(function(e){ $(c.tasksWrap).innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
       .reviewDetail(id, stage);
   }
@@ -1189,7 +1482,7 @@
     var reqId=stageState.audit.reqId; if(!reqId) return;
     var o=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Exporting';
     toast('Building the export — this can take a moment…','info');
-    google.script.run.withSuccessHandler(function(r){
+    RUN().withSuccessHandler(function(r){
       btn.disabled=false; btn.innerHTML=o;
       if(r.download) downloadBlob(r.download);          // small enough for a one-click download
       showExportResult_(btn, r);                        // always: the Drive folder link
@@ -1399,7 +1692,7 @@
     var card=btn.closest('.line-card'), aid=card.dataset.aid, lineId=curSubtaskLine;
     btn.disabled=true; var was=btn.innerHTML; btn.innerHTML='<span class="spinner"></span>Checking';
     var res=card.querySelector('.ai-result'); if(res) res.innerHTML='<span class="ai-sum muted">Checking the proof of payment…</span>';
-    google.script.run.withSuccessHandler(function(r){
+    RUN().withSuccessHandler(function(r){
       var d=stageState[stage].detail, ln=d&&d.lines.filter(function(x){ return String(x.line_id)===String(lineId); })[0];
       var a=ln&&(ln.assignments||[]).filter(function(x){ return String(x.assignment_id)===String(aid); })[0];
       if(a){ a.ai_verdict=r.verdict; a.ai_summary=(r.perDoc||[]).map(function(p){ return p.file+' → '+p.verdict+(p.summary?(': '+p.summary):''); }).join('  |  '); }
@@ -1426,7 +1719,7 @@
       toast(okMsg,'ok');
     };
     var fail=function(e){ Array.prototype.forEach.call(sibs, function(b){ b.disabled=false; }); btn.innerHTML=orig; toast(e.message,'warn'); };
-    var api=google.script.run.withSuccessHandler(ok).withFailureHandler(fail);
+    var api=RUN().withSuccessHandler(ok).withFailureHandler(fail);
     // reviewerSubmitTask takes (id, override, note); everything else (id, note).
     if(method==='reviewerSubmitTask'){ var ovr=card.querySelector('.ai-ovr'); api[method](aid, ovr?ovr.checked:false, note); }
     else { api[method](aid, note); }
@@ -1518,7 +1811,7 @@
     var card=btn.closest('.line-card'), lineId=card.dataset.id;
     btn.disabled=true; var was=btn.innerHTML; btn.innerHTML='<span class="spinner"></span>Checking';
     var res=card.querySelector('.ai-result'); if(res) res.innerHTML='<span class="ai-sum muted">Comparing the document(s) with the data…</span>';
-    google.script.run.withSuccessHandler(function(r){
+    RUN().withSuccessHandler(function(r){
       // Fold the verdict into the cached line, then re-render the modal so the panel,
       // override checkbox, and Submit gate all reflect it.
       var d=stageState[stage].detail;
@@ -1546,7 +1839,7 @@
     var pane=$('prev-'+lineId); if(!pane) return;
     if(chip){ var box=chip.parentNode; Array.prototype.forEach.call(box.querySelectorAll('.chip'), function(c){ c.classList.remove('active'); }); chip.classList.add('active'); }
     pane.innerHTML='<span class="ph">Loading…</span>';
-    google.script.run.withSuccessHandler(function(f){ renderPreview(pane, f); })
+    RUN().withSuccessHandler(function(f){ renderPreview(pane, f); })
       .withFailureHandler(function(e){ pane.innerHTML='<span class="ph">'+esc(e.message)+'</span>'; })
       .getEvidenceFile(eid);
   }
@@ -1572,7 +1865,18 @@
     return arr;
   }
   /* PDFs can't render via blob/data URLs inside the sandboxed iframe, so draw them to canvas with PDF.js */
+  // The PDF viewer (~320 KB) loads on the first PDF preview only; until 20 Oct 2026 it sat in <head> and blocked every page open.
+  var PDFJS_SRC='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', pdfjsWait=null;
+  function ensurePdfJs(cb){
+    if(typeof pdfjsLib!=='undefined'){ cb(); return; }
+    if(pdfjsWait){ pdfjsWait.push(cb); return; }
+    pdfjsWait=[cb];
+    var sc=document.createElement('script'); sc.src=PDFJS_SRC;
+    sc.onload=sc.onerror=function(){ var q=pdfjsWait; pdfjsWait=null; q.forEach(function(f){ f(); }); };
+    document.head.appendChild(sc);
+  }
   function renderPdf(container, f, url){
+    if(typeof pdfjsLib==='undefined' && !renderPdf.tried){ renderPdf.tried=true; container.innerHTML='<div class="ph">Loading the PDF viewer…</div>'; ensurePdfJs(function(){ renderPdf(container, f, url); }); return; }
     if(typeof pdfjsLib==='undefined'){ container.innerHTML='<div class="ph">PDF viewer didn\'t load. <a href="'+url+'" target="_blank" rel="noopener">Open full screen</a></div>'; return; }
     try{ pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; }catch(e){}
     pdfjsLib.getDocument({data:bytesOf(f)}).promise.then(function(pdf){
@@ -1601,7 +1905,7 @@
     var sibs=card.querySelectorAll('.stage-primary, .stage-return');
     Array.prototype.forEach.call(sibs, function(b){ b.disabled=true; });
     var orig=btn.innerHTML; btn.innerHTML='<span class="spinner"></span>'+busy;
-    var runner=google.script.run
+    var runner=RUN()
       .withSuccessHandler(function(d){ closeModal(); stageState[stage].detail=d; renderStageTasks(stage); toast(okMsg,'ok'); })
       .withFailureHandler(function(e){ Array.prototype.forEach.call(sibs, function(b){ b.disabled=false; }); btn.innerHTML=orig; toast(e.message,'warn'); });
     // reviewerSubmit takes (id, override, note) — the reviewer's comment (e.g. an AI-override
@@ -1612,7 +1916,7 @@
 
   /* ---------- shared: open an evidence file in a new tab (app-mediated) ---------- */
   function viewEvidence(eid){
-    google.script.run.withSuccessHandler(openBlob).withFailureHandler(function(e){ alert(e.message); }).getEvidenceFile(eid);
+    RUN().withSuccessHandler(openBlob).withFailureHandler(function(e){ alert(e.message); }).getEvidenceFile(eid);
   }
   function openBlob(f){
     try{ window.open(toBlobUrl(f), '_blank'); }
