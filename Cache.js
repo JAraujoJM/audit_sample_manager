@@ -46,9 +46,23 @@ function scriptProp_(key) {
 /* ---------- versions ---------- */
 function tabVersion_(name) { return scriptProps_()['DV_' + name] || '0'; }
 
+/**
+ * Bulk writers (persistRun_ writes one row per sample and per task) bump each touched tab
+ * ONCE, at the end, instead of after every row. Readers in between can only cache under the
+ * pre-batch version, which the final bump retires.
+ */
+var __batchTabs_ = null;
+function withBatchedTabWrites_(fn) {
+  if (__batchTabs_) return fn();
+  __batchTabs_ = {};
+  try { return fn(); }
+  finally { var touched = Object.keys(__batchTabs_); __batchTabs_ = null; touched.forEach(noteTabWrite_); }
+}
+
 /** Called by every Db write helper AFTER the write: flush, then move the tab's version on. */
 function noteTabWrite_(name) {
   if (UNCACHED_TABS_.indexOf(name) !== -1) return;
+  if (__batchTabs_) { __batchTabs_[name] = true; return; }
   try {
     SpreadsheetApp.flush();
     var v = Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);

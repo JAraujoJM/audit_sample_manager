@@ -576,6 +576,10 @@ function parseSlots_(documents, fallbackLabel) {
  * the admin to assign a specific preparer — including different people per item.
  */
 function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
+  var args = arguments;
+  return withBatchedTabWrites_(function () { return persistRunRows_.apply(null, args); });
+}
+function persistRunRows_(results, gatewayRequestId, file, ctx, ipe) {
   ctx = ctx || {};
   var flow   = ctx.flow   || getFlow('flowA') || { flow_id: 'flowA', name: 'Marketplace revenues / COGS' };
   var period = ctx.period || { name: '', start: '', end: '' };
