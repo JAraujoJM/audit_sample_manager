@@ -17,6 +17,8 @@
  * ONLY read paths (lists, details, the dashboard) use readTabsCached_. Actions
  * (submit, review, close, return, assign, enrich, export, AI checks) keep reading the
  * sheet itself through readObjects_, so they never decide on a cached copy.
+ * (Within one execution readObjects_ reuses its own fresh sheet read — Db.js __tabMemo_ —
+ * until that tab is written; that is a read of the sheet, not this cache.)
  */
 
 var CACHE_TTL_CONFIG_ = 300;    // seconds

@@ -98,6 +98,7 @@ function ensureSheets_(ss, schema) {
         if (existing.indexOf(h) === -1) sh.getRange(1, sh.getLastColumn() + 1).setValue(h).setFontWeight('bold');
       });
     }
+    forgetTab_(sheetName);   // headers may have changed: drop this execution's copy (Db.js memo)
   });
   var def = ss.getSheetByName('Sheet1');             // drop the empty default tab
   if (def && !schema['Sheet1'] && ss.getSheets().length > 1 && def.getLastRow() === 0) {

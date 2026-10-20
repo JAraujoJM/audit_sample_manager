@@ -234,6 +234,18 @@ Measured on the Executions log (149 calls, 14–20 Oct): every call opened Confi
   Actions (submit/review/close/return/assign/enrich/export/AI) keep `readObjects_` on the sheet — never decide on a
   cached copy. A new write path that bypasses the three helpers MUST call `noteTabWrite_(tab)`. Hand edits of the
   sheets: run `flushAppCache()` in the editor (or wait for the TTL). Spreadsheets open once per execution (`__ssOpen_`).
+- **Actions (21 Oct 2026)**: `Db.js` keeps an **execution-local memo of FRESH sheet reads** (`__tabMemo_`, Data
+  spreadsheet only — never the CacheService copy). A decision read (`readObjects_`, so `findAssignment_`/`findLine_`/
+  `getAssignments`/the rollup) reuses it only while nothing was written to that tab since and it is ≤5 s old
+  (`MEMO_FRESH_MS_`); after a write the next read goes back to the sheet, so the rollup always sees its own write and
+  any concurrent one (tested: two auditors closing sibling tasks at once still closes the sample). `updateRowById_`
+  only needs the row number (rows of Requests/Sample_Lines/Assignments are never deleted; appends don't shift rows), so
+  it uses a memo ≤30 s old, written or not, and falls back to a fresh read when the id is missing; `deleteRowById_`
+  always reads the sheet and drops the memo. Each run of adjacent patched columns is written with ONE `setValues`;
+  gap columns are never rewritten (a concurrent write to them survives). `noteTabWrite_` still runs after every write.
+  A new direct write to a Data tab must call `forgetTab_(tab)` as well as `noteTabWrite_(tab)`. Offline proof:
+  `scenario.js`/`compare.js`/`memo-test.js` in the 21 Oct side-session notes (68 action calls on the real Data
+  export: results, refusals and all Data tabs identical to the previous code).
 - **Boot**: `doGet` embeds `{user, canDash, dash?}` into Index.html (string placeholder `"__ASM_BOOT__"` — a
   `/*comment*/` placeholder does NOT survive HtmlService), so the client skips the getCurrentUser round trip; the
   client starts the first screen on the next tick (stage configs must be defined first). pdf.js loads on first PDF.

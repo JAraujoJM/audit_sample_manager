@@ -19,13 +19,60 @@ function openSsByProp_(key, label) {
   return __ssOpen_[id];
 }
 
+/* ---------- execution-local memo of FRESH sheet reads (actions, 21 Oct 2026) ----------
+ * An action used to re-read the same Data tab 8-11 times (findAssignment_, the rollup,
+ * recomputeRequestStatus_, every updateRowById_), ~1 s each: auditorCloseTask took 12 s.
+ * Now each Data tab is read from the SHEET at most once per execution while nothing has
+ * changed it. This is not the CacheService copy (Cache.js): it is this execution's own
+ * read of the sheet, so actions still decide on the sheet.
+ *  - A decision read (readObjects_) reuses the memo only while it is FRESH: nothing written
+ *    to that tab since, and at most MEMO_FRESH_MS_ old. After a write the next read goes
+ *    back to the sheet — the rollup always sees the task it just changed, plus anything a
+ *    concurrent execution wrote meanwhile (two auditors closing sibling tasks at once).
+ *  - updateRowById_ only needs the ROW NUMBER of an id. Rows of Requests / Sample_Lines /
+ *    Assignments are never deleted by the app and appends never shift rows, so a memo up to
+ *    MEMO_ROWS_MS_ old, written to or not, locates the row; an id it lacks falls back to a
+ *    fresh read. deleteRowById_ (shifts rows) always reads the sheet and drops the memo.
+ * Data spreadsheet only (Config has its own 5-minute cache and direct clear/rewrite paths).
+ * A new write path to a Data tab that bypasses appendObject_/updateRowById_/deleteRowById_
+ * must call forgetTab_(tab), as well as noteTabWrite_(tab). */
+var __tabMemo_ = {};
+var MEMO_FRESH_MS_ = 5000;
+var MEMO_ROWS_MS_  = 30000;
+
+function isDataSs_(ss) {
+  var id = scriptProp_(PROP.DATA_SS);
+  return !!id && __ssOpen_[id] === ss;
+}
+/** Raw values (header row first) of a tab, or null if the tab does not exist. */
+function sheetValues_(ss, sheetName, forRowLookup) {
+  var memoOk = isDataSs_(ss), m = memoOk ? __tabMemo_[sheetName] : null, now = Date.now();
+  if (m && (forRowLookup ? now - m.at <= MEMO_ROWS_MS_ : (!m.dirty && now - m.at <= MEMO_FRESH_MS_))) return m.values;
+  return readSheetValues_(ss, sheetName);
+}
+function readSheetValues_(ss, sheetName) {
+  var sh = ss.getSheetByName(sheetName);
+  if (!sh) return null;
+  var values = sh.getDataRange().getValues();
+  if (isDataSs_(ss)) __tabMemo_[sheetName] = { values: values, at: Date.now(), dirty: false };
+  return values;
+}
+/** After a write that keeps row numbers (update, append): decision reads must re-read the sheet. */
+function markTabDirty_(ss, sheetName) { if (isDataSs_(ss) && __tabMemo_[sheetName]) __tabMemo_[sheetName].dirty = true; }
+function forgetTab_(sheetName) { delete __tabMemo_[sheetName]; }
+
+var __ssTz_ = {};
+function ssTimeZone_(ss) {
+  for (var id in __ssOpen_) if (__ssOpen_[id] === ss) return __ssTz_[id] || (__ssTz_[id] = ss.getSpreadsheetTimeZone());
+  return ss.getSpreadsheetTimeZone();
+}
+
 /* ---------- generic row <-> object mapping ---------- */
 function readObjects_(ss, sheetName) {
-  var sh = ss.getSheetByName(sheetName);
-  if (!sh || sh.getLastRow() < 2) return [];
-  var values = sh.getDataRange().getValues();
+  var values = sheetValues_(ss, sheetName, false);
+  if (!values || values.length < 2) return [];
   var headers = values[0];
-  var tz = ss.getSpreadsheetTimeZone();
+  var tz = ssTimeZone_(ss);
   var out = [];
   for (var r = 1; r < values.length; r++) {
     var row = values[r];
@@ -48,32 +95,52 @@ function appendObject_(ss, sheetName, obj) {
   var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   var row = headers.map(function (h) { return obj.hasOwnProperty(h) ? obj[h] : ''; });
   sh.appendRow(row);
+  markTabDirty_(ss, sheetName);
   noteTabWrite_(sheetName);
   return row;
 }
 
-/** Patch the first row whose `idCol` equals `idValue`. Returns true if found. */
+/**
+ * Patch the first row whose `idCol` equals `idValue`. Returns true if found.
+ * Each run of adjacent patched columns is written with ONE setValues (it was one setValue
+ * per field). Columns between two runs are not rewritten, so a concurrent write to them
+ * is never overwritten with this execution's older copy.
+ */
 function updateRowById_(ss, sheetName, idCol, idValue, patch) {
   var sh = ss.getSheetByName(sheetName);
   if (!sh) throw new Error('Sheet not found: ' + sheetName);
-  var values = sh.getDataRange().getValues();
-  var headers = values[0];
-  var idIdx = headers.indexOf(idCol);
-  if (idIdx === -1) throw new Error('No column "' + idCol + '" in ' + sheetName);
-  for (var r = 1; r < values.length; r++) {
-    if (String(values[r][idIdx]) === String(idValue)) {
-      Object.keys(patch).forEach(function (k) {
-        var c = headers.indexOf(k);
-        if (c !== -1) sh.getRange(r + 1, c + 1).setValue(patch[k]);
-      });
-      noteTabWrite_(sheetName);
-      return true;
-    }
+  var values = sheetValues_(ss, sheetName, true);
+  var r = rowIndexOf_(values, idCol, sheetName, idValue);
+  if (r === -1 && isDataSs_(ss) && __tabMemo_[sheetName] && __tabMemo_[sheetName].values === values) {
+    values = readSheetValues_(ss, sheetName);        // memo may predate the row: ask the sheet
+    r = rowIndexOf_(values, idCol, sheetName, idValue);
   }
-  return false;
+  if (r === -1) return false;
+  var headers = values[0], cols = [];
+  Object.keys(patch).forEach(function (k) {
+    var c = headers.indexOf(k);
+    if (c !== -1) cols.push({ c: c, v: patch[k] });
+  });
+  cols.sort(function (a, b) { return a.c - b.c; });
+  for (var i = 0; i < cols.length; ) {
+    var j = i;
+    while (j + 1 < cols.length && cols[j + 1].c === cols[j].c + 1) j++;
+    sh.getRange(r + 1, cols[i].c + 1, 1, j - i + 1).setValues([cols.slice(i, j + 1).map(function (x) { return x.v; })]);
+    i = j + 1;
+  }
+  markTabDirty_(ss, sheetName);
+  noteTabWrite_(sheetName);
+  return true;
+}
+function rowIndexOf_(values, idCol, sheetName, idValue) {
+  if (!values) throw new Error('Sheet not found: ' + sheetName);
+  var idIdx = values[0].indexOf(idCol);
+  if (idIdx === -1) throw new Error('No column "' + idCol + '" in ' + sheetName);
+  for (var r = 1; r < values.length; r++) if (String(values[r][idIdx]) === String(idValue)) return r;
+  return -1;
 }
 
-/** Delete the first row whose `idCol` equals `idValue`. Returns true if found. */
+/** Delete the first row whose `idCol` equals `idValue`. Returns true if found. Always reads the sheet (rows shift). */
 function deleteRowById_(ss, sheetName, idCol, idValue) {
   var sh = ss.getSheetByName(sheetName);
   if (!sh) throw new Error('Sheet not found: ' + sheetName);
@@ -81,7 +148,7 @@ function deleteRowById_(ss, sheetName, idCol, idValue) {
   var idIdx = values[0].indexOf(idCol);
   if (idIdx === -1) throw new Error('No column "' + idCol + '" in ' + sheetName);
   for (var r = values.length - 1; r >= 1; r--) {
-    if (String(values[r][idIdx]) === String(idValue)) { sh.deleteRow(r + 1); noteTabWrite_(sheetName); return true; }
+    if (String(values[r][idIdx]) === String(idValue)) { sh.deleteRow(r + 1); forgetTab_(sheetName); noteTabWrite_(sheetName); return true; }
   }
   return false;
 }
