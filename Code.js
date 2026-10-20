@@ -170,7 +170,8 @@ function enrich(payload) {
   var ctx = {
     flow: flow, period: period, qp: qp,
     auditor: auditors.join(', '), reviewer: reviewer,
-    requestRef: String(payload.requestRef || '').trim(), dueDate: String(payload.dueDate || '').trim()
+    requestRef: String(payload.requestRef || '').trim(), dueDate: String(payload.dueDate || '').trim(),
+    sampleText: String(payload.docs || '')            // the auditor's sample list exactly as pasted (kept for the IPE)
   };
 
   var signature = sigItems_(items) + '|' + flow.flow_id + '|' + period.start + '|' + period.end + '|' + qp.queryMode;
@@ -192,7 +193,7 @@ function enrich(payload) {
   if (mod && mod.stages && mod.stages.length) {
     var run = runStages_(mod, mapped, qp, st, p, deadline, ctx);
     if (run.status !== 'ok') return run;              // 'pending' (state kept → resume) or 'failed'
-    ctx.csv1 = csv1; ctx.mapped = mapped;
+    ctx.csv1 = csv1; ctx.csv1File = csv1File; ctx.mapped = mapped;
     if (typeof mod.finalize === 'function') mod.finalize(mapped, ctx);   // checks + routing facts
     p.deleteProperty('outstanding');
     return buildResults_(mapped, items, st.q1Id, query, csv1File, ctx, null);
@@ -569,6 +570,10 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
   var stored = {};
   try { stored = storeRequestFiles_(reqId, gatewayRequestId, file, ctx.q2Id, ctx.csv2File, ctx.stageFiles); }
   catch (e) { logActivity('STORE_FILES_FAILED', 'request', reqId, String(e)); }
+  // The auditor's sample list exactly as pasted — byte-for-byte, next to the stored extraction
+  // files. The audit export ships it (IPE: "link to the sample list submitted for the request").
+  try { storeSampleList_(reqId, ctx.sampleText); }
+  catch (e) { logActivity('STORE_SAMPLE_FAILED', 'request', reqId, String(e)); }
 
   appendObject_(ds, 'Requests', {
     request_id: reqId, flow_id: flow.flow_id, title: flow.name,
@@ -594,6 +599,7 @@ function persistRun_(results, gatewayRequestId, file, ctx, ipe) {
     try {
       var exportsId = PropertiesService.getScriptProperties().getProperty(PROP.EXPORTS);
       if (!exportsId) throw new Error('Exports folder not provisioned');
+      ctx.ipe = ipe;                                      // hashes for the workbook's source notes
       var wb = mod.evidenceWorkbook(ctx.mapped || [], ctx);
       wbFile = buildXlsxFile_(wb.name, wb.sheets, getOrCreateFolder_(DriveApp.getFolderById(exportsId), reqId));
     } catch (e) { wbFile = null; logActivity('SYSTEM_EVIDENCE_FAILED', 'request', reqId, String(e)); }
@@ -729,9 +735,23 @@ function storeRequestFiles_(reqId, gatewayRequestId, csvFile, gateway2Id, csv2Fi
   return out;
 }
 
+/** Name of the stored sample list in Exports/{reqId}/ (found by name at export time). */
+var SAMPLE_LIST_FILE = 'sample_list_as_received.txt';
+function storeSampleList_(reqId, text) {
+  var exportsId = PropertiesService.getScriptProperties().getProperty(PROP.EXPORTS);
+  if (!exportsId || !text) return null;
+  var folder = getOrCreateFolder_(DriveApp.getFolderById(exportsId), reqId);
+  return folder.createFile(Utilities.newBlob(text, 'text/plain', SAMPLE_LIST_FILE));
+}
+
 /* ---------- IPE / SOX evidence metadata ---------- */
 function sha256Hex_(bytes) {
   var d = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, bytes);
+  return d.map(function (b) { return ('0' + (b & 0xff).toString(16)).slice(-2); }).join('');
+}
+/** SHA-256 of a string's UTF-8 bytes — the gateway's `query_sha256` is this over the job's query. */
+function sha256HexStr_(s) {
+  var d = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(s || ''), Utilities.Charset.UTF_8);
   return d.map(function (b) { return ('0' + (b & 0xff).toString(16)).slice(-2); }).join('');
 }
 function buildIpe_(docs, foundCount, requestId, query, file, ctx) {

@@ -690,28 +690,49 @@ function auditExport(requestId) {
   var tz = ds.getSpreadsheetTimeZone();
   var req = findRequest_(requestId);
   if (!req) throw new Error('Request not found.');
-  var lines = readObjects_(ds, 'Sample_Lines').filter(function (l) { return String(l.request_id) === String(requestId) && String(l.status).toLowerCase() !== 'not_found'; });
+  var allLines = readObjects_(ds, 'Sample_Lines').filter(function (l) { return String(l.request_id) === String(requestId); });
+  var lines = allLines.filter(function (l) { return String(l.status).toLowerCase() !== 'not_found'; });
   var asg = readObjects_(ds, 'Assignments').filter(function (a) { return String(a.request_id) === String(requestId); });
   var evd = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.request_id) === String(requestId); });
+
+  // IPE inputs, gathered once: every extraction of the request (stored gateway CSV + SOX xlsx,
+  // re-hashed and row-counted now) joined to the gateway's own execution-log line.
+  var ipe = null; if (req.ipe_json) { try { ipe = JSON.parse(req.ipe_json); } catch (e) {} }
+  var flowMod = flowModule_(req.flow_id);
+  var ext = exportExtractions_(req, ipe, flowMod);
+  var gwLog = gatewayLogLines_(ext.map(function (x) { return x.gatewayId; }));
+  ext.forEach(function (x) { x.log = gwLog.byId[x.gatewayId] || null; x.integrity = extractionIntegrity_(x); });
+  var methodRows = (flowMod && typeof flowMod.methodology === 'function')
+    ? flowMod.methodology(ext.map(function (x) { return { tag: x.tag, database: x.database, originalCsv: x.originalCsv, sha256: x.csvShaNow }; }))
+    : null;
+
+  // The submitted sample list: the stored paste (requests created since the app keeps it) or,
+  // for older requests, the de-duplicated keys the app parsed from it, in the order received.
+  var sample = exportSampleList_(req, allLines);
 
   var zipName = sanitizeName_((req.request_ref || requestId) + ' - audit export');
   var ss = SpreadsheetApp.create('Audit export ' + (req.request_ref || requestId));
   try {
     // Tab 1 (Samples & Tasks) + Tab 3 rows (Evidence index) + evidence blobs, one pass.
-    var H1 = ['Sample (SOI)', 'Company', 'Subpopulation', 'Sample status', 'Task / evidence', 'Payment no', 'Amount', 'Payment date', 'Bank account', 'Payment reference', 'Order no', 'Gateway / provider', 'Assigned to', 'Task status', 'Evidence files'];
+    // Column A links each row to its entry in the 'Sample list' tab.
+    var H1 = ['Sample list #', 'Sample (SOI)', 'Company', 'Subpopulation', 'Sample status', 'Task / evidence', 'Payment no', 'Amount', 'Payment date', 'Bank account', 'Payment reference', 'Order no', 'Gateway / provider', 'Assigned to', 'Task status', 'Evidence files'];
     var R1 = [H1];
+    var sampleLink = function (l) {
+      var n = sample.noByLine[l.line_id];
+      return n ? '=HYPERLINK("#\'Sample list\'!A' + (sample.firstRow + n - 1) + '","' + n + '")' : '';
+    };
     var H3 = ['Sample (SOI)', 'Task / evidence', 'Payment no', 'Slot', 'File name', 'Uploaded by', 'Uploaded at', 'Path in export'];
     var R3 = [H3];
     var evFiles = [];   // {fileId, soi, task, fileName} — copied into the Drive folder later
     lines.forEach(function (l) {
       var det = parseJson_(l.detail_json);
       var la = asg.filter(function (a) { return String(a.line_id) === String(l.line_id); });
-      if (!la.length) { R1.push([l.document_no, l.company, l.subpopulation, l.status, '', '', l.amount, '', '', '', det.order_nr || '', '', '', '', '']); return; }
+      if (!la.length) { R1.push([sampleLink(l), l.document_no, l.company, l.subpopulation, l.status, '', '', l.amount, '', '', '', det.order_nr || '', '', '', '', '']); return; }
       la.forEach(function (a) {
         var u = parseJson_(a.detail_json);
         var files = evd.filter(function (e) { return String(e.assignment_id) === String(a.assignment_id); });
         var taskLabel = u.payment_no || a.evidence_type || 'task';
-        R1.push([l.document_no, l.company, l.subpopulation, l.status, a.evidence_type,
+        R1.push([sampleLink(l), l.document_no, l.company, l.subpopulation, l.status, a.evidence_type,
           u.payment_no || '', (u.amount != null && u.amount !== '' ? u.amount : (l.amount || '')),
           String(u.payment_date || '').slice(0, 10), u.bank_account || '', u.payment_ref || '', det.order_nr || '',
           [det.jp_gateway, det.jp_provider].filter(Boolean).join(' / '), a.assigned_to || '', a.status,
@@ -732,9 +753,10 @@ function auditExport(requestId) {
     t1.getRange(1, 1, R1.length, H1.length).setValues(R1);
     t1.setFrozenRows(1); t1.getRange(1, 1, 1, H1.length).setFontWeight('bold');
 
-    // Tab 2: IPE.
+    // Tab 2: IPE — the request header, then ONE ROW PER EXTRACTION (every query of the request,
+    // not just query 1): export file ↔ original gateway file ↔ gateway log line, hashes three
+    // ways (gateway log / app at extraction / file in this package), row counts, SQL as executed.
     var t2 = ss.insertSheet('IPE');
-    var ipe = null; if (req.ipe_json) { try { ipe = JSON.parse(req.ipe_json); } catch (e) {} }
     var R2 = [];
     if (ipe) {
       R2.push(['IPE / SOX — IT-Produced Evidence', '']);
@@ -746,30 +768,81 @@ function auditExport(requestId) {
       R2.push(['Requested by', ipe.requestedBy || '']);
       R2.push(['Classification', ipe.classification || '']);
       R2.push(['Requested / Found / Not found', [ipe.requested, ipe.found, ipe.notFound].join(' / ')]);
-      R2.push(['', '']);
-      R2.push(['Query 1 result file', ipe.csvName || '']);
-      R2.push(['Query 1 SHA-256', ipe.csvSha256 || '']);
-      R2.push(['Query 1 size (bytes)', String(ipe.csvSize || '')]);
-      if (ipe.query2) {
-        R2.push(['Query 2 database', ipe.query2Db || '']);
-        R2.push(['Query 2 result file', ipe.csv2Name || '']);
-        R2.push(['Query 2 SHA-256', ipe.csv2Sha256 || '']);
-        R2.push(['Query 2 size (bytes)', String(ipe.csv2Size || '')]);
-      }
+      R2.push(['Extractions', ext.length + ' (one row each below; files in Extraction/, gateway log lines in the Execution log tab and Execution log/)']);
+      R2.push(['Sample list submitted', "Tab 'Sample list' and folder Sample list/ (" + sample.sourceShort + ')']);
       R2.push(['', '']);
       R2.push(['Completeness & accuracy checks', '']);
       (ipe.checks || []).forEach(function (c) { R2.push([c.name, c.method + ' — ' + c.result]); });
-      R2.push(['', '']);
-      R2.push(['Query 1 (as executed)', ipe.query || '']);
-      if (ipe.query2) R2.push(['Query 2 (as executed)', ipe.query2]);
+      R2.push(['Gateway log tie-out', 'Per extraction: CSV SHA-256 and row count in this package = the gateway execution log; SQL SHA-256 = the log\'s query_sha256 — see column Integrity']);
     } else { R2.push(['No IPE was captured for this request.', '']); }
-    t2.getRange(1, 1, R2.length, 2).setValues(R2.map(function (r) { return [r[0], r[1]]; }));
-    t2.getRange(1, 1, 1, 2).setFontWeight('bold'); t2.setColumnWidth(1, 340); t2.setColumnWidth(2, 760);
+    R2.push(['', '']);
+    var extHead = R2.length + 1;
+    var HX = ['#', 'Extraction', 'Export file (Extraction/)', 'Export evidence file (Extraction/)', 'Original gateway CSV filename',
+              'Original gateway evidence filename', 'Gateway request_id', 'Server', 'Database', 'Execution completed at (UTC, gateway log)',
+              'Duration (s)', 'Requested by (gateway log)', 'Row count (gateway log)', 'Row count (CSV in this package)',
+              'CSV SHA-256 (gateway log)', 'CSV SHA-256 (app, at extraction)', 'CSV SHA-256 (file in this package)',
+              'Evidence xlsx SHA-256 (gateway log)', 'Evidence xlsx SHA-256 (file in this package)',
+              'Query SHA-256 (gateway log)', 'Query SHA-256 (SQL in this row)', 'Integrity', 'SQL as executed'];
+    R2.push(HX);
+    ext.forEach(function (x, i) {
+      var g = x.log ? x.log.obj : {};
+      R2.push([String(i + 1), x.label, x.exportCsv, x.xlsxId ? x.exportXlsx : '', x.originalCsv, g.evidence_file || x.originalXlsx || '',
+               x.gatewayId, g.server || x.server, g.database || x.database, g.timestamp_utc || '',
+               g.duration_seconds != null ? String(g.duration_seconds) : '', g.requested_by || '',
+               g.row_count != null ? String(g.row_count) : '', String(x.rowsNow),
+               g.output_sha256 || '', x.shaAtExtraction || '', x.csvShaNow,
+               g.evidence_sha256 || '', x.xlsxShaNow || '',
+               g.query_sha256 || '', x.querySha, x.integrity, String(x.query || '').slice(0, 49000)]);
+    });
+    var W2 = HX.length;
+    var G2 = R2.map(function (r) { var o = r.slice(0, W2); while (o.length < W2) o.push(''); return o; });
+    t2.getRange(1, 1, G2.length, W2).setNumberFormat('@').setValues(G2);   // plain text: hashes/ids/timestamps stay verbatim
+    t2.getRange(1, 1, 1, 2).setFontWeight('bold');
+    t2.getRange(extHead, 1, 1, W2).setFontWeight('bold').setWrap(true);
+    t2.getRange(extHead, 1, ext.length + 1, W2).setVerticalAlignment('top');
+    if (ext.length) t2.getRange(extHead + 1, W2, ext.length, 1).setWrap(true);
+    t2.setColumnWidth(1, 220); t2.setColumnWidth(2, 260);
+    for (var c2 = 3; c2 < W2; c2++) t2.setColumnWidth(c2, 170);
+    t2.setColumnWidth(W2, 700);
 
     // Tab 3: Evidence index.
     var t3 = ss.insertSheet('Evidence index');
     t3.getRange(1, 1, R3.length, H3.length).setValues(R3);
     t3.setFrozenRows(1); t3.getRange(1, 1, 1, H3.length).setFontWeight('bold');
+
+    // Tab 4: Sample list — the list as submitted, numbered (Samples & Tasks column A links here).
+    var t4 = ss.insertSheet('Sample list');
+    var W4 = sample.table[0].length;
+    var G4 = sample.head.concat([[]], sample.table).map(function (r) { var o = r.slice(0, W4); while (o.length < W4) o.push(''); return o; });
+    t4.getRange(1, 1, G4.length, W4).setNumberFormat('@').setValues(G4);   // keys keep leading zeros
+    t4.getRange(1, 1, sample.head.length, 1).setFontWeight('bold');
+    t4.getRange(sample.firstRow - 1, 1, 1, W4).setFontWeight('bold');
+    t4.setColumnWidth(1, 160); t4.setColumnWidth(2, 420);
+
+    // Tab 5: Execution log — the gateway's audit.jsonl lines for this request, parsed + verbatim.
+    var t5 = ss.insertSheet('Execution log');
+    var LK = ['timestamp_utc', 'request_id', 'status', 'server', 'database', 'row_count', 'output_file', 'output_sha256',
+              'evidence_file', 'evidence_sha256', 'query_sha256', 'request_sha256', 'script_sha256', 'duration_seconds', 'requested_by', 'error'];
+    var R5 = [LK.concat(['Raw log line (verbatim)'])];
+    gwLog.lines.forEach(function (ln) {
+      R5.push(LK.map(function (k) { var v = ln.obj[k]; return v === null || v === undefined ? '' : String(v); }).concat([ln.raw.slice(0, 49000)]));
+    });
+    if (gwLog.error) R5.push(['Log read error: ' + gwLog.error]);
+    var W5 = R5[0].length;
+    var G5 = R5.map(function (r) { var o = r.slice(0, W5); while (o.length < W5) o.push(''); return o; });
+    t5.getRange(1, 1, G5.length, W5).setNumberFormat('@').setValues(G5);
+    t5.setFrozenRows(1); t5.getRange(1, 1, 1, W5).setFontWeight('bold');
+    t5.getRange(G5.length + 2, 1).setValue('Source: ' + (gwLog.path || 'FinRec SQL gateway Logs/audit.jsonl') + ' — the lines are copied unchanged into Execution log/execution_log.jsonl; the job files they hash (request_sha256) are in Execution log/jobs/.');
+
+    // Tab 6: Methodology — flows that reconcile (Flow C): every transformation not in the formulas.
+    if (methodRows) {
+      var t6 = ss.insertSheet('Methodology');
+      var W6 = methodRows[0].length;
+      var G6 = methodRows.map(function (r) { var o = r.slice(0, W6); while (o.length < W6) o.push(''); return o; });
+      t6.getRange(1, 1, G6.length, W6).setNumberFormat('@').setValues(G6).setWrap(true).setVerticalAlignment('top');
+      t6.setFrozenRows(1); t6.getRange(1, 1, 1, W6).setFontWeight('bold');
+      [30, 150, 620, 230, 420].forEach(function (px, i) { if (i < W6) t6.setColumnWidth(i + 1, px); });
+    }
 
     SpreadsheetApp.flush();
 
@@ -790,15 +863,40 @@ function auditExport(requestId) {
     var outFolder = reqFolder.createFolder(zipName + ' (' + stamp + ')');
     outFolder.createFile(xlsxBlob);
 
-    // [fileId, name]: the fixed stage-1/2 files plus, for N-stage flows (Flow C), one CSV
-    // (+ SOX evidence xlsx) per dependent query recorded in stages_json.
-    var extraction = [[req.csv_file_id, 'query1_result.csv'], [req.xlsx_file_id, 'query1_evidence.xlsx'],
-                      [req.csv2_file_id, 'query2_result.csv'], [req.xlsx2_file_id, 'query2_evidence.xlsx']];
-    var stg = parseJson_(req.stages_json); if (!Array.isArray(stg)) stg = [];
-    stg.forEach(function (s) { extraction.push([s.csvId, (s.tag || 'stage') + '_result.csv']); extraction.push([s.xlsxId, (s.tag || 'stage') + '_evidence.xlsx']); });
-    extraction = extraction.filter(function (p) { return p[0]; });
+    // [fileId, path]: one CSV (+ SOX evidence xlsx) per extraction — the same list as the IPE tab.
+    // makeCopy keeps the bytes, so the hashes in the IPE / execution log still match; only the
+    // name is the export's stable one (query1_result.csv …) that the reconciliation tabs cite.
+    var extraction = [];
+    ext.forEach(function (x) {
+      extraction.push([x.csvId, 'Extraction/' + x.exportCsv]);
+      if (x.xlsxId) extraction.push([x.xlsxId, 'Extraction/' + x.exportXlsx]);
+    });
     var extFolder = extraction.length ? outFolder.createFolder('Extraction') : null;
-    extraction.forEach(function (p) { try { DriveApp.getFileById(p[0]).makeCopy(p[1], extFolder); } catch (e) {} });
+    extraction.forEach(function (p) { try { DriveApp.getFileById(p[0]).makeCopy(p[1].replace(/^Extraction\//, ''), extFolder); } catch (e) {} });
+
+    // Execution log/: the gateway log lines (verbatim, file order) + the job files they hash.
+    var logFolder = outFolder.createFolder('Execution log');
+    var logText = gwLog.lines.map(function (ln) { return ln.raw; }).join('\n') + (gwLog.lines.length ? '\n' : '');
+    var logFile = logFolder.createFile(Utilities.newBlob(logText, 'text/plain', 'execution_log.jsonl'));
+    extraction.push([logFile.getId(), 'Execution log/execution_log.jsonl']);
+    var jobsFolder = null;
+    gwLog.lines.forEach(function (ln) {
+      var jf = ln.obj.job_file; if (!jf) return;
+      try {
+        var it = sub_('Requests_Completed').getFilesByName(jf);
+        if (!it.hasNext()) return;
+        var cp = it.next().makeCopy(jf, jobsFolder || (jobsFolder = logFolder.createFolder('jobs')));
+        extraction.push([cp.getId(), 'Execution log/jobs/' + jf]);
+      } catch (e) {}
+    });
+
+    // Sample list/: the paste as received (when stored) + the numbered list as CSV.
+    var smpFolder = outFolder.createFolder('Sample list');
+    if (sample.fileId) {
+      try { var sf = DriveApp.getFileById(sample.fileId).makeCopy(SAMPLE_LIST_FILE, smpFolder); extraction.push([sf.getId(), 'Sample list/' + SAMPLE_LIST_FILE]); } catch (e) {}
+    }
+    var smpCsv = smpFolder.createFile(Utilities.newBlob(sample.csv, 'text/csv', 'sample_list.csv'));
+    extraction.push([smpCsv.getId(), 'Sample list/sample_list.csv']);
 
     var dirCache = {}, copied = 0, missing = 0, totalBytes = 0, seenFile = {};
     var evRoot = evFiles.some(function (f) { return !f.system; }) ? outFolder.createFolder('Evidence') : null;
@@ -820,6 +918,16 @@ function auditExport(requestId) {
       } catch (err) { missing++; }
     });
 
+    // The methodology also sits NEXT TO the reconciliation workbook (whose own Methodology tab
+    // exists only for requests enriched after it was added).
+    if (methodRows && sysRoot) {
+      try {
+        var mf = buildXlsxFile_('Methodology - reconciliation', [{ name: 'Methodology', rows: methodRows, freezeRows: 1,
+          colWidths: [30, 150, 620, 230, 420], styles: [{ range: 'A1:E' + methodRows.length, wrap: true, valign: 'top' }] }], sysRoot);
+        extraction.push([mf.getId(), 'Reconciliation (system)/' + mf.getName()]);
+      } catch (e) { logActivity('EXPORT_METHODOLOGY_FAILED', 'request', requestId, String(e)); }
+    }
+
     // Auto-share with the requester + the request's reviewer/auditor, so they can
     // open it straight from the Drive without asking anyone for access.
     var recipients = [me.email, req.auditor_email, req.reviewer_email]
@@ -834,7 +942,7 @@ function auditExport(requestId) {
     if (totalBytes <= 30 * 1024 * 1024) {
       try {
         var zipBlobs = [xlsxBlob.copyBlob().setName(zipName + '.xlsx')];
-        extraction.forEach(function (p) { try { var b = DriveApp.getFileById(p[0]).getBlob().copyBlob(); b.setName('Extraction/' + p[1]); zipBlobs.push(b); } catch (e) {} });
+        extraction.forEach(function (p) { try { var b = DriveApp.getFileById(p[0]).getBlob().copyBlob(); b.setName(p[1]); zipBlobs.push(b); } catch (e) {} });
         var zipped = {};
         evFiles.forEach(function (f) { if (zipped[f.fileId]) return; try { var b = DriveApp.getFileById(f.fileId).getBlob().copyBlob(); b.setName(f.path); zipBlobs.push(b); zipped[f.fileId] = true; } catch (e) {} });
         var zip = Utilities.zip(zipBlobs, zipName + '.zip');
@@ -843,15 +951,172 @@ function auditExport(requestId) {
     }
 
     logActivity('AUDIT_EXPORT', 'request', requestId,
-      copied + ' file(s), ~' + Math.round(totalBytes / 1048576) + ' MB' + (missing ? (', ' + missing + ' missing') : '') + ', shared: ' + (shared.join(', ') || 'none'));
+      copied + ' file(s), ~' + Math.round(totalBytes / 1048576) + ' MB' + (missing ? (', ' + missing + ' missing') : '') + ', shared: ' + (shared.join(', ') || 'none')
+      + '; IPE: ' + ext.length + ' extraction(s), ' + ext.filter(function (x) { return x.integrity === 'Pass'; }).length + ' pass, '
+      + gwLog.lines.length + ' log line(s)' + (gwLog.error ? ' (log error: ' + gwLog.error + ')' : '') + ', sample list ' + sample.sourceShort);
     return {
       folderUrl: outFolder.getUrl(), folderName: outFolder.getName(),
       fileCount: copied, missing: missing, totalMb: Math.round(totalBytes / 1048576 * 10) / 10,
-      shared: shared, download: download
+      shared: shared, download: download,
+      ipe: { extractions: ext.length, pass: ext.filter(function (x) { return x.integrity === 'Pass'; }).length,
+             logLines: gwLog.lines.length, logError: gwLog.error || '', sampleList: sample.sourceShort }
     };
   } finally {
     try { DriveApp.getFileById(ss.getId()).setTrashed(true); } catch (e) {}
   }
+}
+
+/**
+ * Every extraction of a request, in run order: stage 1, the Flow B stage 2, then each N-stage
+ * query (Flow C) from stages_json. For each, the stored gateway CSV (its Drive name IS the
+ * original gateway filename — storeRequestFiles_ copies it under that name) is re-hashed and
+ * row-counted NOW, so the IPE shows the file in the package equals what was hashed at extraction
+ * and what the gateway logged. `exportCsv` is the stable export name the reconciliation tabs cite.
+ */
+function exportExtractions_(req, ipe, mod) {
+  ipe = ipe || {};
+  var stg = parseJson_(req.stages_json); if (!Array.isArray(stg)) stg = [];
+  var hashes = {}; (ipe.stages || []).forEach(function (s) { hashes[s.tag] = s; });
+  var list = [
+    { tag: 'query1', label: 'Query 1 — stage 1', csvId: req.csv_file_id, xlsxId: req.xlsx_file_id, gatewayId: ipe.requestId || '',
+      server: 'finrec', database: ipe.primaryDb || '', query: ipe.query || '', shaAtExtraction: ipe.csvSha256 || '' },
+    { tag: 'query2', label: 'Query 2 — stage 2', csvId: req.csv2_file_id, xlsxId: req.xlsx2_file_id, gatewayId: '',
+      server: (mod && mod.stage2 && mod.stage2.server) || 'finrec', database: ipe.query2Db || '', query: ipe.query2 || '', shaAtExtraction: ipe.csv2Sha256 || '' }
+  ];
+  stg.forEach(function (s) {
+    var h = hashes[s.tag] || {};
+    list.push({ tag: s.tag || 'stage', label: s.label || s.tag, csvId: s.csvId, xlsxId: s.xlsxId, gatewayId: s.gatewayId || '',
+                server: s.server || 'finrec', database: s.db || h.db || '', query: h.query || '', shaAtExtraction: h.csvSha256 || '' });
+  });
+  return list.filter(function (x) { return x.csvId; }).map(function (x) {
+    x.exportCsv = x.tag + '_result.csv'; x.exportXlsx = x.tag + '_evidence.xlsx';
+    x.querySha = x.query ? sha256HexStr_(x.query) : '';
+    try {
+      var f = DriveApp.getFileById(x.csvId), bytes = f.getBlob().getBytes();
+      x.originalCsv = f.getName();
+      x.csvShaNow = sha256Hex_(bytes);
+      var text = Utilities.newBlob(bytes).getDataAsString('UTF-8');
+      if (text.charCodeAt(0) === 0xFEFF) text = text.substring(1);
+      var rows = Utilities.parseCsv(text).filter(function (r) { return !(r.length === 1 && r[0] === ''); });
+      x.rowsNow = Math.max(0, rows.length - 1);              // header excluded — the gateway's row_count
+    } catch (e) { x.originalCsv = x.originalCsv || ''; x.csvShaNow = 'unreadable: ' + e; x.rowsNow = ''; }
+    if (x.xlsxId) { try { var xf = DriveApp.getFileById(x.xlsxId); x.originalXlsx = xf.getName(); x.xlsxShaNow = sha256Hex_(xf.getBlob().getBytes()); } catch (e) { x.xlsxShaNow = ''; } }
+    // The gateway names its output {request_id}_{yyyyMMdd_HHmmss}.csv — recover the id when not stored.
+    if (!x.gatewayId && x.originalCsv) x.gatewayId = x.originalCsv.replace(/_\d{8}_\d{6}\.csv$/i, '');
+    return x;
+  });
+}
+
+/** 'Pass' when the package file, the app's hash at extraction and the gateway log all agree
+ *  (CSV hash, row count, SQL hash, evidence xlsx hash); otherwise 'Flag: …' naming what differs. */
+function extractionIntegrity_(x) {
+  if (!x.log) return 'Flag: no gateway log line found for ' + (x.gatewayId || 'this extraction');
+  var g = x.log.obj, bad = [];
+  if (g.status && String(g.status).toUpperCase() !== 'SUCCESS') bad.push('log status ' + g.status);
+  if (g.output_sha256 !== x.csvShaNow) bad.push('CSV hash ≠ log');
+  if (x.shaAtExtraction && x.shaAtExtraction !== x.csvShaNow) bad.push('CSV hash ≠ hash at extraction');
+  if (String(g.row_count) !== String(x.rowsNow)) bad.push('row count ≠ log');
+  if (x.querySha && g.query_sha256 && g.query_sha256 !== x.querySha) bad.push('SQL hash ≠ log');
+  if (x.xlsxShaNow && g.evidence_sha256 && g.evidence_sha256 !== x.xlsxShaNow) bad.push('evidence xlsx hash ≠ log');
+  return bad.length ? 'Flag: ' + bad.join('; ') : 'Pass';
+}
+
+/**
+ * The FinRec SQL gateway's own execution log lines (Logs/audit.jsonl) for the given gateway
+ * request ids — returned VERBATIM (raw text, in file order) and parsed.
+ * The log is append-only and only grows, so it is read BACKWARDS in byte ranges (Drive alt=media +
+ * Range): each chunk is cut at its first newline and the next chunk ends exactly there, so lines are
+ * never split. The scan stops once every id is found and it has passed an hour before the earliest
+ * hit (a job logs once, when it finishes) — no whole-file read, no blob ceiling as the log grows.
+ * Returns { lines: [{ raw, obj }], byId: { id: line }, path, error }.
+ */
+function gatewayLogLines_(ids) {
+  var want = {}, out = { lines: [], byId: {}, path: '', error: '' };
+  (ids || []).forEach(function (id) { if (id) want[id] = true; });
+  var need = Object.keys(want);
+  if (!need.length) return out;
+  try {
+    var it = sub_('Logs').getFilesByName('audit.jsonl');
+    if (!it.hasNext()) { out.error = 'Logs/audit.jsonl not found'; return out; }
+    var file = it.next(), fileId = file.getId(), token = ScriptApp.getOAuthToken();
+    out.path = 'FinRec SQL gateway Logs/' + file.getName();
+    var CH = 8 * 1024 * 1024, end = Number(file.getSize()), hits = [], earliest = '';
+    while (end > 0) {
+      var start = Math.max(0, end - CH);
+      var r = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+        { headers: { Authorization: 'Bearer ' + token, Range: 'bytes=' + start + '-' + (end - 1) }, muteHttpExceptions: true });
+      if (r.getResponseCode() >= 300) throw new Error('log read HTTP ' + r.getResponseCode());
+      var bytes = r.getContent(), text = Utilities.newBlob(bytes).getDataAsString('UTF-8');
+      if (start > 0) {
+        var nl = -1; for (var b = 0; b < bytes.length; b++) { if (bytes[b] === 10) { nl = b; break; } }
+        if (nl < 0) throw new Error('log line longer than ' + CH + ' bytes');
+        text = text.substring(text.indexOf('\n') + 1);   // drop the partial first line; re-read next round
+        end = start + nl + 1;
+      } else { end = 0; }
+      var chunk = [], chunkFirstTs = '';
+      text.split('\n').forEach(function (raw) {
+        if (!raw) return;
+        if (!chunkFirstTs) { var m = raw.match(/"timestamp_utc"\s*:\s*"([^"]+)"/); if (m) chunkFirstTs = m[1]; }
+        for (var i = 0; i < need.length; i++) {
+          if (raw.indexOf(need[i]) === -1) continue;
+          var obj = null; try { obj = JSON.parse(raw); } catch (e) {}
+          if (obj && obj.request_id === need[i]) { chunk.push({ raw: raw, obj: obj }); break; }
+        }
+      });
+      hits = chunk.concat(hits);                           // keep file order across backward chunks
+      hits.forEach(function (h) { if (!earliest || String(h.obj.timestamp_utc) < earliest) earliest = String(h.obj.timestamp_utc); });
+      var foundAll = need.every(function (id) { return hits.some(function (h) { return h.obj.request_id === id; }); });
+      if (foundAll && chunkFirstTs && earliest && new Date(chunkFirstTs).getTime() < new Date(earliest).getTime() - 3600000) break;
+    }
+    out.lines = hits;
+    hits.forEach(function (h) { out.byId[h.obj.request_id] = h; });   // the last line per id wins
+  } catch (e) { out.error = String(e); }
+  return out;
+}
+
+/**
+ * The sample list as submitted, for the 'Sample list' tab + Sample list/ folder. Requests created
+ * since the app keeps the paste (SAMPLE_LIST_FILE in Exports/{reqId}/) ship that file byte-for-byte;
+ * older ones ship the keys reconstructed from Sample_Lines (incl. not-found), which the app wrote
+ * in the order the de-duplicated list was received — the same keys as Query 1's IN (…) list.
+ * Returns { head, table, firstRow, noByLine, csv, fileId, sourceShort }.
+ */
+function exportSampleList_(req, allLines) {
+  var tz = dataSs_().getSpreadsheetTimeZone();
+  var fileId = '';
+  try {
+    var exportsId = PropertiesService.getScriptProperties().getProperty(PROP.EXPORTS);
+    var fit = exportsId ? DriveApp.getFolderById(exportsId).getFoldersByName(String(req.request_id)) : null;
+    if (fit && fit.hasNext()) { var sit = fit.next().getFilesByName(SAMPLE_LIST_FILE); if (sit.hasNext()) fileId = sit.next().getId(); }
+  } catch (e) {}
+  var created = req.created_at instanceof Date ? Utilities.formatDate(req.created_at, tz, "yyyy-MM-dd'T'HH:mm:ssXXX") : String(req.created_at || '');
+  var source = fileId
+    ? 'As received: the list pasted at request creation is in Sample list/' + SAMPLE_LIST_FILE + ' (unchanged). The table below is that list after parsing and de-duplication, in the order received.'
+    : 'Reconstructed: this request was created before the app kept a copy of the pasted list. The table below is the de-duplicated list of keys the app parsed from it, in the order received — the same keys as the IN (…) list of the Query 1 SQL (IPE tab).';
+  var head = [
+    ['Sample list submitted for the request'],
+    ['Request ref', String(req.request_ref || '')],
+    ['App request id', String(req.request_id)],
+    ['Flow', String(req.title || req.flow_id || '')],
+    ['Period', String(req.period || '')],
+    ['Created at', created],
+    ['Created by', String(req.created_by || '')],
+    ['Auditor(s)', String(req.auditor_email || '')],
+    ['Reviewer', String(req.reviewer_email || '')],
+    ['Source', source]
+  ];
+  var table = [['Sample list #', 'ID_COMPANY', 'Sample key (as submitted)', 'Result']];
+  var noByLine = {};
+  var csvRows = [['sample_no', 'request_ref', 'request_id', 'created_at', 'created_by', 'id_company', 'sample_key', 'result']];
+  allLines.forEach(function (l, i) {
+    var n = i + 1; noByLine[l.line_id] = n;
+    var res = String(l.status).toLowerCase() === 'not_found' ? 'not found in the source data' : 'found (see Samples & Tasks)';
+    table.push([String(n), String(l.company || ''), String(l.document_no || ''), res]);
+    csvRows.push([String(n), String(req.request_ref || ''), String(req.request_id), created, String(req.created_by || ''), String(l.company || ''), String(l.document_no || ''), res]);
+  });
+  var csv = csvRows.map(function (r) { return r.map(function (v) { v = String(v); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(','); }).join('\r\n') + '\r\n';
+  return { head: head, table: table, firstRow: head.length + 3, noByLine: noByLine, csv: csv, fileId: fileId,
+           sourceShort: fileId ? 'as received' : 'reconstructed from the parsed keys' };
 }
 
 /**

@@ -123,7 +123,10 @@ function flowC_() {
     finalize: function (mapped, ctx) { flowCFinalize_(mapped, ctx); },
 
     /** Sheets of the one reconciliation workbook attached to every system task of the request. */
-    evidenceWorkbook: function (mapped, ctx) { return flowCWorkbook_(mapped, ctx); }
+    evidenceWorkbook: function (mapped, ctx) { return flowCWorkbook_(mapped, ctx); },
+
+    /** Rows of the "Methodology" tab (reconciliation workbook + audit export) — see flowCMethodology_. */
+    methodology: function (sources) { return flowCMethodology_(sources); }
   };
 }
 
@@ -668,15 +671,22 @@ function flowCWorkbook_(mapped, ctx) {
   var sub = [(ctx.period && ctx.period.name) || '', (ctx.requestRef || '').trim()].filter(Boolean).join(' · ');
   var mplLines = [], retailLines = [];
   mapped.forEach(function (mr) { if (!mr.found) return; (mr.mapped.subpopulation === 'Retail' ? retailLines : mplLines).push(mr.mapped); });
+  var sources = flowCSourcesFromCtx_(ctx);
   var sheets = [
     flowCRecSheet_('REC - MPL', title, sub, flowCMplLayout_(), mplLines),
     flowCRecSheet_('REC - Retail', title, sub, flowCRetailLayout_(), retailLines),
+    flowCMethodologySheet_(sources),
     { name: 'Data Extractions ->', rows: [], header: false, tabColor: FLOWC_WB.white }
   ];
   // Each raw tab ends with a source note pointing at the gateway files as they are named in the
-  // audit export's Extraction/ folder (query1_* = stage 1, <stage tag>_* = the dependent queries).
+  // audit export's Extraction/ folder (query1_* = stage 1, <stage tag>_* = the dependent queries),
+  // plus the ORIGINAL gateway filename + SHA-256 — the keys of the gateway's execution log line.
+  var byTag = {}; sources.forEach(function (s) { byTag[s.tag] = s; });
   var note = function (tag, extra) {
-    return "Source: see files '" + tag + "_result.csv' and '" + tag + "_evidence.xlsx' for the original extraction files, queries and IPEs." + (extra ? ' ' + extra : '');
+    var s = byTag[tag];
+    return "Source: see files '" + tag + "_result.csv' and '" + tag + "_evidence.xlsx' for the original extraction files, queries and IPEs."
+      + (s && s.originalCsv ? (' Original gateway file: ' + s.originalCsv + (s.sha256 ? ' (SHA-256 ' + s.sha256 + ')' : '') + '.') : '')
+      + (extra ? ' ' + extra : '');
   };
   var raw = function (name, rows, tag, extra) {
     if (rows && rows.length) sheets.push({ name: name, rows: rows, autoFilter: true, dateCols: 'auto', footNotes: [note(tag, extra)] });
@@ -801,4 +811,83 @@ function flowCRecSheet_(name, title, sub, layout, lines) {
     font: W.font, colWidths: widths, rowHeights: rowHeights, styles: styles,
     images: [{ b64: (typeof JUMIA_LOGO_PNG_B64 === 'string') ? JUMIA_LOGO_PNG_B64 : '', mime: 'image/png', name: 'jumia.png', col: 1, row: 1, offX: 9, offY: 7, width: 264, height: 79 }].filter(function (im) { return im.b64; })
   };
+}
+
+/* ============================== METHODOLOGY ============================== *
+ * Every transformation of the reconciliation that is NOT visible in the workbook's formulas:
+ * sample parsing, population split, keys, SQL filters and date windows, statement / NAV-document
+ * resolution, joins, de-duplication, aggregation, signs, tolerance and how the raw tabs were
+ * written. Generated from the module's own constants so the text cannot drift from the code.
+ * Used twice: a "Methodology" tab in the reconciliation workbook (new requests) and in the
+ * audit export (every Flow C request, including those whose workbook predates the tab).
+ * `sources` = [{ tag, label, database, exportCsv, originalCsv, sha256 }] (may be empty).
+ * NB: no cell may start with '=', '+' or '-' — the sheet writer would parse it.
+ */
+var FLOWC_RAW_TABS = [
+  ['SOI', 'query1'], ['NAV_PostedSalesInvoices', 'inv'], ['NAV_PostedSalesInvoiceLine', 'invl'],
+  ['NAV_Retail', 'glr'], ['RING', 'ring'], ['NAV', 'gl'], ['(no tab: statement resolution, see rule 11)', 'ringcodes']
+];
+function flowCMethodology_(sources) {
+  var T = FLOWC_TOLERANCE, NAV = FLOWC_NAV_ACCOUNT, AR = FLOWC_RETAIL_AR_ACCOUNTS.join(' + ');
+  var rules = [
+    ['Sample intake', 'Each line of the submitted sample list holds ID_COMPANY and COD_OMS_SALES_ORDER_ITEM, separated by a tab, comma, semicolon or space. A line whose second value is not all digits (e.g. a header row) is ignored.', 'Sample list', ''],
+    ['Sample intake', 'De-duplication: key = upper-case ID_COMPANY & COD_OMS_SALES_ORDER_ITEM (the SampleKey column of SOI). The first occurrence is kept; repeats are dropped before any query runs.', 'Sample list', 'SampleKey'],
+    ['Sample intake', 'A key with no RPT_SOI row delivered inside the request period is reported as not found and is not reconciled.', 'query1', ''],
+    ['Population', 'Source is the RPT_SOI base table (the V_RPT_SOI view does not expose IS_MARKETPLACE). IS_MARKETPLACE = 1 or true makes the item Marketplace; any other value makes it Retail.', 'query1', 'DELIVERED_DATE on or after the period start and before the period end'],
+    ['Population', 'The amount tested is MTR_UNIT_PRICE from RPT_SOI (REC tabs: VLOOKUP of company & SOI on SOI!B:H).', 'query1', 'MTR_UNIT_PRICE'],
+    ['Retail', 'Invoice key: NAV Posted Sales Invoices No_ = RPT_SOI PACKAGE_NUMBER, same id_company. Posting Date has a lower bound only (period start), so invoices posted after the period are still found.', 'inv', 'Posting Date on or after the period start'],
+    ['Retail', 'Invoice lines: same key on Document No_. Lines with Quantity = 0 are excluded in the SQL (they carry no amount). The sampled line is Line No_ = COD_BOB_SALES_ORDER_ITEM; it is flagged TRUE in the column Selected?, which the app adds to NAV_PostedSalesInvoiceLine (not a database column).', 'invl', 'Quantity <> 0'],
+    ['Retail', 'All retail amounts are compared including VAT: line Amount Including VAT vs unit price; header Amount incl_ VAT vs the sum of the lines.', 'inv, invl', ''],
+    ['Retail', 'G/L: G_L Entries with Source Code SALES and Document No_ = the package number, all accounts. Posting window = earliest delivered date of the retail samples minus 1 month, to latest delivered date plus 3 months.', 'glr', 'Source Code = SALES; window minus 1 / plus 3 months'],
+    ['Retail', 'Receivable accounts ' + AR + ' are summed and compared with the invoice total incl. VAT. All other accounts of the document are shown so the document can be seen to net to zero.', 'glr', AR],
+    ['Marketplace', 'Statement resolution: RPT_TRANSACTIONS_SELLER rows of each sampled item, Created_Date from the period start to the period end plus 1 month. The statement used is the Payout_Statement_Code of the item\'s Item Price Credit transaction; when the item has none, the first row carrying a statement code. This extraction has no tab: the code is written as a value in REC - MPL column K.', 'ringcodes', 'Created_Date window: period, plus 1 month'],
+    ['Marketplace', 'PO and down payment (display and task routing only, not used in the checks): PO_NUMBER from RPT_SOI; down payment = the RPT_TRANSACTIONS_SELLER row of type Down Payment whose notes field equals that PO number.', 'ringcodes', ''],
+    ['Marketplace', 'Full statements: every transaction of the resolved statement codes, per company. Created_Date window = earliest ringcodes Created_Date minus 1 month, to the latest plus 1 month.', 'ring', 'window minus 1 / plus 1 month'],
+    ['Marketplace', 'MPL type: MPL advance when the vendor (Vendor_Short_Code) is listed for the company in RING.RPT_TARGET_VARIABLE with type SELLER and Variable Damaged Items Insurance - Active; otherwise Regular. A statement is advance when any of its transactions is.', 'ring', 'Damaged Items Insurance - Active'],
+    ['Marketplace', 'Payout: one RPT_PAYOUT row per statement (Partner_Type SELLER; the latest Paid_At_Date when there are several), so a duplicated payout row cannot multiply the transactions. Paid = Paid_At_Date is not empty.', 'ring', 'ROW_NUMBER() = 1'],
+    ['Marketplace', 'Statement balances: one RPT_SELLER_STATEMENTS_PAYOUT row per statement (the latest End_Date).', 'ring', 'ROW_NUMBER() = 1'],
+    ['Marketplace', 'Transaction de-duplication: a transaction (company & Transaction_No) that appears more than once in the extract is kept once in the RING tab; the tab footnote states how many rows were removed. The CSV in Extraction/ is never modified.', 'ring', 'company & Transaction_No'],
+    ['Marketplace', 'Statement transactions are summed by Nav_Type: LIABILITIES and REVENUES (any other Nav_Type is summed separately).', 'ring', 'Nav_Type'],
+    ['Marketplace', 'NAV document = IS followed by the statement code without its first two characters (PS260119EG141H7 becomes IS260119EG141H7). G_L Entries with Source Code PURCHASES, all accounts. Posting window = earliest ringcodes Created_Date minus 1 month, to the latest plus 3 months.', 'gl', 'Source Code = PURCHASES; window minus 1 / plus 3 months'],
+    ['Marketplace', 'Account ' + NAV + ' carries the marketplace revenue of the statement and is the reconciled figure. All other accounts of the document are shown so the document can be seen to net to zero.', 'gl', NAV],
+    ['Checks - Retail', 'Check 1 = NAV invoice line incl. VAT less unit price. Check 2 = invoice header incl. VAT less the sum of its lines. Check 3 = G/L receivables (' + AR + ') less invoice header incl. VAT. Check 4 (workbook only) = total of all G/L lines of the document.', 'REC - Retail', ''],
+    ['Checks - Marketplace', 'Check 1 = Item Price Credit less unit price. Check 2 = (closing balance less opening balance) less (LIABILITIES + REVENUES); the app\'s own check also includes any other Nav_Type. Check 3 = NAV ' + NAV + ' plus RING REVENUES (opposite signs, so 0 when they agree). Check 4 (workbook only) = total of all G/L lines of the document.', 'REC - MPL', ''],
+    ['Checks', 'Tolerance: an absolute difference of ' + T + ' or less (currency units of the entity) is a match; above it is a variance for the reviewer to assess. A missing figure is reported as missing. The app never rejects a sample automatically.', 'All checks', String(T)],
+    ['Checks', 'The app rounds its aggregates to 2 decimals. The workbook shows figures without decimals through the number format only; the cells keep full precision.', 'All checks', ''],
+    ['Workbook', 'Raw tabs hold the CSV rows as returned (same columns, same order) with these presentation changes only: text that looks like a number and is shorter than 16 characters is written as a number; columns whose header contains "date" are formatted yyyy-mm-dd; the RING de-duplication and the Selected? column described above.', 'All raw tabs', ''],
+    ['Workbook', 'REC tabs: identifiers are values, every amount is a formula. ID_COMPANY, COD_OMS_SALES_ORDER_ITEM, COD_BOB_SALES_ORDER_ITEM, COD_SKU and PACKAGE_NUMBER come from RPT_SOI (query1); Payout_Statement_Code from ringcodes; NAV document from the IS rule; Invoice No_ = PACKAGE_NUMBER.', 'REC tabs', ''],
+    ['Task routing', 'Not part of the workbook. Marketplace: MPL advance requires the consignment contract and the down-payment proof; Regular and paid requires the proof of payment; Regular and unpaid requires a Vendor Center screenshot showing Unpaid. Retail: reconciliation only.', 'Samples & Tasks', '']
+  ];
+  var rows = [['#', 'Area', 'Rule / transformation not visible in the formulas', 'Extraction', 'Parameter']];
+  rules.forEach(function (r, i) { rows.push([String(i + 1)].concat(r)); });
+  rows.push(['', '', '', '', '']);
+  rows.push(['', 'Data extraction tab', 'Source file in the export (Extraction/)', 'Original gateway file', 'SHA-256 of the CSV']);
+  var byTag = {}; (sources || []).forEach(function (s) { byTag[s.tag] = s; });
+  FLOWC_RAW_TABS.forEach(function (t) {
+    var s = byTag[t[1]] || {};
+    rows.push(['', t[0], t[1] + '_result.csv' + (s.database ? ' (' + s.database + ')' : ''), s.originalCsv || '', s.sha256 || '']);
+  });
+  return rows;
+}
+/** The Methodology sheet spec for buildXlsxFile_ (wrapped text, readable widths). */
+function flowCMethodologySheet_(sources) {
+  var rows = flowCMethodology_(sources), mapHdr = rows.length - FLOWC_RAW_TABS.length;
+  return {
+    name: 'Methodology', rows: rows, freezeRows: 1, font: FLOWC_WB.font,
+    colWidths: [30, 150, 620, 230, 420],
+    styles: [{ range: 'A1:E' + rows.length, wrap: true, valign: 'top' }, { range: 'B' + mapHdr + ':E' + mapHdr, bold: true }]
+  };
+}
+/** Sources known at enrichment time: the stage-1 file + every dependent stage, with the SHA-256
+ *  the IPE computed over the raw CSV bytes. */
+function flowCSourcesFromCtx_(ctx) {
+  var ipe = ctx.ipe || {}, out = [];
+  out.push({ tag: 'query1', label: 'RPT_SOI', database: (ctx.qp && ctx.qp.database) || ipe.primaryDb || '',
+             originalCsv: ctx.csv1File ? ctx.csv1File.getName() : (ipe.csvName || ''), sha256: ipe.csvSha256 || '' });
+  var hashes = {}; (ipe.stages || []).forEach(function (s) { hashes[s.tag] = s; });
+  (ctx.stageFiles || []).forEach(function (sf) {
+    if (!sf.csvFile) return;
+    out.push({ tag: sf.tag, label: sf.label, database: sf.db || '', originalCsv: sf.csvFile.getName(), sha256: (hashes[sf.tag] || {}).csvSha256 || '' });
+  });
+  return out;
 }

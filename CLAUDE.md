@@ -103,9 +103,30 @@ Evidence index), then **assembles the export as real files in a Drive folder** `
 `permissions.create` (`supportsAllDrives`, `shareFileWith_`), and the client shows its link. A convenience
 one-click **ZIP download is produced only when the evidence totals ≤30 MB** (`Utilities.zip` + base64 return
 have a ~50 MB blob cap); larger exports are delivered by the Drive link alone — it never throws on size.
-Return shape: `{ folderUrl, folderName, fileCount, missing, totalMb, shared[], download|null }`. Uses existing
+Return shape: `{ folderUrl, folderName, fileCount, missing, totalMb, shared[], download|null, ipe{extractions, pass, logLines, logError, sampleList} }`. Uses existing
 scopes only (full-drive, already pulled in by DriveApp). **Do NOT revert to zipping everything in memory** —
 that was the 70 MB failure (and the fragile `zip.copyBlob()` left an empty Exports folder).
+
+**IPE package (Forvis Mazars ask, 20 Oct 2026 — thread "Jumia FY26 - Tool testing").** The export also carries:
+- **IPE tab: ONE ROW PER EXTRACTION** (`exportExtractions_`: stage 1, Flow B stage 2, every `stages_json` query) —
+  export file ↔ original gateway filename (the stored copy keeps the gateway's name) ↔ gateway request_id, server,
+  database, completion time, duration, row count and SHA-256 three ways (gateway log / app at extraction / file in
+  the package, re-hashed at export), evidence-xlsx hash, query hash, `Integrity` Pass/Flag (`extractionIntegrity_`),
+  SQL as executed. The gateway's `query_sha256` = SHA-256 of the job's UTF-8 query, `request_sha256` = SHA-256 of
+  the job file, `row_count` = CSV data rows (verified on REQ_bc265bfa).
+- **Execution log**: tab + `Execution log/execution_log.jsonl` = the gateway's `Logs/audit.jsonl` lines for those
+  request_ids, **verbatim**, + `Execution log/jobs/<job_file>` (from `Requests_Completed/`). `gatewayLogLines_` reads
+  the log BACKWARDS in Drive Range requests (8 MB chunks cut on newlines) — never the whole file.
+- **Sample list**: tab (numbered; Samples & Tasks column A hyperlinks to it) + `Sample list/sample_list.csv`, and the
+  paste byte-for-byte as `Sample list/sample_list_as_received.txt` — `persistRun_` now stores it as
+  `Exports/{reqId}/sample_list_as_received.txt` (`storeSampleList_`). Older requests show a "reconstructed" list
+  (Sample_Lines in received order, incl. not-found).
+- **Methodology** (flows whose module has `methodology(sources)` — Flow C): tab in the export workbook + standalone
+  `Reconciliation (system)/Methodology - reconciliation.xlsx`; new Flow C workbooks carry it as a tab too, and each
+  raw tab's footnote names the original gateway file + SHA-256. The rows are generated from FlowC.js constants —
+  **edit `flowCMethodology_` whenever a filter, window, join or check changes**.
+- CSV bytes are never touched (makeCopy); only the export name (`<tag>_result.csv`) differs from the gateway's.
+  Independent checker: `verify_audit_export.py` (Gonçalo's side-session notes, 20 Oct 2026).
 
 ## Flow A routing rules (the decision the engine encodes)
 Two facts decide each line:
