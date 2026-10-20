@@ -861,7 +861,11 @@ function auditExport(requestId) {
     var stamp = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH-mm');
     var reqFolder = getOrCreateFolder_(DriveApp.getFolderById(exportsId), requestId);
     var outFolder = reqFolder.createFolder(zipName + ' (' + stamp + ')');
-    outFolder.createFile(xlsxBlob);
+    // ONE tally of what actually lands in the folder (every file below goes through place):
+    // it is what the Audit card shows the auditor — "N file(s) · X MB" must be the real folder.
+    var placed = 0, placedBytes = 0, missing = 0;
+    var place = function (file) { placed++; try { placedBytes += Number(file.getSize()) || 0; } catch (e) {} return file; };
+    place(outFolder.createFile(xlsxBlob));
 
     // [fileId, path]: one CSV (+ SOX evidence xlsx) per extraction — the same list as the IPE tab.
     // makeCopy keeps the bytes, so the hashes in the IPE / execution log still match; only the
@@ -872,12 +876,12 @@ function auditExport(requestId) {
       if (x.xlsxId) extraction.push([x.xlsxId, 'Extraction/' + x.exportXlsx]);
     });
     var extFolder = extraction.length ? outFolder.createFolder('Extraction') : null;
-    extraction.forEach(function (p) { try { DriveApp.getFileById(p[0]).makeCopy(p[1].replace(/^Extraction\//, ''), extFolder); } catch (e) {} });
+    extraction.forEach(function (p) { try { place(DriveApp.getFileById(p[0]).makeCopy(p[1].replace(/^Extraction\//, ''), extFolder)); } catch (e) { missing++; } });
 
     // Execution log/: the gateway log lines (verbatim, file order) + the job files they hash.
     var logFolder = outFolder.createFolder('Execution log');
     var logText = gwLog.lines.map(function (ln) { return ln.raw; }).join('\n') + (gwLog.lines.length ? '\n' : '');
-    var logFile = logFolder.createFile(Utilities.newBlob(logText, 'text/plain', 'execution_log.jsonl'));
+    var logFile = place(logFolder.createFile(Utilities.newBlob(logText, 'text/plain', 'execution_log.jsonl')));
     extraction.push([logFile.getId(), 'Execution log/execution_log.jsonl']);
     var jobsFolder = null;
     gwLog.lines.forEach(function (ln) {
@@ -885,7 +889,7 @@ function auditExport(requestId) {
       try {
         var it = sub_('Requests_Completed').getFilesByName(jf);
         if (!it.hasNext()) return;
-        var cp = it.next().makeCopy(jf, jobsFolder || (jobsFolder = logFolder.createFolder('jobs')));
+        var cp = place(it.next().makeCopy(jf, jobsFolder || (jobsFolder = logFolder.createFolder('jobs'))));
         extraction.push([cp.getId(), 'Execution log/jobs/' + jf]);
       } catch (e) {}
     });
@@ -893,12 +897,12 @@ function auditExport(requestId) {
     // Sample list/: the paste as received (when stored) + the numbered list as CSV.
     var smpFolder = outFolder.createFolder('Sample list');
     if (sample.fileId) {
-      try { var sf = DriveApp.getFileById(sample.fileId).makeCopy(SAMPLE_LIST_FILE, smpFolder); extraction.push([sf.getId(), 'Sample list/' + SAMPLE_LIST_FILE]); } catch (e) {}
+      try { var sf = place(DriveApp.getFileById(sample.fileId).makeCopy(SAMPLE_LIST_FILE, smpFolder)); extraction.push([sf.getId(), 'Sample list/' + SAMPLE_LIST_FILE]); } catch (e) {}
     }
-    var smpCsv = smpFolder.createFile(Utilities.newBlob(sample.csv, 'text/csv', 'sample_list.csv'));
+    var smpCsv = place(smpFolder.createFile(Utilities.newBlob(sample.csv, 'text/csv', 'sample_list.csv')));
     extraction.push([smpCsv.getId(), 'Sample list/sample_list.csv']);
 
-    var dirCache = {}, copied = 0, missing = 0, totalBytes = 0, seenFile = {};
+    var dirCache = {}, seenFile = {};
     var evRoot = evFiles.some(function (f) { return !f.system; }) ? outFolder.createFolder('Evidence') : null;
     var sysRoot = null;
     evFiles.forEach(function (f) {
@@ -912,9 +916,7 @@ function auditExport(requestId) {
           var tk = f.soi + ' ' + f.task;
           dest = dirCache[tk] || (dirCache[tk] = soiF.createFolder(f.task));
         }
-        var src = DriveApp.getFileById(f.fileId);
-        try { totalBytes += Number(src.getSize()) || 0; } catch (e) {}
-        src.makeCopy(f.fileName, dest); copied++; seenFile[f.fileId] = true;
+        place(DriveApp.getFileById(f.fileId).makeCopy(f.fileName, dest)); seenFile[f.fileId] = true;
       } catch (err) { missing++; }
     });
 
@@ -922,8 +924,8 @@ function auditExport(requestId) {
     // exists only for requests enriched after it was added).
     if (methodRows && sysRoot) {
       try {
-        var mf = buildXlsxFile_('Methodology - reconciliation', [{ name: 'Methodology', rows: methodRows, freezeRows: 1,
-          colWidths: [30, 150, 620, 230, 420], styles: [{ range: 'A1:E' + methodRows.length, wrap: true, valign: 'top' }] }], sysRoot);
+        var mf = place(buildXlsxFile_('Methodology - reconciliation', [{ name: 'Methodology', rows: methodRows, freezeRows: 1,
+          colWidths: [30, 150, 620, 230, 420], styles: [{ range: 'A1:E' + methodRows.length, wrap: true, valign: 'top' }] }], sysRoot));
         extraction.push([mf.getId(), 'Reconciliation (system)/' + mf.getName()]);
       } catch (e) { logActivity('EXPORT_METHODOLOGY_FAILED', 'request', requestId, String(e)); }
     }
@@ -937,9 +939,10 @@ function auditExport(requestId) {
     var shared = shareFileWith_(outFolder.getId(), recipients);
 
     // Convenience one-click ZIP — only for small exports (in-memory zip + base64
-    // return have a hard cap); larger exports are delivered via the Drive link.
+    // return have a hard cap); larger exports are delivered via the Drive link. The ZIP carries
+    // EVERYTHING in the folder, so the gate is the folder total, not the evidence alone.
     var download = null;
-    if (totalBytes <= 30 * 1024 * 1024) {
+    if (placedBytes <= 30 * 1024 * 1024) {
       try {
         var zipBlobs = [xlsxBlob.copyBlob().setName(zipName + '.xlsx')];
         extraction.forEach(function (p) { try { var b = DriveApp.getFileById(p[0]).getBlob().copyBlob(); b.setName(p[1]); zipBlobs.push(b); } catch (e) {} });
@@ -951,12 +954,12 @@ function auditExport(requestId) {
     }
 
     logActivity('AUDIT_EXPORT', 'request', requestId,
-      copied + ' file(s), ~' + Math.round(totalBytes / 1048576) + ' MB' + (missing ? (', ' + missing + ' missing') : '') + ', shared: ' + (shared.join(', ') || 'none')
+      placed + ' file(s), ~' + Math.round(placedBytes / 1048576) + ' MB' + (missing ? (', ' + missing + ' missing') : '') + ', shared: ' + (shared.join(', ') || 'none')
       + '; IPE: ' + ext.length + ' extraction(s), ' + ext.filter(function (x) { return x.integrity === 'Pass'; }).length + ' pass, '
       + gwLog.lines.length + ' log line(s)' + (gwLog.error ? ' (log error: ' + gwLog.error + ')' : '') + ', sample list ' + sample.sourceShort);
     return {
       folderUrl: outFolder.getUrl(), folderName: outFolder.getName(),
-      fileCount: copied, missing: missing, totalMb: Math.round(totalBytes / 1048576 * 10) / 10,
+      fileCount: placed, missing: missing, totalMb: Math.round(placedBytes / 1048576 * 10) / 10,
       shared: shared, download: download,
       ipe: { extractions: ext.length, pass: ext.filter(function (x) { return x.integrity === 'Pass'; }).length,
              logLines: gwLog.lines.length, logError: gwLog.error || '', sampleList: sample.sourceShort }
