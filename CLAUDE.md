@@ -259,7 +259,7 @@ normal rollup (a sample already past review shows `in_progress` again; its recon
 reopens a `closed` request to `enriched`, and logs `TASK_BACKFILL`. Existing tasks, evidence and extractions are never
 rewritten. This is the pattern for any future "add a task to a live request" change. `addFlowCSalesInvoiceRule()` only adds
 the rule (future requests). Triggers and the editor run HEAD; the invoice-specific AI check and the new card fields reach
-the live `/exec` URL only once prod is promoted.
+the live `/exec` URL only once prod is promoted (done: prod = **@41**, 12 Nov 2026, deployed by João).
 
 ## Load times, CFO dashboard, access log (20 Oct 2026, Gonçalo)
 Measured on the Executions log (149 calls, 14–20 Oct): every call opened Config for the role, then Data, and read
