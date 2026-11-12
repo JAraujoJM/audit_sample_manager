@@ -440,12 +440,89 @@ function systemVerdict_(unit) {
   };
 }
 
+/* ---------- Flow C Retail: the customer's SALES INVOICE (a PDF Jumia issued) ---------- */
+function isSalesInvoiceTask_(asg) {
+  return String(asg.evidence_type || '').trim().toLowerCase() === FLOWC_SALES_INVOICE.toLowerCase();
+}
+/**
+ * The invoice PDF against what NAV "Posted Sales Invoices" recorded for it at extraction (stored
+ * on the sample: inv_total = Amount incl_ VAT, inv_customer = Customer Name, inv_no = No_).
+ * Two things decide the verdict: the invoice TOTAL and the CUSTOMER NAME. NAV mostly keeps the
+ * customer's first name only, sometimes in Arabic script (seen on REQ_bc265bfa), so the name
+ * check is "the recorded name is part of the printed name", never an exact comparison.
+ * With no recorded total (NAV invoice not found at extraction) there is nothing to compare the
+ * document with: the verdict is "uncertain" and no model call is made.
+ */
+function assessSalesInvoice_(asg, line, ldet, files) {
+  var has = function (v) { return v !== undefined && v !== null && String(v).trim() !== ''; };
+  if (!has(ldet.inv_total) || isNaN(Number(ldet.inv_total))) {
+    return { verdict: 'uncertain', perDoc: [],
+             summary: 'No NAV posted sales invoice was found for this sample at extraction — there is no recorded total to validate the invoice against.' };
+  }
+  var total = Number(ldet.inv_total), customer = String(ldet.inv_customer || '').trim();
+  var facts = [
+    'Company: ' + (line.company || '—'),
+    'Invoice / package number (NAV "No_"): ' + (ldet.inv_no || ldet.package_number || '—'),
+    'Recorded invoice total INCLUDING VAT: ' + total + (has(ldet.inv_currency) ? ' ' + ldet.inv_currency : ''),
+    'Recorded customer name: ' + (customer || '(none recorded — skip check 3 and say so)'),
+    'Recorded amount excluding VAT (reference only): ' + (has(ldet.inv_excl) ? ldet.inv_excl : '—'),
+    'NAV posting date (reference only — the invoice date can be a few days earlier): ' + (String(ldet.inv_posting || '').slice(0, 10) || '—'),
+    'Sampled item on this invoice (reference only): SKU ' + (ldet.sku || '—') + ', unit price ' + (has(line.amount) ? line.amount : '—')
+  ].join('\n');
+  var system =
+    'You are a meticulous financial-audit evidence reviewer at Jumia. The attached document should be a SALES INVOICE ' +
+    'that Jumia issued to a customer (a PDF in Jumia\'s standard invoice layout). You are given what the accounting system ' +
+    '(NAV, "Posted Sales Invoices") recorded for that invoice. Run exactly three checks and report each one in "checks":\n' +
+    '1) "Document type" — the document is a sales invoice issued by Jumia. An order confirmation, delivery note, credit ' +
+    'note, payment receipt or a screenshot of a system is not.\n' +
+    '2) "Invoice total" — the invoice\'s grand total INCLUDING VAT (the final amount of the whole invoice, after shipping, ' +
+    'discounts and taxes) equals the recorded total including VAT. Compare the numeric value only: ignore the currency ' +
+    'symbol, thousands separators and decimal formatting, and accept a difference of up to ' + FLOWC_INVOICE_TOLERANCE +
+    ' currency unit as rounding. Never compare against a single item line, a subtotal or the VAT amount on its own.\n' +
+    '3) "Customer name" — the customer (bill-to / ship-to name) printed on the invoice is the same person or company as ' +
+    'the recorded customer name. The accounting system often keeps ONLY THE FIRST NAME or a shortened name, and may hold ' +
+    'it in Arabic script while the invoice prints it in Latin letters (or the reverse): the check passes when the recorded ' +
+    'name appears as the first name or as any part of the printed name, allowing for transliteration, letter case, accents, ' +
+    'spacing and spelling variants. It fails only when the printed customer is clearly a different name.\n' +
+    'The invoice / package number and the dates are supporting identifiers: mention the number when the document shows it, ' +
+    'but never fail the document on them alone — if the number shown is clearly a different invoice while the total and the ' +
+    'customer match, return "uncertain".\n' +
+    'Verdict: "accept" only when all three checks pass. "reject" when the document is not a Jumia sales invoice, the total ' +
+    'differs, or the customer is clearly someone else — say which, quoting the value on the document and the recorded value. ' +
+    '"uncertain" when the total or the customer name cannot be read or found on the document.\n' +
+    'In each check\'s note quote the value you read on the document. Summary: one specific sentence (under 240 characters) ' +
+    'quoting the total and the customer name read on the invoice against the recorded ones.';
+
+  var perDoc = [], worst = 'accept';
+  files.forEach(function (e) {
+    var d = loadEvidenceBytes_(e);
+    if (d.err) { perDoc.push({ file: e.file_name, type: asg.evidence_type, verdict: 'uncertain', summary: d.err }); worst = worseVerdict_(worst, 'uncertain'); return; }
+    var prompt = 'Expected evidence type: "' + FLOWC_SALES_INVOICE + '" (issued by Jumia).\n\nRecorded in NAV:\n' + facts +
+      '\n\nAssess the attached document (file name: ' + e.file_name + ').';
+    var res;
+    try { res = geminiAssess_(system, prompt, { mimeType: d.mime, bytes: d.bytes }); }
+    catch (err) { perDoc.push({ file: e.file_name, type: asg.evidence_type, verdict: 'uncertain', summary: 'AI error: ' + (err.message || err) }); worst = worseVerdict_(worst, 'uncertain'); return; }
+    var v = String(res.verdict || 'uncertain').toLowerCase();
+    if (['accept', 'reject', 'uncertain'].indexOf(v) === -1) v = 'uncertain';
+    // An "accept" that carries a failed check contradicts itself — leave it to the reviewer.
+    var failed = (res.checks || []).filter(function (c) { return c && c.ok === false; });
+    if (v === 'accept' && failed.length) v = 'uncertain';
+    var sm = String(res.summary || '');
+    if (failed.length) sm += ' [failed: ' + failed.map(function (c) { return c.name; }).join(', ') + ']';
+    perDoc.push({ file: e.file_name, type: asg.evidence_type, verdict: v, summary: sm });
+    worst = worseVerdict_(worst, v);
+  });
+  return { verdict: worst, summary: perDoc.map(function (p) { return p.file + ' → ' + p.verdict + (p.summary ? (': ' + p.summary) : ''); }).join('  |  '), perDoc: perDoc };
+}
+
 function assessAssignmentCore_(asg, line) {
   var ds = dataSs_();
   var unit = parseJson_(asg.detail_json), ldet = parseJson_(line.detail_json);
   if (unit.kind === 'system') return systemVerdict_(unit);           // deterministic — never sent to the model
   var files = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.assignment_id) === String(asg.assignment_id); });
   if (!files.length) return { verdict: 'uncertain', summary: 'No file uploaded for this task.', perDoc: [] };
+  // Flow C Retail — the customer's sales invoice: its own check (total incl. VAT + customer name).
+  if (String(line.subpopulation) === 'Retail' && isSalesInvoiceTask_(asg)) return assessSalesInvoice_(asg, line, ldet, files);
   if (isPerTaskSub_(line.subpopulation) && String(line.subpopulation) !== 'Postpaid - Cash & POS') {
     // Flow C human task: Flow A's per-document check (statement / balance / paid / MPL facts) on THIS task's files.
     var types = {}; types[String(asg.assignment_id)] = asg.evidence_type;

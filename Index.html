@@ -623,7 +623,8 @@
     'Postpaid - Cash & POS':[['Package no','package_number'],['Collection partner','collection_partner'],['Payment no','payment_no'],['Payment date','payment_date'],['Payment reference','payment_ref'],['Bank account','bank_account'],['Amount','amount']],
     'Prepaid - Other methods':[['Order','order_nr'],['Amount','amount']],
     // Flow C (Marketplace revenues / COGS by sales-order item)
-    'Retail':[['Package no','package_number'],['BOB item','bob_soi'],['SKU','sku'],['Unit price','amount'],['Delivered','delivered_date']],
+    // Customer + invoice total = NAV "Posted Sales Invoices" — what the "Sales invoice" PDF must show.
+    'Retail':[['Package no','package_number'],['BOB item','bob_soi'],['SKU','sku'],['Unit price','amount'],['Delivered','delivered_date'],['Customer','inv_customer'],['Invoice total','inv_total']],
     'Marketplace':[['Package no','package_number'],['SKU','sku'],['Unit price','amount'],['Statement','statement_code'],['Closing balance','closing_balance'],['Paid at','paid_at'],['Payout method','payout_method'],['Source provider','source_provider'],['Payment reference','payment_ref'],['MPL type','mpl_type'],['PO','po']]
   };
   // Flows whose sample box takes two columns (ID_COMPANY + sales-order item).
@@ -638,11 +639,14 @@
     if(line && line[key]!=null && line[key]!=='') return line[key];
     return '';
   }
+  // Keys rendered as numbers; everything else is text ('—' when empty).
+  var CA_NUM_KEYS={amount:1, inv_total:1};
+  function caFmt(key, v){ return CA_NUM_KEYS[key] ? fmtNum(v) : esc(v||'—'); }
   function caFactsHtml(subpop, line, detail, unit){
     var spec=CA_FIELDS[subpop]; if(!spec) return '';
     return '<div class="facts">'+spec.map(function(f){
       var v=caVal(f[1], line, detail, unit);
-      return '<div class="f"><span class="fk">'+esc(f[0])+'</span><span class="fv">'+(f[1]==='amount'?fmtNum(v):esc(v||'—'))+'</span></div>';
+      return '<div class="f"><span class="fk">'+esc(f[0])+'</span><span class="fv">'+caFmt(f[1], v)+'</span></div>';
     }).join('')+'</div>';
   }
   // Compact per-task detail for the assign table (subpopulation-relevant identifiers).
@@ -1289,7 +1293,7 @@
       var spec = regularMpl ? CA_FIELDS[t.subpopulation].filter(function(f){ return f[1]!=='po'; }) : CA_FIELDS[t.subpopulation];
       facts = '<div class="task-facts">'+cty+spec.map(function(f){
         var v=caVal(f[1], t, t.detail, t.unit);
-        return '<span>'+esc(f[0])+' <b>'+(f[1]==='amount'?fmtNum(v):esc(v||'—'))+'</b></span>';
+        return '<span>'+esc(f[0])+' <b>'+caFmt(f[1], v)+'</b></span>';
       }).join('')+'</div>';
     } else {
       facts = '<div class="task-facts">'
@@ -1631,6 +1635,7 @@
       +fact('Package no.','<span class="mono">'+esc(d.package_number||'—')+'</span>')
       +(line.subpopulation==='Retail'
         ? fact('BOB item','<span class="mono">'+esc(d.bob_soi||'—')+'</span>')+fact('SKU', esc(d.sku||'—'))
+          +fact('Customer', esc(d.inv_customer||'—'))+fact('Invoice total', fmtNum(d.inv_total))
         : fact('Statement','<span class="mono">'+esc(line.statement_code||'—')+'</span>')+fact('Closing balance', fmtNum(line.closing_balance))
           +fact('Paid at', esc(line.paid_at||'—'))+fact('MPL type', esc(line.mpl_type||'—'))+fact('Seller', esc(line.vendor||'—'))+fact('PO', esc(d.po||'—')))
       +'</div>';
@@ -1648,7 +1653,7 @@
         +'<button class="btn primary sm subtask-primary" data-aid="'+esc(a.assignment_id)+'"'+(gated?' disabled':'')+'>'+esc(cfg.primaryLabel)+'</button>'
         +((sys&&stage==='review')?'':'<button class="btn sm subtask-return" data-aid="'+esc(a.assignment_id)+'">Return</button>')+'</div>'
       : '<div class="muted" style="font-size:12.5px; margin-top:10px">'+esc(String(a.status).replace(/_/g,' '))+'</div>';
-    return '<div class="line-card" data-aid="'+esc(a.assignment_id)+'" style="border:0;padding:0;margin:0">'
+    return '<div class="line-card" data-aid="'+esc(a.assignment_id)+'" data-doc="'+esc(String(a.evidence_type||'document').toLowerCase())+'" style="border:0;padding:0;margin:0">'
       +'<div class="line-head"><button class="btn sm subtask-back">← Tasks</button><span class="doc" style="margin-left:8px">'+esc(a.evidence_type)+'</span>'
         +(sys?'<span class="pill blue" style="margin-left:8px;font-size:10px">system</span>':'')
         +'<span class="grow"></span>'+statusPill(a.status)+'</div>'
@@ -1701,7 +1706,7 @@
   function runSubtaskAiCheck(stage, btn){
     var card=btn.closest('.line-card'), aid=card.dataset.aid, lineId=curSubtaskLine;
     btn.disabled=true; var was=btn.innerHTML; btn.innerHTML='<span class="spinner"></span>Checking';
-    var res=card.querySelector('.ai-result'); if(res) res.innerHTML='<span class="ai-sum muted">Checking the proof of payment…</span>';
+    var res=card.querySelector('.ai-result'); if(res) res.innerHTML='<span class="ai-sum muted">Checking the '+esc(card.dataset.doc||'proof of payment')+'…</span>';
     RUN().withSuccessHandler(function(r){
       var d=stageState[stage].detail, ln=d&&d.lines.filter(function(x){ return String(x.line_id)===String(lineId); })[0];
       var a=ln&&(ln.assignments||[]).filter(function(x){ return String(x.assignment_id)===String(aid); })[0];
@@ -1743,7 +1748,7 @@
         +fact('Sales order item', '<span class="mono">'+esc(l.document_no||'—')+'</span>')
         +fact('Company', esc(l.company||'—'))
         +fact('Subpopulation', esc(l.subpopulation))
-        +CA_FIELDS[l.subpopulation].map(function(f){ var v=caVal(f[1], l, l.detail, null); return fact(f[0], f[1]==='amount'?fmtNum(v):esc(v||'—')); }).join('')
+        +CA_FIELDS[l.subpopulation].map(function(f){ var v=caVal(f[1], l, l.detail, null); return fact(f[0], caFmt(f[1], v)); }).join('')
         +'</div>';
     } else {
       facts='<div class="facts">'

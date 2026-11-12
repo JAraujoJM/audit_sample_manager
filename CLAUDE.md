@@ -200,7 +200,7 @@ delivery is the whole settlement payment; everything else → `OMS_Payment_Amoun
 idempotent, logged as `AMOUNT_FIX`). Full detail (queries, subpopulations, owners, phase-by-phase build log)
 is in the **`flow-b-cash-anchor` memory**.
 
-## Flow C — Marketplace revenues / COGS by sales-order item (built, not yet seeded)
+## Flow C — Marketplace revenues / COGS by sales-order item (live — REQ_bc265bfa in flight)
 Input = `ID_COMPANY` + `COD_OMS_SALES_ORDER_ITEM` (Flow B's paste format). **Stage 1** `RPT_SOI` (the base
 TABLE — `V_RPT_SOI` lacks `IS_MARKETPLACE`) → unit price + Retail/Marketplace split (`subpopulation`).
 **Retail**: NAV `Posted Sales Invoices` + `Posted Sales Invoice Line` (`AIG_Nav_DW`, keyed on
@@ -233,6 +233,30 @@ a `Data Extractions ->` divider tab, then raw `SOI` / `NAV_PostedSalesInvoices` 
 renderer is the generic `buildXlsxFile_` sheet spec (rows with `=` formulas, styles, widths, images…). The
 auditor export copies the workbook **once** into `Reconciliation (system)/` at the export root (every sample's
 row points there — `auditExport` dedupes by file id). Deep detail in the **`flow-c-revenue-soi` memory**.
+
+**Retail "Sales invoice" task (12 Nov 2026).** A Retail sample now carries TWO tasks: the system reconciliation and a
+manual **`Sales invoice`** (Routing rule `retail_sales_invoice`, `population=retail` → Preparer; constants
+`FLOWC_SALES_INVOICE` / `FLOWC_SALES_INVOICE_RULE` in FlowC.js). The preparer uploads the PDF Jumia issued to the customer;
+the reviewer's AI check is its own prompt (`assessSalesInvoice_`, Review.js — routed from `assessAssignmentCore_`, NOT the
+Flow-A-style per-document check): three named checks — document type, **invoice total incl. VAT = `inv_total`**
+(NAV `Posted Sales Invoices`.`Amount incl_ VAT`, rounding ≤ `FLOWC_INVOICE_TOLERANCE` = 1) and **customer name =
+`inv_customer`**. NAV keeps mostly the customer's FIRST NAME only, sometimes in Arabic script (seen on REQ_bc265bfa), so
+the name rule is "recorded name is part of the printed name, transliteration allowed" — never tighten it to an exact match.
+The invoice number is a supporting identifier only. An `accept` that carries a failed check is downgraded to `uncertain`;
+no recorded total (NAV invoice not found) → `uncertain` with no model call. The values come from the sample's
+`detail_json` (already stored at extraction — no query change; new runs also store `inv_currency`). Card / export / review
+window show *Customer* + *Invoice total* (`CA_FIELDS['Retail']`, `CA_FIELDS_EXPORT_`, `renderFlowCTask`; numeric keys via
+`caFmt` / `CA_NUM_KEYS`).
+**Adding the task to a request that is already running** (Setup.js, admin-run, editor): `previewFlowCSalesInvoiceTasks(id)`
+(dry run, writes nothing) then `addFlowCSalesInvoiceTasks(id)` — wrappers `previewSalesInvoiceTasks_REQ_bc265bfa` /
+`addSalesInvoiceTasks_REQ_bc265bfa`; with no id it takes the only Flow C request that is not closed. It appends ONE pending,
+unassigned task per Retail sample that lacks it, adds the Routing rule if missing, re-derives each sample's status with the
+normal rollup (a sample already past review shows `in_progress` again; its reconciliation task keeps its own status), bumps
+`required_count` / `route_rule` LAST (= the per-sample "done" marker, so a half-finished run resumes without duplicates),
+reopens a `closed` request to `enriched`, and logs `TASK_BACKFILL`. Existing tasks, evidence and extractions are never
+rewritten. This is the pattern for any future "add a task to a live request" change. `addFlowCSalesInvoiceRule()` only adds
+the rule (future requests). Triggers and the editor run HEAD; the invoice-specific AI check and the new card fields reach
+the live `/exec` URL only once prod is promoted.
 
 ## Load times, CFO dashboard, access log (20 Oct 2026, Gonçalo)
 Measured on the Executions log (149 calls, 14–20 Oct): every call opened Config for the role, then Data, and read

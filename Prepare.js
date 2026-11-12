@@ -60,7 +60,9 @@ var CA_FIELDS_EXPORT_ = {
   'Prepaid - Voucher': [['Order', 'order_nr'], ['Amount', 'amount']],
   'Prepaid - JumiaPay': CA_JP_EXPORT_, 'Postpaid - JumiaPay on delivery': CA_JP_EXPORT_, 'Postpaid - Cash - 3PL via JPay': CA_JP_EXPORT_,
   'Postpaid - Cash & POS': [['Package no', 'package_number'], ['Collection partner', 'collection_partner'], ['Payment no', 'payment_no'], ['Payment date', 'payment_date'], ['Payment reference', 'payment_ref'], ['Bank account', 'bank_account'], ['Amount', 'amount']],
-  'Prepaid - Other methods': [['Order', 'order_nr'], ['Amount', 'amount']]
+  'Prepaid - Other methods': [['Order', 'order_nr'], ['Amount', 'amount']],
+  // Flow C Retail (the "Sales invoice" task) — same fields as the card.
+  'Retail': [['Package no', 'package_number'], ['BOB item', 'bob_soi'], ['SKU', 'sku'], ['Unit price', 'amount'], ['Delivered', 'delivered_date'], ['Customer', 'inv_customer'], ['Invoice total', 'inv_total']]
 };
 // Value resolves per-payment unit → line detail → the task row, same order as caVal.
 function caValExport_(key, t) {

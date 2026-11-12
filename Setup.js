@@ -282,6 +282,7 @@ function seedFlowCRouting_(cfg) {
       documents: '', responsible: resp, optional: '', active: true });
   }
   row('recon_retail',            'population=retail',                            'Reconciliation (system)', ROLES.REVIEWER);
+  row(FLOWC_SALES_INVOICE_RULE,  'population=retail',                            FLOWC_SALES_INVOICE,       ROLES.PREPARER);
   row('recon_mpl',               'population=marketplace',                       'Reconciliation (system)', ROLES.REVIEWER);
   row('mpl_advance_contract',    'population=marketplace;mpl=advance',           'Consignment contract',    ROLES.PREPARER);
   row('mpl_advance_downpayment', 'population=marketplace;mpl=advance',           'Down-payment proof',      ROLES.PREPARER);
@@ -472,4 +473,145 @@ function auditRequestFileLinks() {
   });
   Logger.log(JSON.stringify(out, null, 2));
   return out;
+}
+
+/* ============================================================================================
+ * Flow C — "Sales invoice" task on Retail samples (12 Nov 2026)
+ * --------------------------------------------------------------------------------------------
+ * Retail samples carry a second task next to the system reconciliation: the Preparer uploads
+ * the PDF of the customer's sales invoice, and the AI assistant checks its total incl. VAT and
+ * customer name against NAV "Posted Sales Invoices" (Review.js assessSalesInvoice_).
+ *
+ * NEW requests get the task from the Routing rule (seedFlowCRouting_ / addFlowCSalesInvoiceRule).
+ * A request that is ALREADY RUNNING gets it from addFlowCSalesInvoiceTasks(requestId): one
+ * pending, unassigned "Sales invoice" task is appended to every Retail sample that lacks it.
+ * Nothing existing is rewritten — the reconciliation task, its status, evidence, notes and the
+ * extraction stay exactly as they are. The sample status is then re-derived by the normal
+ * rollup, so a Retail sample that was already past review shows "in progress" again until its
+ * invoice is collected (its reconciliation task keeps its own reviewed / accepted status).
+ * Idempotent and resumable: a second run adds nothing. Logged as TASK_BACKFILL.
+ *
+ * The editor's Run button passes no argument: with no id, the ONE Flow C request that is not
+ * closed is used (several → the error lists them). Run the preview first — it writes nothing.
+ * ============================================================================================ */
+function previewSalesInvoiceTasks_REQ_bc265bfa() { return previewFlowCSalesInvoiceTasks('REQ_bc265bfa'); }
+function addSalesInvoiceTasks_REQ_bc265bfa()     { return addFlowCSalesInvoiceTasks('REQ_bc265bfa'); }
+
+/** Dry run: what addFlowCSalesInvoiceTasks would do, sample by sample. Writes nothing. */
+function previewFlowCSalesInvoiceTasks(requestId) { return flowCSalesInvoiceBackfill_(requestId, true); }
+/** Add the "Sales invoice" task to every Retail sample of a running Flow C request. */
+function addFlowCSalesInvoiceTasks(requestId)     { return flowCSalesInvoiceBackfill_(requestId, false); }
+
+/** Admin-run: make sure Flow C routing has the Retail "Sales invoice" rule (future requests). */
+function addFlowCSalesInvoiceRule() {
+  requireRole_([ROLES.ADMIN]);
+  var added = ensureFlowCSalesInvoiceRule_();
+  Logger.log(added ? 'Routing rule ' + FLOWC_SALES_INVOICE_RULE + ' added.' : 'Routing rule ' + FLOWC_SALES_INVOICE_RULE + ' was already there.');
+  return { added: added, routing: getRouting('flowC') };
+}
+function ensureFlowCSalesInvoiceRule_() {
+  var cfg = configSs_();
+  var hit = readObjects_(cfg, 'Routing').filter(function (r) {
+    return String(r.flow_id) === 'flowC' && String(r.rule_name) === FLOWC_SALES_INVOICE_RULE;
+  })[0];
+  if (hit) {
+    if (hit.active === false || String(hit.active).toUpperCase() === 'FALSE') {
+      throw new Error('The Routing rule ' + FLOWC_SALES_INVOICE_RULE + ' exists but is switched off (active = FALSE) — switch it on in the Config sheet first.');
+    }
+    return false;
+  }
+  appendObject_(cfg, 'Routing', { flow_id: 'flowC', rule_name: FLOWC_SALES_INVOICE_RULE, match: 'population=retail',
+    required_evidence: FLOWC_SALES_INVOICE, documents: '', responsible: ROLES.PREPARER, optional: '', active: true });
+  logActivity('ROUTING_ADD', 'flow', 'flowC', 'Added rule ' + FLOWC_SALES_INVOICE_RULE + ' (Retail → ' + FLOWC_SALES_INVOICE + ', Preparer)');
+  return true;
+}
+
+/** The Flow C request to work on: the given id, or the only one that is not closed. */
+function flowCRequestFor_(requestId) {
+  if (requestId) {
+    var req = findRequest_(requestId);
+    if (!req) throw new Error('Request not found: ' + requestId);
+    if (String(req.flow_id) !== 'flowC') throw new Error('Not a Flow C request (flow ' + req.flow_id + ').');
+    return req;
+  }
+  var open = readObjects_(dataSs_(), 'Requests').filter(function (r) {
+    return String(r.flow_id) === 'flowC' && String(r.status).toLowerCase() !== 'closed';
+  });
+  if (open.length === 1) return open[0];
+  if (!open.length) throw new Error('No open Flow C request found — call addFlowCSalesInvoiceTasks("REQ_…") with the request id.');
+  throw new Error('Several Flow C requests are open — pass the id of the one to update: ' +
+    open.map(function (r) { return r.request_id + ' (' + (r.request_ref || r.title) + ', created ' + String(r.created_at).slice(0, 10) + ')'; }).join('; '));
+}
+
+function flowCSalesInvoiceBackfill_(requestId, dryRun) {
+  requireRole_([ROLES.ADMIN]);
+  var req = flowCRequestFor_(requestId), rid = String(req.request_id), ds = dataSs_();
+  var isInvoice = function (a) { return String(a.evidence_type || '').trim().toLowerCase() === FLOWC_SALES_INVOICE.toLowerCase(); };
+  var hasRule = function (l) { return String(l.route_rule || '').split(',').indexOf(FLOWC_SALES_INVOICE_RULE) !== -1; };
+
+  var byLine = {};
+  readObjects_(ds, 'Assignments').forEach(function (a) {
+    if (String(a.request_id) === rid) (byLine[String(a.line_id)] = byLine[String(a.line_id)] || []).push(a);
+  });
+  var retail = readObjects_(ds, 'Sample_Lines').filter(function (l) {
+    return String(l.request_id) === rid && String(l.subpopulation || '') === 'Retail' && String(l.status).toLowerCase() !== 'not_found';
+  });
+  // A sample is DONE once it has the task AND its route_rule names the rule (written last, so a
+  // run that stopped half-way through a sample is simply finished by the next one).
+  var plan = retail.map(function (l) {
+    var tasks = byLine[String(l.line_id)] || [];
+    return { line: l, tasks: tasks, hasTask: tasks.some(isInvoice), done: tasks.some(isInvoice) && hasRule(l) };
+  });
+  var todo = plan.filter(function (p) { return !p.done; });
+
+  var result = {
+    requestId: rid, request: req.request_ref || req.title, dryRun: !!dryRun,
+    retailSamples: retail.length, alreadyDone: retail.length - todo.length,
+    added: 0, remaining: 0, ruleAdded: false, requestReopened: false,
+    samples: plan.map(function (p) {
+      return { sample: p.line.document_no, company: p.line.company, package_no: parseJson_(p.line.detail_json).package_number || '',
+               status: p.line.status, tasks: p.tasks.map(function (a) { return a.evidence_type + ' = ' + a.status; }).join(' | '),
+               action: p.done ? 'none — already has the task' : (dryRun ? 'would add ' : 'add ') + FLOWC_SALES_INVOICE };
+    })
+  };
+  if (dryRun) {
+    result.wouldAdd = todo.length;
+    Logger.log(JSON.stringify(result, null, 2));
+    return result;
+  }
+
+  result.ruleAdded = ensureFlowCSalesInvoiceRule_();
+  var t0 = Date.now(), ts = nowIso_(), BUDGET_MS = 4.5 * 60 * 1000;
+  withBatchedTabWrites_(function () {
+    for (var i = 0; i < todo.length; i++) {
+      if (Date.now() - t0 > BUDGET_MS) { result.remaining = todo.length - i; break; }   // run again to finish
+      var p = todo[i], l = p.line, prev = String(l.status);
+      if (!p.hasTask) {
+        appendObject_(ds, 'Assignments', {
+          assignment_id: newId_('ASG'), line_id: l.line_id, request_id: rid,
+          evidence_type: FLOWC_SALES_INVOICE, assigned_to: '', status: 'pending',
+          due_date: '', submitted_at: '', notes: '', created_at: ts, optional: '', detail_json: '', slots_json: ''
+        });
+      }
+      updateLineAssignmentRollup_(l.line_id);                 // sample status from ALL its tasks
+      var rules = String(l.route_rule || '').split(',').filter(String);
+      rules.push(FLOWC_SALES_INVOICE_RULE);
+      updateRowById_(ds, 'Sample_Lines', 'line_id', l.line_id,
+        { route_rule: rules.join(','), required_count: (Number(l.required_count) || 0) + 1 });
+      var now = findLine_(l.line_id);
+      logActivity('TASK_BACKFILL', 'line', l.line_id, FLOWC_SALES_INVOICE + ' task added (pending, unassigned); sample ' +
+        prev + ' → ' + (now ? now.status : '?'));
+      result.added++;
+    }
+    // A request that had been closed is open again: it now has outstanding tasks.
+    if (result.added && String(req.status).toLowerCase() === 'closed') {
+      updateRowById_(ds, 'Requests', 'request_id', rid, { status: 'enriched', updated_at: nowIso_() });
+      result.requestReopened = true;
+    }
+  });
+  logActivity('TASK_BACKFILL', 'request', rid, result.added + ' "' + FLOWC_SALES_INVOICE + '" task(s) added to Retail samples, ' +
+    result.alreadyDone + ' already had it' + (result.remaining ? ', ' + result.remaining + ' left — run again' : '') +
+    (result.requestReopened ? '; request reopened' : ''));
+  Logger.log(JSON.stringify(result, null, 2));   // the editor shows logs, not return values
+  return result;
 }

@@ -10,7 +10,9 @@
  *   Retail   → NAV Posted Sales Invoices + Lines (AIG_Nav_DW), keyed on the package
  *              number. Two checks: sampled line (Line No_ = COD_BOB_SALES_ORDER_ITEM)
  *              amount incl. VAT = unit price; invoice header = sum of its lines.
- *              Fully resolved by the data — no preparer work.
+ *              The reconciliation is resolved by the data; the Preparer adds ONE
+ *              document, the customer's sales invoice PDF (FLOWC_SALES_INVOICE), which
+ *              the AI assistant checks against the NAV header (total incl. VAT + customer).
  *   MPL      → RING: the statement(s) that carry the item (all their transactions)
  *              + NAV G/L (account 18314, document 'IS'+statement). Three checks:
  *              Item Price Credit = unit price; statement transactions = closing
@@ -21,7 +23,8 @@
  * The reconciliation becomes a SYSTEM task on each sample: the app builds one
  * workbook per request (summaries + raw extracts), attaches it as evidence, assigns
  * the task to the request's reviewer and auto-submits it — the reviewer only checks
- * the numbers. Human tasks (MPL only) follow the normal preparer path.
+ * the numbers. Human tasks (Retail: the sales invoice; MPL: Flow A's documents) follow
+ * the normal preparer path.
  *
  * ENGINE HOOKS USED (all optional, additive — see Code.js):
  *   parseSample, buildQuery/mapRow (stage 1), `stages` (N dependent queries run in
@@ -44,6 +47,12 @@ var FLOWC_NAV_ACCOUNT = '18314';  // G/L account carrying the marketplace revenu
 // Retail: the receivable-side accounts of a posted sales invoice in NAV — their sum equals the
 // invoice total incl. VAT (the auditor's "(Multiple Items)" filter). Adjust here if the chart changes.
 var FLOWC_RETAIL_AR_ACCOUNTS = ['13003', '13005'];
+// Retail samples also need the customer invoice itself: a manual task for a Preparer (the PDF
+// Jumia issued). Review.js (assessSalesInvoice_) checks it against NAV "Posted Sales Invoices":
+// grand total incl. VAT (within FLOWC_INVOICE_TOLERANCE, rounding only) + the customer name.
+var FLOWC_SALES_INVOICE = 'Sales invoice';             // Routing.required_evidence / Assignments.evidence_type
+var FLOWC_SALES_INVOICE_RULE = 'retail_sales_invoice'; // Routing.rule_name
+var FLOWC_INVOICE_TOLERANCE = 1;                       // currency units — PDF total vs NAV total
 
 function flowC_() {
   return {
@@ -335,7 +344,7 @@ function flowCFoldInvoices_(csv, cell, mapped, ctx) {
     var c = cell(row);
     inv[flowCUp_(c('id_company')) + '|' + flowCUp_(c('No_'))] = {
       total: flowCNum_(c('Amount incl_ VAT')), excl: flowCNum_(c('Amount excl_ VAT')),
-      customer: c('Customer Name'), posting: c('Posting Date')
+      customer: c('Customer Name'), posting: c('Posting Date'), currency: c('Currency')
     };
   }
   ctx.data.invRows = csv;
@@ -344,6 +353,7 @@ function flowCFoldInvoices_(csv, cell, mapped, ctx) {
     var m = mr.mapped, h = inv[flowCUp_(m.company) + '|' + flowCUp_(m.package_number)];
     if (!h) return;
     m.inv_no = m.package_number; m.inv_total = h.total; m.inv_excl = h.excl; m.inv_customer = h.customer; m.inv_posting = h.posting;
+    if (h.currency) m.inv_currency = h.currency;
   });
 }
 function flowCFoldInvoiceLines_(csv, cell, mapped, ctx) {
