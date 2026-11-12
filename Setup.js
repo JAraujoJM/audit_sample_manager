@@ -389,3 +389,87 @@ function fixFlowBAmounts(requestId, subpopulations) {
   Logger.log(JSON.stringify(result, null, 2));   // the editor shows logs, not return values
   return result;
 }
+
+/**
+ * The stored-file slots of a Requests row (stage 1, stage 2, every stages_json query; CSV + SOX xlsx
+ * each) with what is needed to find and verify the gateway original. `stg` = the parsed stages_json,
+ * so a repair can write a relinked id back into it.
+ */
+function requestFileSlots_(req, stg) {
+  var ipe = parseJson_(req.ipe_json);
+  var hashes = {}; (ipe.stages || []).forEach(function (s) { hashes[s.tag] = s; });
+  var g1 = ipe.requestId || gatewayIdFromName_(ipe.csvName), g2 = gatewayIdFromName_(ipe.csv2Name);
+  var slots = [
+    { slot: 'query1 csv',  col: 'csv_file_id',   id: req.csv_file_id,   gatewayId: g1, rx: /\.csv$/i,  sha: ipe.csvSha256 || '' },
+    { slot: 'query1 xlsx', col: 'xlsx_file_id',  id: req.xlsx_file_id,  gatewayId: g1, rx: /\.xlsx$/i, sha: '' },
+    { slot: 'query2 csv',  col: 'csv2_file_id',  id: req.csv2_file_id,  gatewayId: g2, rx: /\.csv$/i,  sha: ipe.csv2Sha256 || '' },
+    { slot: 'query2 xlsx', col: 'xlsx2_file_id', id: req.xlsx2_file_id, gatewayId: g2, rx: /\.xlsx$/i, sha: '' }
+  ];
+  stg.forEach(function (s, i) {
+    var g = s.gatewayId || gatewayIdFromName_(s.csvName), h = hashes[s.tag] || {};
+    slots.push({ slot: s.tag + ' csv',  stage: i, key: 'csvId',  id: s.csvId,  gatewayId: g, rx: /\.csv$/i,  sha: h.csvSha256 || '' });
+    slots.push({ slot: s.tag + ' xlsx', stage: i, key: 'xlsxId', id: s.xlsxId, gatewayId: g, rx: /\.xlsx$/i, sha: '' });
+  });
+  return slots.filter(function (s) { return s.id || s.gatewayId; });
+}
+
+/**
+ * Admin-run DATA REPAIR: re-store a request's extraction files whose stored copy in Exports/{reqId}/
+ * is gone (REQ_b16a4636: the Oct 2026 export shipped an empty Extraction/). Each dead slot is
+ * re-copied from the gateway ORIGINAL in Responses/ under its gateway name (as storeRequestFiles_
+ * does) and the Requests row is re-pointed. A CSV is relinked ONLY when its SHA-256 equals the
+ * hash recorded at extraction — never on a mismatch. Live slots are untouched. Idempotent.
+ * Returns [{ slot, oldId, status: ok|relinked|not_found|hash_mismatch, newId, name }].
+ */
+function repairFiles_REQ_b16a4636() { return repairRequestFiles('REQ_b16a4636'); }
+
+function repairRequestFiles(requestId) {
+  requireRole_([ROLES.ADMIN]);
+  if (!requestId) throw new Error('repairRequestFiles needs a request id — run repairFiles_REQ_b16a4636() (or add a similar one-line wrapper).');
+  var req = findRequest_(requestId);
+  if (!req) throw new Error('Request not found: ' + requestId);
+  var exportsId = PropertiesService.getScriptProperties().getProperty(PROP.EXPORTS);
+  if (!exportsId) throw new Error('Exports folder not provisioned — run setup().');
+  var folder = getOrCreateFolder_(DriveApp.getFolderById(exportsId), requestId);
+  var stg = parseJson_(req.stages_json); if (!Array.isArray(stg)) stg = [];
+  var patch = {}, stagesChanged = false, report = [];
+  requestFileSlots_(req, stg).forEach(function (s) {
+    var r = { slot: s.slot, oldId: String(s.id || ''), status: 'ok', newId: '', name: '' };
+    var live = liveFile_(s.id);
+    if (live) { r.name = live.getName(); report.push(r); return; }
+    var v = verifiedOriginal_(s.gatewayId, s.rx, s.sha);
+    if (!v.file) { r.status = v.status; r.name = v.note; report.push(r); return; }
+    var cp = v.file.makeCopy(v.file.getName(), folder);   // makeCopy keeps the bytes = the logged hash
+    r.status = 'relinked'; r.newId = cp.getId(); r.name = cp.getName() + (v.note ? ' (' + v.note + ')' : '');
+    if (s.col) patch[s.col] = r.newId; else { stg[s.stage][s.key] = r.newId; stagesChanged = true; }
+    report.push(r);
+  });
+  if (stagesChanged) patch.stages_json = JSON.stringify(stg);
+  if (Object.keys(patch).length) updateRowById_(dataSs_(), 'Requests', 'request_id', requestId, patch);
+  logActivity('REPAIR_FILES', 'request', requestId, report.map(function (r) {
+    return r.slot + ': ' + r.status + (r.status === 'relinked' ? ' ' + r.oldId + ' → ' + r.newId + ' (' + r.name + ')' : (r.status === 'ok' ? '' : ' — ' + r.name));
+  }).join('; '));
+  Logger.log(JSON.stringify(report, null, 2));
+  return report;
+}
+
+/**
+ * Admin, READ-ONLY: every request's stored extraction files — which ids are dead, and whether a
+ * hash-matching gateway original exists in Responses/ (then repairRequestFiles(id) fixes it).
+ * Returns [{ request_id, request_ref, flow_id, slots, dead: [{ slot, id, status, note }] }].
+ */
+function auditRequestFileLinks() {
+  requireRole_([ROLES.ADMIN]);
+  var out = readObjects_(dataSs_(), 'Requests').map(function (req) {
+    var stg = parseJson_(req.stages_json); if (!Array.isArray(stg)) stg = [];
+    var slots = requestFileSlots_(req, stg), dead = [];
+    slots.forEach(function (s) {
+      if (liveFile_(s.id)) return;
+      var v = verifiedOriginal_(s.gatewayId, s.rx, s.sha);
+      dead.push({ slot: s.slot, id: String(s.id || ''), status: v.file ? 'repairable' : v.status, note: v.note });
+    });
+    return { request_id: req.request_id, request_ref: req.request_ref || '', flow_id: req.flow_id, slots: slots.length, dead: dead };
+  });
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
+}

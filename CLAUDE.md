@@ -127,6 +127,16 @@ that was the 70 MB failure (and the fragile `zip.copyBlob()` left an empty Expor
   **edit `flowCMethodology_` whenever a filter, window, join or check changes**.
 - CSV bytes are never touched (makeCopy); only the export name (`<tag>_result.csv`) differs from the gateway's.
   Independent checker: `verify_audit_export.py` (Gonçalo's side-session notes, 20 Oct 2026).
+- **Dead stored copies → gateway original (26 Oct 2026).** REQ_b16a4636's stored CSV/xlsx in `Exports/{reqId}/` were
+  gone, so `Extraction/` shipped EMPTY (copy errors were swallowed). Now `resolveExtraction_` falls back to the
+  ORIGINAL `{gatewayId}_*.csv|.xlsx` in the gateway's `Responses/` (title search, `gatewayOriginal_`) — a CSV only
+  when its SHA-256 = the hash recorded at extraction (`verifiedOriginal_`); the IPE `Integrity` text says "file in
+  this package: gateway original from Responses/…". Stage-2 / stage gateway ids come from `ipe.csv2Name` /
+  `stages[].csvName` (`gatewayIdFromName_`), so their log lines now appear too. Admin repair (Setup.js):
+  `repairRequestFiles(id)` (wrapper `repairFiles_REQ_b16a4636`) re-copies dead slots into `Exports/{reqId}/` and
+  re-points the Requests row — never on a hash mismatch; `auditRequestFileLinks()` is the read-only scan.
+  `auditExport` returns `missingFiles[]`; the client shows a red box listing them + a warn toast, and the
+  `AUDIT_EXPORT` log names them. **Never swallow a failed copy silently.**
 
 ## Flow A routing rules (the decision the engine encodes)
 Two facts decide each line:

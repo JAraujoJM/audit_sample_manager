@@ -868,7 +868,7 @@ function auditExport(requestId) {
     var outFolder = reqFolder.createFolder(zipName + ' (' + stamp + ')');
     // ONE tally of what actually lands in the folder (every file below goes through place):
     // it is what the Audit card shows the auditor — "N file(s) · X MB" must be the real folder.
-    var placed = 0, placedBytes = 0, missing = 0;
+    var placed = 0, placedBytes = 0, missing = 0, missingFiles = [];   // missingFiles: export paths that could not be copied
     var place = function (file) { placed++; try { placedBytes += Number(file.getSize()) || 0; } catch (e) {} return file; };
     place(outFolder.createFile(xlsxBlob));
 
@@ -881,8 +881,7 @@ function auditExport(requestId) {
       if (x.xlsxId) extraction.push([x.xlsxId, 'Extraction/' + x.exportXlsx]);
     });
     var extFolder = extraction.length ? outFolder.createFolder('Extraction') : null;
-    extraction.forEach(function (p) { try { place(DriveApp.getFileById(p[0]).makeCopy(p[1].replace(/^Extraction\//, ''), extFolder)); } catch (e) { missing++; } });
-
+    extraction.forEach(function (p) { try { place(DriveApp.getFileById(p[0]).makeCopy(p[1].replace(/^Extraction\//, ''), extFolder)); } catch (e) { missing++; missingFiles.push(p[1]); } });
     // Execution log/: the gateway log lines (verbatim, file order) + the job files they hash.
     var logFolder = outFolder.createFolder('Execution log');
     var logText = gwLog.lines.map(function (ln) { return ln.raw; }).join('\n') + (gwLog.lines.length ? '\n' : '');
@@ -922,7 +921,7 @@ function auditExport(requestId) {
           dest = dirCache[tk] || (dirCache[tk] = soiF.createFolder(f.task));
         }
         place(DriveApp.getFileById(f.fileId).makeCopy(f.fileName, dest)); seenFile[f.fileId] = true;
-      } catch (err) { missing++; }
+      } catch (err) { missing++; missingFiles.push(f.path); }
     });
 
     // The methodology also sits NEXT TO the reconciliation workbook (whose own Methodology tab
@@ -960,13 +959,15 @@ function auditExport(requestId) {
 
     logActivity('AUDIT_EXPORT', 'request', requestId,
       placed + ' file(s), ~' + Math.round(placedBytes / 1048576) + ' MB' + (missing ? (', ' + missing + ' missing') : '') + ', shared: ' + (shared.join(', ') || 'none')
-      + '; IPE: ' + ext.length + ' extraction(s), ' + ext.filter(function (x) { return x.integrity === 'Pass'; }).length + ' pass, '
-      + gwLog.lines.length + ' log line(s)' + (gwLog.error ? ' (log error: ' + gwLog.error + ')' : '') + ', sample list ' + sample.sourceShort);
+      + '; IPE: ' + ext.length + ' extraction(s), ' + ext.filter(function (x) { return String(x.integrity).indexOf('Pass') === 0; }).length + ' pass, '
+      + gwLog.lines.length + ' log line(s)' + (gwLog.error ? ' (log error: ' + gwLog.error + ')' : '') + ', sample list ' + sample.sourceShort
+      + (function () { var g = ext.filter(function (x) { return String(x.source).indexOf('gateway original') === 0; }); return g.length ? '; gateway originals used: ' + g.map(function (x) { return x.tag; }).join(', ') : ''; })()
+      + (missingFiles.length ? '; MISSING: ' + missingFiles.join(' | ').substring(0, 1500) : ''));
     return {
       folderUrl: outFolder.getUrl(), folderName: outFolder.getName(),
-      fileCount: placed, missing: missing, totalMb: Math.round(placedBytes / 1048576 * 10) / 10,
+      fileCount: placed, missing: missing, missingFiles: missingFiles, totalMb: Math.round(placedBytes / 1048576 * 10) / 10,
       shared: shared, download: download,
-      ipe: { extractions: ext.length, pass: ext.filter(function (x) { return x.integrity === 'Pass'; }).length,
+      ipe: { extractions: ext.length, pass: ext.filter(function (x) { return String(x.integrity).indexOf('Pass') === 0; }).length,
              logLines: gwLog.lines.length, logError: gwLog.error || '', sampleList: sample.sourceShort }
     };
   } finally {
@@ -980,25 +981,28 @@ function auditExport(requestId) {
  * original gateway filename — storeRequestFiles_ copies it under that name) is re-hashed and
  * row-counted NOW, so the IPE shows the file in the package equals what was hashed at extraction
  * and what the gateway logged. `exportCsv` is the stable export name the reconciliation tabs cite.
+ * A stored copy that is gone (deleted Exports/{reqId}/ file — REQ_b16a4636, Oct 2026) falls back to
+ * the gateway ORIGINAL in Responses/ (resolveExtraction_); `x.source` says which file was used.
  */
 function exportExtractions_(req, ipe, mod) {
   ipe = ipe || {};
   var stg = parseJson_(req.stages_json); if (!Array.isArray(stg)) stg = [];
   var hashes = {}; (ipe.stages || []).forEach(function (s) { hashes[s.tag] = s; });
   var list = [
-    { tag: 'query1', label: 'Query 1 — stage 1', csvId: req.csv_file_id, xlsxId: req.xlsx_file_id, gatewayId: ipe.requestId || '',
+    { tag: 'query1', label: 'Query 1 — stage 1', csvId: req.csv_file_id, xlsxId: req.xlsx_file_id, gatewayId: ipe.requestId || gatewayIdFromName_(ipe.csvName),
       server: 'finrec', database: ipe.primaryDb || '', query: ipe.query || '', shaAtExtraction: ipe.csvSha256 || '' },
-    { tag: 'query2', label: 'Query 2 — stage 2', csvId: req.csv2_file_id, xlsxId: req.xlsx2_file_id, gatewayId: '',
+    { tag: 'query2', label: 'Query 2 — stage 2', csvId: req.csv2_file_id, xlsxId: req.xlsx2_file_id, gatewayId: gatewayIdFromName_(ipe.csv2Name),
       server: (mod && mod.stage2 && mod.stage2.server) || 'finrec', database: ipe.query2Db || '', query: ipe.query2 || '', shaAtExtraction: ipe.csv2Sha256 || '' }
   ];
   stg.forEach(function (s) {
     var h = hashes[s.tag] || {};
-    list.push({ tag: s.tag || 'stage', label: s.label || s.tag, csvId: s.csvId, xlsxId: s.xlsxId, gatewayId: s.gatewayId || '',
+    list.push({ tag: s.tag || 'stage', label: s.label || s.tag, csvId: s.csvId, xlsxId: s.xlsxId, gatewayId: s.gatewayId || gatewayIdFromName_(s.csvName),
                 server: s.server || 'finrec', database: s.db || h.db || '', query: h.query || '', shaAtExtraction: h.csvSha256 || '' });
   });
-  return list.filter(function (x) { return x.csvId; }).map(function (x) {
+  return list.filter(function (x) { return x.csvId || x.gatewayId; }).map(function (x) {
     x.exportCsv = x.tag + '_result.csv'; x.exportXlsx = x.tag + '_evidence.xlsx';
     x.querySha = x.query ? sha256HexStr_(x.query) : '';
+    resolveExtraction_(x);
     try {
       var f = DriveApp.getFileById(x.csvId), bytes = f.getBlob().getBytes();
       x.originalCsv = f.getName();
@@ -1018,7 +1022,7 @@ function exportExtractions_(req, ipe, mod) {
 /** 'Pass' when the package file, the app's hash at extraction and the gateway log all agree
  *  (CSV hash, row count, SQL hash, evidence xlsx hash); otherwise 'Flag: …' naming what differs. */
 function extractionIntegrity_(x) {
-  if (!x.log) return 'Flag: no gateway log line found for ' + (x.gatewayId || 'this extraction');
+  if (!x.log) return 'Flag: no gateway log line found for ' + (x.gatewayId || 'this extraction') + sourceNote_(x);
   var g = x.log.obj, bad = [];
   if (g.status && String(g.status).toUpperCase() !== 'SUCCESS') bad.push('log status ' + g.status);
   if (g.output_sha256 !== x.csvShaNow) bad.push('CSV hash ≠ log');
@@ -1026,7 +1030,59 @@ function extractionIntegrity_(x) {
   if (String(g.row_count) !== String(x.rowsNow)) bad.push('row count ≠ log');
   if (x.querySha && g.query_sha256 && g.query_sha256 !== x.querySha) bad.push('SQL hash ≠ log');
   if (x.xlsxShaNow && g.evidence_sha256 && g.evidence_sha256 !== x.xlsxShaNow) bad.push('evidence xlsx hash ≠ log');
-  return bad.length ? 'Flag: ' + bad.join('; ') : 'Pass';
+  return (bad.length ? 'Flag: ' + bad.join('; ') : 'Pass') + sourceNote_(x);
+}
+/** Integrity suffix when the package file is not the app's stored copy (the auditor must see it). */
+function sourceNote_(x) {
+  return x.source && x.source !== 'stored' ? ' — file in this package: ' + x.source : '';
+}
+
+/* ---------- stored extraction files ↔ gateway originals ----------
+ * The app keeps COPIES of the gateway outputs in Exports/{reqId}/ (storeRequestFiles_); the
+ * originals stay in the gateway's Responses/ as {gateway request_id}_{yyyyMMdd_HHmmss}.csv|.xlsx.
+ * When a stored copy is gone, the original is the same bytes — accepted only on a hash match. */
+
+/** Gateway request id from a gateway output name, or '' when the name is not one. */
+function gatewayIdFromName_(name) {
+  var m = String(name || '').match(/^(.+)_\d{8}_\d{6}\.(csv|xlsx)$/i);
+  return m ? m[1] : '';
+}
+/** The Drive file behind an id, or null when the id is empty or the file is gone / trashed / not readable. */
+function liveFile_(id) {
+  if (!id) return null;
+  try { var f = DriveApp.getFileById(id); return f.isTrashed() ? null : f; } catch (e) { return null; }
+}
+/** The gateway's original output ({gatewayId}_*) in Responses/ — searched by title, never a folder walk. */
+function gatewayOriginal_(gatewayId, rx) {
+  if (!gatewayId) return null;
+  try {
+    var it = sub_('Responses').searchFiles('title contains "' + String(gatewayId).replace(/["\\]/g, '') + '" and trashed = false');
+    while (it.hasNext()) { var f = it.next(), n = f.getName(); if (n.indexOf(gatewayId + '_') === 0 && rx.test(n)) return f; }
+    return null;
+  } catch (e) { return findResponse_(gatewayId, rx); }
+}
+/** The gateway original, verified: { file, status: found|not_found|hash_mismatch, note }. A file is
+ *  accepted only when its SHA-256 equals `sha` (the hash recorded at extraction); no `sha` = accepted, noted. */
+function verifiedOriginal_(gatewayId, rx, sha) {
+  var f = gatewayOriginal_(gatewayId, rx);
+  if (!f) return { file: null, status: 'not_found', note: gatewayId ? 'no ' + gatewayId + '_* in Responses/' : 'no gateway request id' };
+  if (!sha) return { file: f, status: 'found', note: 'no hash recorded at extraction' };
+  var now = sha256Hex_(f.getBlob().getBytes());
+  return now === sha ? { file: f, status: 'found', note: '' }
+                     : { file: null, status: 'hash_mismatch', note: f.getName() + ' SHA-256 ' + now + ' ≠ ' + sha };
+}
+/** Point one extraction at a readable CSV + evidence xlsx: the stored copy, else the verified original. */
+function resolveExtraction_(x) {
+  x.source = 'stored';
+  if (!liveFile_(x.csvId)) {
+    var v = verifiedOriginal_(x.gatewayId, /\.csv$/i, x.shaAtExtraction);
+    if (v.file) { x.csvId = v.file.getId(); x.source = 'gateway original from Responses/ (app\'s stored copy missing)' + (v.note ? ', ' + v.note : ''); }
+    else x.source = 'MISSING — app\'s stored copy gone; gateway original ' + (v.status === 'hash_mismatch' ? 'hash mismatch: ' : '') + v.note;
+  }
+  if (!liveFile_(x.xlsxId)) {
+    var ox = gatewayOriginal_(x.gatewayId, /\.xlsx$/i);   // checked against the log's evidence_sha256 in extractionIntegrity_
+    x.xlsxId = ox ? ox.getId() : '';
+  }
 }
 
 /**
