@@ -447,9 +447,13 @@ function isSalesInvoiceTask_(asg) {
 /**
  * The invoice PDF against what NAV "Posted Sales Invoices" recorded for it at extraction (stored
  * on the sample: inv_total = Amount incl_ VAT, inv_customer = Customer Name, inv_no = No_).
- * Two things decide the verdict: the invoice TOTAL and the CUSTOMER NAME. NAV mostly keeps the
- * customer's first name only, sometimes in Arabic script (seen on REQ_bc265bfa), so the name
- * check is "the recorded name is part of the printed name", never an exact comparison.
+ * Three things decide the verdict: the invoice TOTAL, the CUSTOMER NAME and the INVOICE NUMBER.
+ * NAV mostly keeps the customer's first name only, sometimes in Arabic script (seen on
+ * REQ_bc265bfa), so the name check is "the recorded name is part of the printed name", never an
+ * exact comparison. The NAV invoice number is the package number = "<OMS order number>-<suffix>"
+ * (288 of 288 invoice lines on REQ_bc265bfa), so the number check passes on the full number OR
+ * the order number; a number that is absent or different is "uncertain" (the reviewer decides),
+ * never a reject on its own — a wrong total or customer is what rejects.
  * With no recorded total (NAV invoice not found at extraction) there is nothing to compare the
  * document with: the verdict is "uncertain" and no model call is made.
  */
@@ -460,9 +464,12 @@ function assessSalesInvoice_(asg, line, ldet, files) {
              summary: 'No NAV posted sales invoice was found for this sample at extraction — there is no recorded total to validate the invoice against.' };
   }
   var total = Number(ldet.inv_total), customer = String(ldet.inv_customer || '').trim();
+  var invNo = String(ldet.inv_no || ldet.package_number || '').trim();
+  var orderNo = /^\d{5,}-\d+$/.test(invNo) ? invNo.split('-')[0] : '';      // "<order number>-<suffix>"
   var facts = [
     'Company: ' + (line.company || '—'),
-    'Invoice / package number (NAV "No_"): ' + (ldet.inv_no || ldet.package_number || '—'),
+    'Recorded invoice number (NAV "No_" = package number): ' + (invNo || '(none recorded — skip check 4 and say so)'),
+    'Order number (the part of the invoice number before the dash): ' + (orderNo || '—'),
     'Recorded invoice total INCLUDING VAT: ' + total + (has(ldet.inv_currency) ? ' ' + ldet.inv_currency : ''),
     'Recorded customer name: ' + (customer || '(none recorded — skip check 3 and say so)'),
     'Recorded amount excluding VAT (reference only): ' + (has(ldet.inv_excl) ? ldet.inv_excl : '—'),
@@ -472,7 +479,7 @@ function assessSalesInvoice_(asg, line, ldet, files) {
   var system =
     'You are a meticulous financial-audit evidence reviewer at Jumia. The attached document should be a SALES INVOICE ' +
     'that Jumia issued to a customer (a PDF in Jumia\'s standard invoice layout). You are given what the accounting system ' +
-    '(NAV, "Posted Sales Invoices") recorded for that invoice. Run exactly three checks and report each one in "checks":\n' +
+    '(NAV, "Posted Sales Invoices") recorded for that invoice. Run exactly four checks and report each one in "checks":\n' +
     '1) "Document type" — the document is a sales invoice issued by Jumia. An order confirmation, delivery note, credit ' +
     'note, payment receipt or a screenshot of a system is not.\n' +
     '2) "Invoice total" — the invoice\'s grand total INCLUDING VAT (the final amount of the whole invoice, after shipping, ' +
@@ -484,14 +491,17 @@ function assessSalesInvoice_(asg, line, ldet, files) {
     'it in Arabic script while the invoice prints it in Latin letters (or the reverse): the check passes when the recorded ' +
     'name appears as the first name or as any part of the printed name, allowing for transliteration, letter case, accents, ' +
     'spacing and spelling variants. It fails only when the printed customer is clearly a different name.\n' +
-    'The invoice / package number and the dates are supporting identifiers: mention the number when the document shows it, ' +
-    'but never fail the document on them alone — if the number shown is clearly a different invoice while the total and the ' +
-    'customer match, return "uncertain".\n' +
-    'Verdict: "accept" only when all three checks pass. "reject" when the document is not a Jumia sales invoice, the total ' +
+    '4) "Invoice number" — the document identifies the same invoice: the recorded invoice number, or the order number ' +
+    '(its part before the dash), is printed on the document as an invoice, package, shipment, order or reference number. ' +
+    'Ignore spaces, dashes and leading zeros when comparing. The check fails when neither number can be found on the ' +
+    'document; in the note, quote the invoice / order numbers the document does show.\n' +
+    'The dates are reference only — never fail the document on a date.\n' +
+    'Verdict: "accept" only when all four checks pass. "reject" when the document is not a Jumia sales invoice, the total ' +
     'differs, or the customer is clearly someone else — say which, quoting the value on the document and the recorded value. ' +
-    '"uncertain" when the total or the customer name cannot be read or found on the document.\n' +
+    '"uncertain" when the total or the customer name cannot be read or found on the document, or when checks 1 to 3 pass ' +
+    'but check 4 fails (the numbers on the document do not include the recorded invoice or order number).\n' +
     'In each check\'s note quote the value you read on the document. Summary: one specific sentence (under 240 characters) ' +
-    'quoting the total and the customer name read on the invoice against the recorded ones.';
+    'quoting the total, the customer name and the invoice / order number read on the invoice against the recorded ones.';
 
   var perDoc = [], worst = 'accept';
   files.forEach(function (e) {

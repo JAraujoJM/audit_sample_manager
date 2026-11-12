@@ -238,11 +238,14 @@ row points there — `auditExport` dedupes by file id). Deep detail in the **`fl
 manual **`Sales invoice`** (Routing rule `retail_sales_invoice`, `population=retail` → Preparer; constants
 `FLOWC_SALES_INVOICE` / `FLOWC_SALES_INVOICE_RULE` in FlowC.js). The preparer uploads the PDF Jumia issued to the customer;
 the reviewer's AI check is its own prompt (`assessSalesInvoice_`, Review.js — routed from `assessAssignmentCore_`, NOT the
-Flow-A-style per-document check): three named checks — document type, **invoice total incl. VAT = `inv_total`**
+Flow-A-style per-document check): four named checks — document type, **invoice total incl. VAT = `inv_total`**
 (NAV `Posted Sales Invoices`.`Amount incl_ VAT`, rounding ≤ `FLOWC_INVOICE_TOLERANCE` = 1) and **customer name =
 `inv_customer`**. NAV keeps mostly the customer's FIRST NAME only, sometimes in Arabic script (seen on REQ_bc265bfa), so
 the name rule is "recorded name is part of the printed name, transliteration allowed" — never tighten it to an exact match.
-The invoice number is a supporting identifier only. An `accept` that carries a failed check is downgraded to `uncertain`;
+Fourth check, **invoice number**: NAV `No_` = the package number = `<OMS order number>-<suffix>` (288 of 288 invoice lines on
+REQ_bc265bfa), so it passes when the PDF shows the full number OR the order number; a number that is absent or different
+gives `uncertain` (the reviewer decides), never a reject on its own — only a wrong document type, total or customer rejects.
+An `accept` that carries a failed check is downgraded to `uncertain`;
 no recorded total (NAV invoice not found) → `uncertain` with no model call. The values come from the sample's
 `detail_json` (already stored at extraction — no query change; new runs also store `inv_currency`). Card / export / review
 window show *Customer* + *Invoice total* (`CA_FIELDS['Retail']`, `CA_FIELDS_EXPORT_`, `renderFlowCTask`; numeric keys via
