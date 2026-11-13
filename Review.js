@@ -176,6 +176,71 @@ function taskTimeline(lineId) {
   return out;
 }
 
+/* ---------- comment thread (review + audit windows) ---------- */
+/**
+ * Which Activity_Log actions carry a human comment, who wrote it, and how to cut the comment
+ * out of the log line. `re` is anchored on the exact text the action writes: its first group
+ * is the comment, and a line that does not match is SKIPPED (older log formats carried no
+ * comment, and an unknown format must never reach the auditor as-is — the reviewer's line
+ * starts with the AI verdict). `reviewOnly` = never sent to the auditor.
+ */
+var THREAD_RULES_ = {
+  AUDIT_RETURN:       { from: 'Auditor',  kind: 'Returned' },
+  AUDIT_RETURN_TASK:  { from: 'Auditor',  kind: 'Returned' },
+  AUDIT_CLOSE:        { from: 'Auditor',  kind: 'Closed' },
+  AUDIT_CLOSE_TASK:   { from: 'Auditor',  kind: 'Closed',               re: /^closed(?: — ([\s\S]*))?$/ },
+  REVIEW_SUBMIT:      { from: 'Reviewer', kind: 'Submitted to auditor', re: /^to auditor \(AI [^)]*\)(?: — ([\s\S]*))?$/ },
+  REVIEW_SUBMIT_TASK: { from: 'Reviewer', kind: 'Submitted to auditor', re: /^reviewed \(AI [^)]*\)(?: — ([\s\S]*))?$/ },
+  REVIEW_RETURN:      { from: 'Reviewer', kind: 'Returned to preparer', reviewOnly: true },
+  REVIEW_RETURN_TASK: { from: 'Reviewer', kind: 'Returned to preparer', reviewOnly: true },
+  ASSIGNMENT_SUBMIT:  { from: 'Preparer', kind: 'Submitted',            re: /^\d+ file\(s\)(?: — ([\s\S]*))?$/, reviewOnly: true }
+};
+
+/**
+ * Every comment exchanged on one SAMPLE, oldest first — shown in the review / audit windows
+ * in place of the single "last note". Assignments.notes / Sample_Lines.note keep only the
+ * LATEST comment, so an auditor who got a task back could no longer read why they had
+ * returned it. Rebuilt from Activity_Log, which has kept every comment since the start, so a
+ * request that is already running shows its past exchanges too (nothing to migrate).
+ *
+ * SoD — the list is cut here, on the server, by stage:
+ *   audit  → the auditor ↔ reviewer channel only: the auditor's returns and closing notes,
+ *            and the reviewer's notes to the auditor. Never a preparer's comment, never a
+ *            reviewer → preparer return, never anything about the AI.
+ *   review → the same, plus the reviewer's returns to the preparer and the preparer's comments.
+ * Returns { line_id, messages: [{ ts, from, kind, actor, text, assignment_id, task }] };
+ * `assignment_id` is '' for a comment made on the sample as a whole.
+ */
+function commentThread(lineId, stage) {
+  stage = stage === 'audit' ? 'audit' : 'review';
+  var me = requireRole_(stageRoles_(stage));
+  var t = readTabsCached_(['Sample_Lines', 'Assignments', 'Activity_Log']);
+  var line = t.Sample_Lines.filter(function (l) { return String(l.line_id) === String(lineId); })[0];
+  if (!line) throw new Error('Sample not found.');
+  if (stage === 'review') assertReviewer_(line.request_id, me);
+
+  var labelByAsg = {};
+  t.Assignments.forEach(function (a) {
+    if (String(a.line_id) === String(lineId)) labelByAsg[String(a.assignment_id)] = parseJson_(a.detail_json).payment_no || a.evidence_type || 'Task';
+  });
+
+  var messages = [];
+  t.Activity_Log.forEach(function (e) {
+    var rule = THREAD_RULES_[String(e.action)];
+    if (!rule || (rule.reviewOnly && stage !== 'review')) return;
+    var isAsg = String(e.entity_type) === 'assignment', id = String(e.entity_id);
+    if (isAsg ? labelByAsg[id] == null : !(String(e.entity_type) === 'line' && id === String(lineId))) return;
+    var text = String(e.details == null ? '' : e.details);
+    if (rule.re) { var m = rule.re.exec(text); text = m ? (m[1] || '') : ''; }
+    text = text.trim();
+    if (!text) return;                                   // an action without a comment is not a message
+    messages.push({ ts: e.ts, from: rule.from, kind: rule.kind, actor: e.actor || '', text: text,
+                    assignment_id: isAsg ? id : '', task: isAsg ? labelByAsg[id] : '' });
+  });
+  messages.sort(function (a, b) { return String(a.ts).localeCompare(String(b.ts)); });
+  return { line_id: line.line_id, messages: messages };
+}
+
 /* ---------- AI pre-check (review stage) ---------- */
 /**
  * Ask Gemini to compare each of a line's submitted documents against its expected

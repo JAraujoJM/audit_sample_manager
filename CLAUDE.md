@@ -94,6 +94,19 @@ its justification up front. It reaches the **Reviewer only** (`reviewDetail` sen
 reviewer transcribes/edits/ignores it into their own note-to-auditor. Preparers can also **export their tasks
 to Excel** (`exportMyTasks`, Prepare.js — one-tab xlsx checklist, Export button in the My-tasks toolbar).
 
+**Comment thread (13 Nov 2026).** `Assignments.notes` / `Sample_Lines.note` keep only the LAST comment (each action
+overwrites it), so an auditor who got a task back could not read why they had returned it. The review and audit windows
+now show every comment, oldest first, latest in amber: `commentThread(lineId, stage)` (Review.js) rebuilds it from
+`Activity_Log` (nothing to migrate — running requests show their past exchanges) using `THREAD_RULES_` (action → author,
+label, and an **anchored regex that cuts the comment out of the log line**; a line that does not match is skipped — the
+reviewer's log line starts with the AI verdict, so an unknown format must never be passed through). Cut server-side by
+stage: `audit` = auditor ↔ reviewer only (auditor returns / closing notes, reviewer notes to the auditor); `review` adds
+the reviewer's returns to the preparer and the preparer's comments. **If the text an action logs changes, update its regex
+in `THREAD_RULES_`** (and never log a comment only in `notes`). Client: the window opens with the last note as before
+(`threadSlot`), one call per sample (`loadThread`, reused until the sample's statuses/notes change) replaces it
+(`mountThread`); a stored note that is not in the thread stays visible under it, and a preparer comment already in the
+thread is not repeated above it. The stored columns and every action are unchanged.
+
 **Auditor export** (`auditExport(requestId)`, Review.js; Export button in the Audit request detail): builds
 a temp Google Sheet → exports `.xlsx` (tabs: Samples & Tasks enriched / IPE with queries + SHA-256 + checks /
 Evidence index), then **assembles the export as real files in a Drive folder** `Exports/{reqId}/{name} (stamp)/`

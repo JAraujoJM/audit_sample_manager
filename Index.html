@@ -260,6 +260,18 @@
   .note-in{flex:1; min-width:170px;}
   .prep-note{width:100%; margin-top:10px; box-sizing:border-box; resize:vertical; min-height:38px; font:inherit; font-size:12.5px; padding:7px 10px; border:1px solid var(--sep-strong); border-radius:var(--radius-sm); background:var(--surface); color:var(--text);}
   .prep-note-view{margin-top:10px; font-size:12.5px; color:var(--text); background:var(--accent-tint); border-left:3px solid var(--accent); border-radius:6px; padding:7px 10px;}
+  /* Comment thread (review + audit windows): every comment exchanged on the task, oldest first; the latest keeps the amber of the old single note. */
+  .thread{margin-top:12px; border:1px solid var(--sep); border-radius:10px; background:var(--surface); overflow:hidden;}
+  .thread-h{padding:7px 12px 6px; font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; font-weight:700; color:var(--text-3); background:var(--surface-2, #fafafa);}
+  .thread-list{max-height:236px; overflow-y:auto; overflow-x:hidden;}
+  .msg{padding:8px 12px; border-top:1px solid var(--sep);}
+  .msg-h{display:flex; align-items:baseline; gap:7px; flex-wrap:wrap; font-size:12px;}
+  .msg-who{font-weight:600; color:var(--text);}
+  .msg-kind{color:var(--text-3);}
+  .msg-when{margin-left:auto; color:var(--text-3); white-space:nowrap;}
+  .msg-t{margin-top:3px; font-size:12.5px; line-height:1.45; color:var(--text); white-space:pre-wrap; word-break:break-word;}
+  .msg.last{background:var(--amber-tint);}
+  .msg.last .msg-t{color:var(--amber);}
   .ai-panel{margin-top:14px; border:1px solid var(--sep); border-radius:10px; padding:11px 13px; background:var(--surface-2, #fafafa);}
   .ai-head{display:flex; align-items:center; gap:11px; flex-wrap:wrap;}
   .ai-result{display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap;}
@@ -1519,6 +1531,68 @@
       setTimeout(function(){ if(a.parentNode) a.parentNode.removeChild(a); URL.revokeObjectURL(url); }, 2000); }
     catch(e){ openBlob(f); }
   }
+  /* ---- comment thread: every comment on the sample, not only the last one --------------------
+   * The window opens at once with the last note (as before); commentThread() then brings the full
+   * exchange, which replaces it. The server decides what each stage may read (the auditor gets the
+   * auditor <-> reviewer comments only). One call per sample covers all of its tasks; the copy is
+   * reused until anything on the sample changes (status or note of the sample or of a task). */
+  var THREADS={};
+  var NOTE_PREFIX={'Reviewer|Submitted to auditor':['Reviewer:'], 'Reviewer|Returned to preparer':['Returned by reviewer:'],
+                   'Auditor|Returned':['Returned by auditor:'], 'Auditor|Closed':['Auditor:','Closed:']};
+  function sq(s){ return String(s==null?'':s).replace(/\s+/g,' ').trim(); }
+  function threadSig(line){ return JSON.stringify([line.status, line.note, (line.assignments||[]).map(function(a){ return [a.assignment_id, a.status, a.note, a.preparer_note]; })]); }
+  function loadThread(stage, line, cb){
+    var k=stage+'|'+line.line_id, sig=threadSig(line), hit=THREADS[k];
+    if(hit && hit.sig===sig){ if(hit.msgs){ cb(hit.msgs); } else { hit.wait.push(cb); } return; }
+    var ent=THREADS[k]={sig:sig, msgs:null, wait:[cb]};
+    RUN().withSuccessHandler(function(r){ ent.msgs=(r&&r.messages)||[]; var w=ent.wait; ent.wait=[]; w.forEach(function(f){ f(ent.msgs); }); })
+      .withFailureHandler(function(){ if(THREADS[k]===ent) delete THREADS[k]; })   // the last note stays on screen as it is
+      .commentThread(line.line_id, stage);
+  }
+  // Is the note already on screen (Assignments.notes / Sample_Lines.note) one of the thread's messages?
+  function noteCovered(note, msgs){
+    var n=sq(note); if(!n) return true;
+    return msgs.some(function(m){ return (NOTE_PREFIX[m.from+'|'+m.kind]||[]).some(function(p){ return n===sq(p+' '+m.text); }); });
+  }
+  function threadHtml(msgs, showTask){
+    var me=String((currentUser&&currentUser.email)||'').toLowerCase();
+    return '<div class="thread"><div class="thread-h">Comments · '+msgs.length+'</div><div class="thread-list">'
+      +msgs.map(function(m,i){
+        var who=(me && String(m.actor||'').toLowerCase()===me) ? 'you' : shortEmail(m.actor);
+        return '<div class="msg'+(i===msgs.length-1?' last':'')+'"><div class="msg-h"><span class="msg-who">'+esc(m.from)+'</span>'
+          +'<span class="msg-kind">'+esc(m.kind)+((showTask&&m.task)?(' · '+esc(m.task)):'')+'</span>'
+          +'<span class="msg-when">'+esc(who)+(who?' · ':'')+fmtDateTime(m.ts)+'</span></div>'
+          +'<div class="msg-t">'+esc(m.text)+'</div></div>';
+      }).join('')+'</div></div>';
+  }
+  function threadSlot(line, aid, note){
+    return '<div class="thread-slot" data-line="'+esc(line.line_id)+'" data-aid="'+esc(aid||'')+'" data-note="'+esc(note||'')+'">'
+      +(note?'<div class="note-line">'+esc(note)+'</div>':'')+'</div>';
+  }
+  function prepNoteHtml(line, a){
+    return a.preparer_note ? '<div class="prep-note-view" data-line="'+esc(line.line_id)+'" data-aid="'+esc(a.assignment_id)+'" data-note="'+esc(a.preparer_note)+'"><b>Preparer:</b> '+esc(a.preparer_note)+'</div>' : '';
+  }
+  function mountThread(stage, line, scope){
+    if(!scope || !scope.querySelector('.thread-slot')) return;
+    var lid=String(line.line_id);
+    loadThread(stage, line, function(msgs){
+      // The window may show something else by now: only fill what still belongs to this sample.
+      Array.prototype.forEach.call(scope.querySelectorAll('.thread-slot'), function(slot){
+        if(slot.dataset.line!==lid) return;
+        var aid=slot.dataset.aid||'', mine=aid ? msgs.filter(function(m){ return m.assignment_id===aid; }) : msgs;
+        if(!mine.length) return;
+        var note=slot.dataset.note||'';
+        slot.innerHTML=threadHtml(mine, !aid)+(noteCovered(note, mine)?'':'<div class="note-line">'+esc(note)+'</div>');
+        var box=slot.querySelector('.thread-list'); if(box) box.scrollTop=box.scrollHeight;
+        // A preparer comment that is now in the thread is not shown a second time above it.
+        Array.prototype.forEach.call(scope.querySelectorAll('.prep-note-view[data-aid]'), function(pn){
+          if(pn.dataset.line!==lid || (aid && pn.dataset.aid!==aid)) return;
+          var t=sq(pn.dataset.note);
+          if(mine.some(function(m){ return m.from==='Preparer' && m.assignment_id===pn.dataset.aid && sq(m.text)===t; }) && pn.parentNode) pn.parentNode.removeChild(pn);
+        });
+      });
+    });
+  }
   function openTaskModal(stage, lineId){
     var d=stageState[stage].detail; if(!d) return;
     var line=d.lines.filter(function(l){ return String(l.line_id)===String(lineId); })[0]; if(!line) return;
@@ -1529,6 +1603,7 @@
     $('taskModalBody').innerHTML=renderStageLine(stage, d.actionable, line);
     openModal('task');
     wireStage(stage, $('taskModalBody'));
+    mountThread(stage, line, $('taskModalBody'));
     // Reliability net: if a reviewer opens a task whose AI check hasn't run yet
     // (the background job hasn't landed), kick it off automatically so they never
     // have to click. No-op once a verdict exists.
@@ -1581,6 +1656,7 @@
     openModal('task');
     Array.prototype.forEach.call($('taskModalBody').querySelectorAll('.subtask-open'), function(b){ b.addEventListener('click', function(){ openSubtask(stage, line.line_id, b.dataset.aid); }); });
     Array.prototype.forEach.call($('taskModalBody').querySelectorAll('.tl-open'), function(b){ b.addEventListener('click', function(){ openTimeline(b.dataset.line); }); });
+    loadThread(stage, line, function(){});   // fetched while the user picks a task, so the task window opens with it
   }
   function openSubtask(stage, lineId, assignmentId){
     var d=stageState[stage].detail; var line=(d.lines||[]).filter(function(l){ return String(l.line_id)===String(lineId); })[0]; if(!line) return;
@@ -1601,6 +1677,7 @@
       if(String(a.status).toLowerCase()===cfg.actNeeded && !String(a.ai_verdict||'').trim() && run){ runSubtaskAiCheck(stage, run); }
     }
     var first=el.querySelector('.chip'); if(first) openDoc(first.dataset.line, first.dataset.eid, first);
+    mountThread(stage, line, el);
   }
   /* ---- Flow C task window (system reconciliation or a preparer task) ---- */
   function checksTableHtml(checks){
@@ -1646,8 +1723,8 @@
     // sees the checks table and the reviewer's note — never a verdict panel.
     var gated = canAct && stage==='review';
     var panel = gated ? (sys ? systemPanelHtml(a) : aiPanelHtml({ai_verdict:a.ai_verdict, ai_summary:a.ai_summary})) : '';
-    var prepNote = a.preparer_note ? '<div class="prep-note-view"><b>Preparer:</b> '+esc(a.preparer_note)+'</div>' : '';
-    var noteLine = a.note ? '<div class="note-line">'+esc(a.note)+'</div>' : '';
+    var prepNote = prepNoteHtml(line, a);
+    var noteLine = threadSlot(line, a.assignment_id, a.note);
     var actions = canAct
       ? panel+'<div class="line-foot"><input class="note-in" placeholder="'+(sys&&stage==='review'?'Note to the auditor (optional)':'Note (required to return)')+'">'
         +'<button class="btn primary sm subtask-primary" data-aid="'+esc(a.assignment_id)+'"'+(gated?' disabled':'')+'>'+esc(cfg.primaryLabel)+'</button>'
@@ -1681,9 +1758,9 @@
       : '<span class="muted" style="font-size:12px">no files</span>';
     // The AI panel is Review-only — the auditor never sees the AI's comments.
     var aiBlock = (cfg.ai && canAct) ? aiPanelHtml({ai_verdict:a.ai_verdict, ai_summary:a.ai_summary}) : '';
-    var noteLine = a.note ? '<div class="note-line">'+esc(a.note)+'</div>' : '';   // reviewer's note reaches the auditor
+    var noteLine = threadSlot(line, a.assignment_id, a.note);   // last note now, the full thread once it loads
     // Preparer's comment — reviewer-only (server sends it for the review stage only).
-    var prepNote = a.preparer_note ? '<div class="prep-note-view"><b>Preparer:</b> '+esc(a.preparer_note)+'</div>' : '';
+    var prepNote = prepNoteHtml(line, a);
     var actions = canAct
       ? aiBlock+'<div class="line-foot"><input class="note-in" placeholder="Note (required to return)">'
         +'<button class="btn primary sm subtask-primary" data-aid="'+esc(a.assignment_id)+'"'+(cfg.ai?' disabled':'')+'>'+esc(cfg.primaryLabel)+'</button>'
@@ -1776,11 +1853,11 @@
       } else {
         body='<div class="doc-chips">'+(a.files.length?a.files.map(chip).join(''):'<span class="muted" style="font-size:12px">no files</span>')+'</div>';
       }
-      var prepNote = a.preparer_note ? '<div class="prep-note-view"><b>Preparer:</b> '+esc(a.preparer_note)+'</div>' : '';
+      var prepNote = prepNoteHtml(l, a);
       return '<div class="asg-rev"><div class="et">'+esc(a.evidence_type)+opt+'</div>'
         +'<div class="who">'+esc(a.assigned_to||'unassigned')+'</div>'+uLine+body+prepNote+'</div>';
     }).join('');
-    var note = l.note ? '<div class="note-line">'+esc(l.note)+'</div>' : '';
+    var note = threadSlot(l, '', l.note);   // sample-level window: the thread carries the comments of all its tasks
     var actions='';
     if(String(l.status).toLowerCase()===actionable){
       var isReview = stage==='review';
