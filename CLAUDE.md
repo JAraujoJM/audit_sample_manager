@@ -105,7 +105,7 @@ the reviewer's returns to the preparer and the preparer's comments. **If the tex
 in `THREAD_RULES_`** (and never log a comment only in `notes`). Client: the window opens with the last note as before
 (`threadSlot`), one call per sample (`loadThread`, reused until the sample's statuses/notes change) replaces it
 (`mountThread`); a stored note that is not in the thread stays visible under it, and a preparer comment already in the
-thread is not repeated above it. The stored columns and every action are unchanged.
+thread is not repeated above it. The stored columns and every action are unchanged. In prod since **@43** (13 Nov 2026).
 
 **Auditor export** (`auditExport(requestId)`, Review.js; Export button in the Audit request detail): builds
 a temp Google Sheet → exports `.xlsx` (tabs: Samples & Tasks enriched / IPE with queries + SHA-256 + checks /
