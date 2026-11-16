@@ -12,6 +12,8 @@ revenues / COGS by RING transaction, single query) and **Flow B** (Cash Anchor, 
 request is in flight). **Flow C** (Marketplace revenues / COGS by **sales-order item**, N-stage queries +
 system reconciliation tasks) is **built and pushed, awaiting `setup()` + `seedFlowC()` + a first real run**.
 Everything new is additive — Flow A/B code paths are unchanged.
+**16 Nov 2026:** Flows A, B, C are in production (prod = @43). **Flow D** (COGS by NAV value entry, one openquery to live
+NAV) is **built and on `/dev`, awaiting `seedFlowD()` + a first real run** — see its section below.
 
 ## Stack
 - **Google Apps Script** (V8, synced with `clasp`). Server is split by concern: `Code.js` (enrichment
@@ -274,6 +276,52 @@ rewritten. This is the pattern for any future "add a task to a live request" cha
 the rule (future requests). Triggers and the editor run HEAD; the invoice-specific AI check and the new card fields reach
 the live `/exec` URL only once prod is promoted (done: prod = **@41**, 12 Nov 2026, deployed by João).
 
+## Flow D — COGS by NAV value entry (built 16 Nov 2026 — on `/dev`, awaiting `seedFlowD()` + a first real run)
+Input = company code + NAV `Value Entry`.`Entry No_` (`EC_MA 14356476`, either order; `flowDParseSample_`). Each sampled
+entry is the cost of an item sold / returned, or a later **adjustment** of that cost; the support is the vendor's purchase
+invoice and, for an adjustment, the vendor credit / debit note behind it. Module `FlowD.js`, registered as `flowD`.
+- **One query on LIVE NAV**, gateway server `finrec`, db `AIG_Nav_DW`: `select * from openquery([ERP_NAVBC01|02], '<inner>')`,
+  one block per company, `union all`. Company → linked server / database / NAV company name = `FLOWD_COMPANIES` (8 companies;
+  a new country = one line). openquery's string is capped at 8,000 chars → `flowDQuery_` splits a company's entry list into
+  blocks (`FLOWD_OPENQUERY_MAX`). No date window (an entry number is unique within its company) — the period is a label and
+  the module rewords the IPE checks (`ipeChecks` hook in `buildIpe_`).
+- **Inner query** = recursive CTE `chain` from the sampled entry to the inbound entry it took its cost from
+  (`Item Application Entry`), then on when that is not a purchase: member 1 = the origin NAV **recorded** (return / undone
+  shipment / transfer); member 2 = a return receipt `R<order>-<nnnn>` with no recorded origin matched to the original sale on
+  **order number + item** (`Guessed = 1`); `Hop < FLOWD_MAX_HOPS` (8; seen 5). Then one row per (sample, chain node, purchase
+  value entry of document type 5 / 6 / 8) with `External Document No_` (= the vendor's own number, as printed on the PDF),
+  `Item Charge No_` (`PP-` price protection, `BM-` back margin), vendor, OMS PO. The anchor is a LEFT join, so an entry with
+  nothing applied still returns one row; an entry NAV does not have returns none → `not_found`.
+- **Gateway CSV quirk:** a column holding a NULL anywhere arrives as floats (document type `6.0`, entry no. `70445007.0`) and
+  rows come in no fixed order → read every code / id through `flowDCode_`, and never take "the first row" of a document
+  (vendor number = first one filled in, document date = earliest posting date; receipts and documents are sorted).
+- **What the app decides** (`flowDMapGroup_`): the purchase receipt(s) = nodes reached without a guess, else the guessed ones
+  (a manual credit memo for several units fans out into several candidate receipts — all kept). Tasks, via the new
+  **`taskUnits[rule_name]`** hook in `persistRunRows_` (units per Routing rule; `units` stays the shared fan-out of Flow B):
+  one **`Purchase invoice`** per goods invoice (rule `cogs_purchase_invoice`, `cogs=yes`), at least one per sample, flagged
+  `pending: 'not_invoiced' | 'no_receipt'` when NAV shows none; for an **adjustment** sample, one **`Credit / debit note`**
+  per note that explains the amount (rule `cogs_credit_debit_note`, `notes=yes`) — `flowDExplain_`: amount = quantity × the
+  document's per-unit amount `(Cost Actual + Cost Expected) / Valued Qty`, one document first, else the documents of one
+  posting date; tolerance `FLOWD_TOLERANCE` 0.015 **and** ≤ 25 % of the amount. Other notes are listed on the card only
+  (the team's own H1 2026 practice: only the explaining notes were delivered). Subpopulations `COGS - Original cost` /
+  `COGS - Adjustment`, both in `PER_TASK_SUBPOPS` (per-task review, like Cash & POS). Line field is `purchase_order`, not
+  `po` (`po` is in `LINE_STD_` and never reaches `detail_json`).
+- **No document yet** (João, 16 Nov 2026: nothing is delivered, the auditors are told the invoice is pending, and the task
+  can still be completed if it arrives before closing): a `pending` task may be submitted with a **comment and no file**
+  (`submitAssignment`); its check is `uncertain` with no model call; `reviewerSubmitTask` then **requires the note to the
+  auditor** (the preparer's comment never reaches them). Any other task still needs a file.
+- **AI check** = its own prompt (`assessCogsDocument_`, Review.js, routed from `assessAssignmentCore_`): document type, vendor
+  (NAV names carry suffixes like "Retail" / "NF" — "recorded name is part of the issuer's name", never exact), vendor
+  document number; a missing number is `uncertain`, only a wrong document type or vendor rejects.
+- **No screenshots** (João, 16 Nov 2026: the auditors will accept a system extract): no NAV-screenshot slot. The extraction
+  CSV + the gateway's SOX workbook ship in the audit export; the module adds its own columns to "Samples & Tasks"
+  (`exportHeaders` / `exportValues` hook in `auditExport`). A formatted "NAV value entries" workbook per request (the old
+  screenshot + "breakdown" files) is the next step, not built.
+- Validated on the 94 samples of H1 + Q3 2026 **through the gateway** (20 s): 94 found, amount = the auditors' on 94, a goods
+  invoice for 85 (the hand query: 65), 9 pending, 114 tasks. Offline end-to-end test `test_flowd.js` (side-session notes).
+  Open: two H1 Adidas Morocco samples where the team delivered an invoice NAV does not show on the receipt; preparer teams
+  (one or per country) not decided. Deep detail in the **`flow-d-cogs` memory**.
+
 ## Load times, CFO dashboard, access log (20 Oct 2026, Gonçalo)
 Measured on the Executions log (149 calls, 14–20 Oct): every call opened Config for the role, then Data, and read
 3–4 whole tabs; a screen cost 4–5 s server-side and the first open ~12.5 s. Now:
@@ -314,6 +362,8 @@ Measured on the Executions log (149 calls, 14–20 Oct): every call opened Confi
   side-session notes (`harness.js`/`test.js`: real server code, mocked services, real Data export).
 
 ## Roadmap / next
+- **Flow D first real run**: `seedFlowD()` in the editor (no `setup()` — no schema change) → run a sample on `/dev` →
+  check the tasks → promote to prod only when asked. Then: the "NAV value entries" workbook (system extract), preparer teams.
 - **Flow C first real run**: `setup()` (adds `Requests.stages_json`) → `seedFlowC()` → run the H1 2026 sample on
   the `/dev` deployment → check the gateway timings + the workbook → then promote to prod.
 - **Pilot** of Flows A/B continues in production.

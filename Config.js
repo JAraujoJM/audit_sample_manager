@@ -26,10 +26,11 @@ var ROLES = {
  * Subpopulations whose samples are reviewed / audited ONE TASK AT A TIME (tasks advance
  * independently; the sample is on the reviewer's desk as soon as ANY task is submitted):
  * Cash & POS (one proof of payment per payment) and Flow C's Retail / Marketplace (a
- * system reconciliation task plus, for marketplace items, the preparer tasks).
+ * system reconciliation task plus, for marketplace items, the preparer tasks) and Flow D's
+ * COGS samples (one purchase invoice per invoice, one credit / debit note per note).
  * Mirrored in the client (PER_TASK_SUBS) — keep both lists in sync.
  */
-var PER_TASK_SUBPOPS = ['Postpaid - Cash & POS', 'Retail', 'Marketplace'];
+var PER_TASK_SUBPOPS = ['Postpaid - Cash & POS', 'Retail', 'Marketplace', 'COGS - Original cost', 'COGS - Adjustment'];
 function isPerTaskSub_(sub) { return PER_TASK_SUBPOPS.indexOf(String(sub || '')) !== -1; }
 
 /* Script Property keys — where setup() persists the IDs it creates. */

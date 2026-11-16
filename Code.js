@@ -534,7 +534,7 @@ function stripInternal_(row) {
 // the engine knowing the flow's shape. Empty values are dropped to keep it compact.
 var LINE_STD_ = { doc: 1, item: 1, found: 1, action: 1, action_label: 1, company: 1, vendor: 1,
                   mpl: 1, paid_at: 1, statement: 1, amount: 1, closing_balance: 1, po: 1, downpay: 1,
-                  document_no: 1, subpopulation: 1, units: 1 };
+                  document_no: 1, subpopulation: 1, units: 1, taskUnits: 1 };
 function lineDetail_(r) {
   var d = {};
   for (var k in r) {
@@ -634,7 +634,7 @@ function persistRunRows_(results, gatewayRequestId, file, ctx, ipe) {
     if (!r.found) {
       appendObject_(ds, 'Sample_Lines', {
         line_id: lineId, request_id: reqId,
-        document_no: it.soi || r.doc, company: it.company || '',
+        document_no: it.soi || it.ref || r.doc, company: it.company || '',
         status: 'not_found', required_count: 0, created_at: ts
       });
       lines++;
@@ -645,8 +645,11 @@ function persistRunRows_(results, gatewayRequestId, file, ctx, ipe) {
     // Some subpopulations fan one evidence requirement over several data units
     // (Cash & POS: one proof of payment per payment on the transaction list).
     var units = (r.units && r.units.length) ? r.units : [null];
+    // A flow whose rules fan over DIFFERENT units (Flow D: one purchase-invoice task per invoice,
+    // one note task per credit / debit note) gives them per Routing rule: taskUnits[rule_name].
+    var unitsOf = function (m) { var tu = r.taskUnits && r.taskUnits[String(m.rule_name)]; return (tu && tu.length) ? tu : units; };
     var requiredCount = 0;
-    matched.forEach(function (m) { if (!isOptional_(m.optional)) requiredCount += (isSystemRule(m) ? 1 : units.length); });
+    matched.forEach(function (m) { if (!isOptional_(m.optional)) requiredCount += (isSystemRule(m) ? 1 : unitsOf(m).length); });
     // A system task is submitted the moment it exists, so a sample that has one starts
     // on the reviewer's desk (per-task semantics — its human tasks follow at their pace).
     var hasSystem = !!ctx.reviewer && matched.some(isSystemRule);
@@ -696,7 +699,7 @@ function persistRunRows_(results, gatewayRequestId, file, ctx, ipe) {
       // slots_json empty and use the free upload.
       var slots = parseSlots_(m.documents, m.required_evidence);
       var slotsJson = slots.length > 1 ? JSON.stringify(slots) : '';
-      units.forEach(function (u) {
+      unitsOf(m).forEach(function (u) {
         appendObject_(ds, 'Assignments', {
           assignment_id: newId_('ASG'), line_id: lineId, request_id: reqId,
           evidence_type: m.required_evidence,
@@ -792,7 +795,7 @@ function buildIpe_(docs, foundCount, requestId, query, file, ctx) {
   var blob2 = ctx.csv2File ? ctx.csv2File.getBlob() : null;
   var bytes2 = blob2 ? blob2.getBytes() : [];
 
-  return {
+  var ipe = {
     documentRef:    'IPE-' + String(flow.flow_id || 'flow').toUpperCase() + '-' + yyyymm,
     period:         (period.name ? period.name + ' · ' : '') + 'date window ' + period.start + ' → ' + period.end,
     scope:          flow.name + ' · ' + flow.flow_id,
@@ -831,6 +834,10 @@ function buildIpe_(docs, foundCount, requestId, query, file, ctx) {
       { name: 'File integrity',       method: 'SHA-256 computed over the returned CSV at extraction time', result: 'Pass' }
     ]
   };
+  // A flow whose query is not bounded the standard way (Flow D: no date window) words its own checks.
+  var ipeMod = flowModule_(flow.flow_id);
+  if (ipeMod && typeof ipeMod.ipeChecks === 'function') ipe.checks = ipeMod.ipeChecks(ipe.checks, ctx);
+  return ipe;
 }
 
 function parseDocs_(text) {

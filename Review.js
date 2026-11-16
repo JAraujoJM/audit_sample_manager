@@ -147,7 +147,7 @@ function taskTimeline(lineId) {
     throw new Error('This sample is not assigned to you.');
   }
   var labelByAsg = {};
-  asgs.forEach(function (a) { labelByAsg[String(a.assignment_id)] = parseJson_(a.detail_json).payment_no || a.evidence_type || 'Task'; });
+  asgs.forEach(function (a) { labelByAsg[String(a.assignment_id)] = taskLabel_(a, parseJson_(a.detail_json)); });
 
   var events = t.Activity_Log.filter(function (e) {
     return (String(e.entity_type) === 'line' && String(e.entity_id) === String(lineId)) ||
@@ -221,7 +221,7 @@ function commentThread(lineId, stage) {
 
   var labelByAsg = {};
   t.Assignments.forEach(function (a) {
-    if (String(a.line_id) === String(lineId)) labelByAsg[String(a.assignment_id)] = parseJson_(a.detail_json).payment_no || a.evidence_type || 'Task';
+    if (String(a.line_id) === String(lineId)) labelByAsg[String(a.assignment_id)] = taskLabel_(a, parseJson_(a.detail_json));
   });
 
   var messages = [];
@@ -332,7 +332,9 @@ function assessLineCore_(lineId, line, how) {
   var typeByAsg = {};
   getAssignments(lineId).forEach(function (a) { typeByAsg[String(a.assignment_id)] = a.evidence_type; });
   var docs = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.line_id) === String(lineId); });
-  if (!docs.length) throw new Error('No evidence documents to assess on this sample.');
+  // A COGS sample can reach the reviewer with no file at all (an invoice still to be received,
+  // submitted with a comment) — its per-task check below handles that.
+  if (!docs.length && !isCogsSub_(sub)) throw new Error('No evidence documents to assess on this sample.');
 
   // Voucher = two-image cross-check; Cash & POS = one verdict per payment task; Flow C
   // (Retail / Marketplace) = per task too (system tasks are deterministic, no AI call);
@@ -590,12 +592,92 @@ function assessSalesInvoice_(asg, line, ldet, files) {
   return { verdict: worst, summary: perDoc.map(function (p) { return p.file + ' → ' + p.verdict + (p.summary ? (': ' + p.summary) : ''); }).join('  |  '), perDoc: perDoc };
 }
 
+/* ---------- Flow D (COGS): the vendor's PURCHASE INVOICE or CREDIT / DEBIT NOTE ---------- */
+/**
+ * The uploaded document against what NAV recorded on the purchase value entry (stored on the
+ * task at extraction): the VENDOR and the vendor's own document number (NAV "External Document
+ * No_" — on the H1 2026 files it is the number printed on the PDF: credit note 5485006997 =
+ * MAECPCM260100002). Three checks: document type, vendor, document number.
+ * NAV vendor names carry internal suffixes ("Hayat Retail", "JAMARA HOME - Retail", "Arma NF"),
+ * so the vendor check is "the recorded name, without such a suffix, is the issuer or a
+ * recognisable part of its name" — never an exact comparison. A number that is absent or
+ * different gives "uncertain" (the reviewer decides), never a reject on its own; only a wrong
+ * kind of document or a clearly different vendor rejects. A task whose invoice NAV did not show
+ * (`pending`) has no recorded number: that check is skipped.
+ */
+function assessCogsDocument_(asg, line, ldet, unit, files) {
+  var has = function (v) { return v !== undefined && v !== null && String(v).trim() !== ''; };
+  var isNote = String(asg.evidence_type || '').trim().toLowerCase() === FLOWD_NOTE.toLowerCase();
+  var vendor = String(unit.vendor || line.vendor || '').trim();
+  var extNo = String(unit.vendor_doc_no || '').trim();
+  var facts = [
+    'Jumia company (the buyer): ' + (line.company || '—'),
+    'Recorded vendor (NAV name): ' + (vendor || '(none recorded — skip check 2 and say so)'),
+    'Recorded vendor document number (NAV "External Document No."): ' + (extNo || '(none recorded — skip check 3 and say so)'),
+    'NAV document number (Jumia\'s own internal number — reference only, it is NOT printed on the vendor\'s document): ' + (unit.doc_no || '—'),
+    'NAV posting date (reference only — the document date is usually a few days or weeks earlier): ' + (unit.doc_date || '—'),
+    'Purchase order number (reference only): ' + (unit.po || ldet.purchase_order || '—'),
+    'Sampled item (reference only): ' + ([ldet.item_no, ldet.item_desc].filter(Boolean).join(' — ') || '—')
+  ];
+  if (isNote && has(unit.item_charge)) facts.push('Nature of the note in NAV (item-charge code — PP = price protection, BM = back margin; reference only): ' + unit.item_charge);
+  if (isNote && has(unit.doc_amount)) facts.push('Amount of the note assigned to the sampled receipt (reference only — the note usually covers many items): ' + unit.doc_amount);
+  var docKind = isNote
+    ? 'a CREDIT NOTE or DEBIT NOTE between the vendor and Jumia (a price reduction, price protection, back margin, rebate or similar), issued by either party'
+    : 'the vendor\'s PURCHASE INVOICE (tax invoice / facture) issued to Jumia for goods';
+  var system =
+    'You are a meticulous financial-audit evidence reviewer at Jumia. The attached document should be ' + docKind + '. ' +
+    'You are given what the accounting system (NAV) recorded for it. Run exactly three checks and report each one in "checks":\n' +
+    '1) "Document type" — the document is ' + (isNote ? 'a credit note or a debit note between the vendor and Jumia' : 'an invoice issued by a supplier to Jumia') +
+    '. A purchase order, delivery note, goods receipt, account statement, payment proof, ' + (isNote ? 'plain invoice' : 'credit note') +
+    ' or a screenshot of a system is not.\n' +
+    '2) "Vendor" — the supplier named on the document is the recorded vendor. The accounting system keeps a short internal name, often ' +
+    'with a suffix such as "Retail", "- Retail", "_Retail", "NF" or "ltd", or a trade name instead of the legal name: the check passes when ' +
+    'the recorded name, without such a suffix, is the supplier or a recognisable part of its name, allowing for legal form, language, ' +
+    'transliteration, letter case, accents and spacing. It fails only when the supplier is clearly a different company.\n' +
+    '3) "Document number" — the recorded vendor document number is printed on the document as its own ' + (isNote ? 'credit / debit note' : 'invoice') +
+    ' number or reference. Ignore spaces, dashes, slashes, leading zeros and a letter prefix when comparing. The check fails when the number ' +
+    'cannot be found; in the note, quote the document number the document does show.\n' +
+    'Dates, the purchase order, the item and the amounts are reference only — never fail the document on them, but say in the summary ' +
+    'when the purchase order number or the sampled item can be seen on the document.\n' +
+    'Verdict: "accept" only when every check that could be run passes. "reject" when it is the wrong kind of document or the supplier is ' +
+    'clearly a different company — say which, quoting what the document shows. "uncertain" when the document cannot be read, or when ' +
+    'checks 1 and 2 pass but the recorded document number is not on it.\n' +
+    'In each check\'s note quote the value you read on the document. Summary: one specific sentence (under 240 characters) quoting the ' +
+    'supplier name and the document number read on the document against the recorded ones.';
+
+  var perDoc = [], worst = 'accept';
+  files.forEach(function (e) {
+    var d = loadEvidenceBytes_(e);
+    if (d.err) { perDoc.push({ file: e.file_name, type: asg.evidence_type, verdict: 'uncertain', summary: d.err }); worst = worseVerdict_(worst, 'uncertain'); return; }
+    var prompt = 'Expected evidence type: "' + asg.evidence_type + '".\n\nRecorded in NAV:\n' + facts.join('\n') +
+      '\n\nAssess the attached document (file name: ' + e.file_name + ').';
+    var res;
+    try { res = geminiAssess_(system, prompt, { mimeType: d.mime, bytes: d.bytes }); }
+    catch (err) { perDoc.push({ file: e.file_name, type: asg.evidence_type, verdict: 'uncertain', summary: 'AI error: ' + (err.message || err) }); worst = worseVerdict_(worst, 'uncertain'); return; }
+    var v = String(res.verdict || 'uncertain').toLowerCase();
+    if (['accept', 'reject', 'uncertain'].indexOf(v) === -1) v = 'uncertain';
+    // An "accept" that carries a failed check contradicts itself — leave it to the reviewer.
+    var failed = (res.checks || []).filter(function (c) { return c && c.ok === false; });
+    if (v === 'accept' && failed.length) v = 'uncertain';
+    var sm = String(res.summary || '');
+    if (failed.length) sm += ' [failed: ' + failed.map(function (c) { return c.name; }).join(', ') + ']';
+    perDoc.push({ file: e.file_name, type: asg.evidence_type, verdict: v, summary: sm });
+    worst = worseVerdict_(worst, v);
+  });
+  return { verdict: worst, summary: perDoc.map(function (p) { return p.file + ' → ' + p.verdict + (p.summary ? (': ' + p.summary) : ''); }).join('  |  '), perDoc: perDoc };
+}
+
 function assessAssignmentCore_(asg, line) {
   var ds = dataSs_();
   var unit = parseJson_(asg.detail_json), ldet = parseJson_(line.detail_json);
   if (unit.kind === 'system') return systemVerdict_(unit);           // deterministic — never sent to the model
   var files = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.assignment_id) === String(asg.assignment_id); });
-  if (!files.length) return { verdict: 'uncertain', summary: 'No file uploaded for this task.', perDoc: [] };
+  if (!files.length) {
+    return { verdict: 'uncertain', perDoc: [],
+             summary: unit.pending ? ('No document on this task — ' + flowDPendingText_(unit.pending) + '. Read the preparer\'s comment.') : 'No file uploaded for this task.' };
+  }
+  // Flow D (COGS) — the vendor's purchase invoice or credit / debit note: its own check.
+  if (isCogsSub_(line.subpopulation)) return assessCogsDocument_(asg, line, ldet, unit, files);
   // Flow C Retail — the customer's sales invoice: its own check (total incl. VAT + customer name).
   if (String(line.subpopulation) === 'Retail' && isSalesInvoiceTask_(asg)) return assessSalesInvoice_(asg, line, ldet, files);
   if (isPerTaskSub_(line.subpopulation) && String(line.subpopulation) !== 'Postpaid - Cash & POS') {
@@ -707,6 +789,12 @@ function reviewerSubmitTask(assignmentId, override, note) {
   if (verdict !== 'accept' && !override) throw new Error('The AI flagged this payment (' + verdict + '). Tick the confirmation to proceed anyway.');
 
   note = String(note || '').trim();
+  // Flow D: a task sent on with NO document (invoice not in NAV yet) must carry the reviewer's
+  // note — the preparer's comment never reaches the auditor, so this note is how they are told.
+  if (!note && parseJson_(asg.detail_json).pending &&
+      !readObjects_(dataSs_(), 'Evidence').some(function (e) { return String(e.assignment_id) === String(assignmentId); })) {
+    throw new Error('There is no document on this task: add a note telling the auditor why (for example, the invoice is still to be received).');
+  }
   updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'reviewed', notes: note ? ('Reviewer: ' + note) : '' });
   updateLineAssignmentRollup_(asg.line_id);
   logActivity('REVIEW_SUBMIT_TASK', 'assignment', assignmentId, 'reviewed (AI ' + verdict + (verdict !== 'accept' ? ', override' : '') + ')' + (note ? ' — ' + note : ''));
@@ -800,6 +888,13 @@ function auditorReturn(lineId, note) {
 }
 
 /* ---------- helpers ---------- */
+/** How one task of a multi-task sample is named in the comment thread, the history tabs and the
+ *  export folders: its payment (Cash & POS), its NAV document (COGS), else its evidence type. */
+function taskLabel_(asg, unit) {
+  unit = unit || {};
+  return unit.payment_no || (unit.doc_no ? ((asg.evidence_type || 'Task') + ' ' + unit.doc_no) : '') || asg.evidence_type || 'Task';
+}
+
 function assertReviewer_(requestId, me) {
   if (me.role === ROLES.ADMIN) return;
   var req = findRequest_(requestId);
@@ -873,6 +968,14 @@ function auditExport(requestId) {
     // Tab 1 (Samples & Tasks) + Tab 3 rows (Evidence index) + evidence blobs, one pass.
     // Column A links each row to its entry in the 'Sample list' tab.
     var H1 = ['Sample list #', 'Sample (SOI)', 'Company', 'Subpopulation', 'Sample status', 'Task / evidence', 'Payment no', 'Amount', 'Payment date', 'Bank account', 'Payment reference', 'Order no', 'Gateway / provider', 'Assigned to', 'Task status', 'Evidence files'];
+    // A flow module can add its own columns to this tab (Flow D: the purchase document facts).
+    var XH = (flowMod && flowMod.exportHeaders) || [];
+    var xVals = function (l, det, a, u) {
+      var v = []; try { v = (XH.length && typeof flowMod.exportValues === 'function') ? (flowMod.exportValues(l, det, a, u) || []) : []; } catch (e) { v = []; }
+      v = v.slice(0, XH.length); while (v.length < XH.length) v.push('');
+      return v;
+    };
+    H1 = H1.concat(XH);
     var R1 = [H1];
     var sampleLink = function (l) {
       var n = sample.noByLine[l.line_id];
@@ -884,16 +987,16 @@ function auditExport(requestId) {
     lines.forEach(function (l) {
       var det = parseJson_(l.detail_json);
       var la = asg.filter(function (a) { return String(a.line_id) === String(l.line_id); });
-      if (!la.length) { R1.push([sampleLink(l), l.document_no, l.company, l.subpopulation, l.status, '', '', l.amount, '', '', '', det.order_nr || '', '', '', '', '']); return; }
+      if (!la.length) { R1.push([sampleLink(l), l.document_no, l.company, l.subpopulation, l.status, '', '', l.amount, '', '', '', det.order_nr || '', '', '', '', ''].concat(xVals(l, det, null, {}))); return; }
       la.forEach(function (a) {
         var u = parseJson_(a.detail_json);
         var files = evd.filter(function (e) { return String(e.assignment_id) === String(a.assignment_id); });
-        var taskLabel = u.payment_no || a.evidence_type || 'task';
+        var taskLabel = taskLabel_(a, u);
         R1.push([sampleLink(l), l.document_no, l.company, l.subpopulation, l.status, a.evidence_type,
           u.payment_no || '', (u.amount != null && u.amount !== '' ? u.amount : (l.amount || '')),
           String(u.payment_date || '').slice(0, 10), u.bank_account || '', u.payment_ref || '', det.order_nr || '',
           [det.jp_gateway, det.jp_provider].filter(Boolean).join(' / '), a.assigned_to || '', a.status,
-          files.map(function (e) { return e.file_name; }).join(', ')]);
+          files.map(function (e) { return e.file_name; }).join(', ')].concat(xVals(l, det, a, u)));
         // App-produced evidence (Flow C's reconciliation workbook) is ONE file shared by every
         // system task of the request: it goes once into 'Reconciliation (system)/' at the export
         // root and every sample's row points to that same path — no per-sample copies.

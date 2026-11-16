@@ -303,6 +303,64 @@ function reseedFlowCRouting() {
   return getRouting('flowC');
 }
 
+/* ==================== Flow D — COGS by NAV value entry ==================== */
+/**
+ * Admin-run: seed Flow D — a Flows row, its Periods and its Routing. Idempotent (does nothing
+ * if a flowD Flows row exists). No schema change: setup() is not needed. Existing requests
+ * are untouched. The period is a label on this flow (a value entry number is unique within
+ * its company, the query has no date window).
+ */
+function seedFlowD() {
+  requireRole_([ROLES.ADMIN]);
+  var cfg = configSs_();
+  if (getFlows().some(function (f) { return String(f.flow_id) === 'flowD'; })) {
+    Logger.log('Flow D already seeded.');
+    return { seeded: false };
+  }
+  appendObject_(cfg, 'Flows', {
+    flow_id: 'flowD', name: 'COGS (by NAV value entry)',
+    database: 'AIG_Nav_DW', query_mode: '',
+    sample_key: 'SampleKey', dedup_keys: 'ID_COMPANY+Value Entry No_', active: true
+  });
+  [['H1 2026 (Jan–Jun)', '2026-01-01', '2026-07-01'],
+   ['Q3 2026 (Jul–Sep)', '2026-07-01', '2026-10-01'],
+   ['Q4 2026 (Oct–Dec)', '2026-10-01', '2027-01-01'],
+   ['FY 2026',           '2026-01-01', '2027-01-01']].forEach(function (q) {
+    appendObject_(cfg, 'Periods', { flow_id: 'flowD', name: q[0], start_date: q[1], end_date: q[2], active: true });
+  });
+  seedFlowDRouting_(cfg);
+  logActivity('FLOW_SEED', 'flow', 'flowD', 'Seeded Flow D — COGS (Flows + Periods + Routing)');
+  return { seeded: true };
+}
+
+/**
+ * Flow D routing. Every sample gets "Purchase invoice" tasks (one per goods invoice NAV shows
+ * on the purchase receipt, at least one); a sample whose amount is explained by vendor notes
+ * also gets one "Credit / debit note" task per note. The fan-out per rule comes from the
+ * module (`taskUnits`, keyed by these rule names — keep them equal to the FlowD.js constants).
+ */
+function seedFlowDRouting_(cfg) {
+  function row(rule, match, evidence) {
+    appendObject_(cfg, 'Routing', { flow_id: 'flowD', rule_name: rule, match: match, required_evidence: evidence,
+      documents: '', responsible: ROLES.PREPARER, optional: '', active: true });
+  }
+  row(FLOWD_INVOICE_RULE, 'cogs=yes',  FLOWD_INVOICE);
+  row(FLOWD_NOTE_RULE,    'notes=yes', FLOWD_NOTE);
+}
+
+/** Admin-run: rewrite Flow D routing to the set above (other flows preserved). */
+function reseedFlowDRouting() {
+  requireRole_([ROLES.ADMIN]);
+  var cfg = configSs_();
+  var sh = cfg.getSheetByName('Routing');
+  var kept = readObjects_(cfg, 'Routing').filter(function (r) { return String(r.flow_id) !== 'flowD'; });
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).clearContent();
+  kept.forEach(function (r) { appendObject_(cfg, 'Routing', r); });
+  seedFlowDRouting_(cfg);
+  logActivity('ROUTING_RESEED', 'flow', 'flowD', 'Reseeded Flow D routing');
+  return getRouting('flowD');
+}
+
 /**
  * Admin-run: rewrite Cash Anchor routing to the set above. OVERWRITES the existing
  * flowB rows (other flows preserved). Run once after updating the evidence rules (and

@@ -629,6 +629,9 @@
    * What the preparer / reviewer sees per subpopulation. Values resolve from the
    * assignment's per-payment `unit` first, then the line `detail`, then the line row. */
   var CA_JP=[['Order','order_nr'],['Amount','amount'],['Payment date','jp_created'],['Gateway','jp_gateway'],['Payment provider','jp_provider'],['Retrieval ref','jp_retrieval']];
+  // Flow D (COGS by NAV value entry): the sampled entry, then the purchase document the task is about.
+  var CA_COGS=[['Posted','entry_date'],['Sales document','sales_doc'],['Type','entry_type'],['Item','item_no'],['Description','item_desc'],['Cost amount','amount'],
+    ['Receipt','receipt_no'],['PO','po'],['NAV document','doc_no'],['Vendor document no.','vendor_doc_no'],['Document date','doc_date'],['Charge','item_charge'],['Per unit','unit_amount']];
   var CA_FIELDS={
     'Prepaid - Voucher':[['Order','order_nr'],['Amount','amount']],
     'Prepaid - JumiaPay':CA_JP, 'Postpaid - JumiaPay on delivery':CA_JP, 'Postpaid - Cash - 3PL via JPay':CA_JP,
@@ -637,14 +640,18 @@
     // Flow C (Marketplace revenues / COGS by sales-order item)
     // Customer + invoice total = NAV "Posted Sales Invoices" — what the "Sales invoice" PDF must show.
     'Retail':[['Package no','package_number'],['BOB item','bob_soi'],['SKU','sku'],['Unit price','amount'],['Delivered','delivered_date'],['Customer','inv_customer'],['Invoice total','inv_total']],
-    'Marketplace':[['Package no','package_number'],['SKU','sku'],['Unit price','amount'],['Statement','statement_code'],['Closing balance','closing_balance'],['Paid at','paid_at'],['Payout method','payout_method'],['Source provider','source_provider'],['Payment reference','payment_ref'],['MPL type','mpl_type'],['PO','po']]
+    'Marketplace':[['Package no','package_number'],['SKU','sku'],['Unit price','amount'],['Statement','statement_code'],['Closing balance','closing_balance'],['Paid at','paid_at'],['Payout method','payout_method'],['Source provider','source_provider'],['Payment reference','payment_ref'],['MPL type','mpl_type'],['PO','po']],
+    'COGS - Original cost':CA_COGS, 'COGS - Adjustment':CA_COGS
   };
   // Flows whose sample box takes two columns (ID_COMPANY + sales-order item).
   var TWO_COL_FLOWS=['flowB','flowC'];
   // Samples reviewed / audited one task at a time (mirrors PER_TASK_SUBPOPS in Config.js).
-  var PER_TASK_SUBS=['Postpaid - Cash & POS','Retail','Marketplace'];
+  var PER_TASK_SUBS=['Postpaid - Cash & POS','Retail','Marketplace','COGS - Original cost','COGS - Adjustment'];
   function isPerTaskSub(s){ return PER_TASK_SUBS.indexOf(String(s||''))!==-1; }
   function isFlowCSub(s){ return s==='Retail' || s==='Marketplace'; }
+  function isCogsSub(s){ return s==='COGS - Original cost' || s==='COGS - Adjustment'; }
+  // Why a COGS purchase-invoice task has no document in NAV (the task's `pending` code).
+  function cogsPendingText(p){ return p==='no_receipt' ? 'NAV shows no purchase receipt behind this entry' : 'NAV shows no purchase invoice on this receipt yet'; }
   function caVal(key, line, detail, unit){
     if(unit && unit[key]!=null && unit[key]!=='') return unit[key];
     if(detail && detail[key]!=null && detail[key]!=='') return detail[key];
@@ -652,7 +659,9 @@
     return '';
   }
   // Keys rendered as numbers; everything else is text ('—' when empty).
-  var CA_NUM_KEYS={amount:1, inv_total:1};
+  var CA_NUM_KEYS={amount:1, inv_total:1, unit_amount:1, doc_amount:1};
+  // Fields left out of a card when empty (they only apply to some tasks of the subpopulation).
+  var CA_OPTIONAL={item_charge:1, unit_amount:1, item_desc:1};
   function caFmt(key, v){ return CA_NUM_KEYS[key] ? fmtNum(v) : esc(v||'—'); }
   function caFactsHtml(subpop, line, detail, unit){
     var spec=CA_FIELDS[subpop]; if(!spec) return '';
@@ -667,6 +676,7 @@
     if(/JumiaPay|3PL/.test(subpop||'')){ var g=[detail.jp_gateway,detail.jp_provider].filter(Boolean).join(' · '); return g||'—'; }
     if(subpop==='Postpaid - Cash & POS'){ var p=[unit.payment_no, unit.bank_account].filter(Boolean).join(' · '); return p||'—'; }
     if(isFlowCSub(subpop)){ var q=[detail.package_number, detail.statement].filter(Boolean).join(' · '); return q||'—'; }
+    if(isCogsSub(subpop)){ var c=[unit.doc_no||(unit.pending?'not in NAV yet':''), unit.vendor||''].filter(Boolean).join(' · '); return c||'—'; }
     return '—';
   }
   function toast(msg, type){
@@ -871,6 +881,10 @@
     $('docs').placeholder = isB
       ? 'Paste two columns per line: ID_COMPANY then COD_OMS_SALES_ORDER_ITEM\n(separated by a tab, comma or space)\n\nEC_IC   49493550\nJM_EG   90195962'
       : 'Paste document numbers — one per line or comma-separated';
+    if(f && f.flow_id==='flowD'){
+      $('docsLabel').textContent = 'Sample — company + NAV value entry no. (one per line)';
+      $('docs').placeholder = 'Paste two columns per line: company code and value entry number\n(either order, separated by a tab, comma or space)\n\nEC_MA   14356476\nJM_EG   69732608';
+    }
   }
 
   /* ---- modal plumbing ---- */
@@ -1279,9 +1293,12 @@
       filesBlock = '<div class="files">'+(t.files.map(chipFile).join('') || '<div class="muted" style="font-size:12.5px">No files yet.</div>')+'</div>';
       submitReady = t.files.length>0;
     }
+    // Flow D: a purchase invoice NAV does not show yet can be submitted with a comment and no file.
+    var pendingDoc = !!(t.unit && t.unit.pending), commentOnly = pendingDoc && !t.files.length;
+    if(pendingDoc) submitReady = true;
     var actions = editable
       ? (hasSlots?'':'<label class="btn sm">Add file<input type="file" class="file-input" data-aid="'+esc(t.assignment_id)+'" hidden></label>')
-        +'<button class="btn primary sm submit" data-aid="'+esc(t.assignment_id)+'"'+(submitReady?'':' disabled')+'>Submit for review</button>'
+        +'<button class="btn primary sm submit" data-aid="'+esc(t.assignment_id)+'"'+(commentOnly?' data-neednote="1"':'')+(submitReady?'':' disabled')+'>Submit for review</button>'
       : submitted
         ? '<button class="btn sm withdraw" data-aid="'+esc(t.assignment_id)+'">Withdraw</button>'
         : '<span class="muted" style="font-size:12.5px">Locked · '+esc(s.replace(/_/g,' '))+'</span>';
@@ -1289,7 +1306,7 @@
     // Optional comment to the reviewer (e.g. a known variance + its justification),
     // saved on submit. Only the reviewer sees it — never the auditor.
     var commentBlock = editable
-      ? '<textarea class="prep-note" data-aid="'+esc(t.assignment_id)+'" rows="2" placeholder="Optional comment for the reviewer — e.g. a known variance and why it is expected">'+esc(t.preparer_note||'')+'</textarea>'
+      ? '<textarea class="prep-note" data-aid="'+esc(t.assignment_id)+'" rows="2" placeholder="'+(commentOnly?'Comment for the reviewer — required to submit without a file (e.g. the invoice has not been received yet)':'Optional comment for the reviewer — e.g. a known variance and why it is expected')+'">'+esc(t.preparer_note||'')+'</textarea>'
       : (t.preparer_note ? '<div class="prep-note-view"><b>Your comment:</b> '+esc(t.preparer_note)+'</div>' : '');
     // Flow C Marketplace, Regular MPL seller (proof of payment / VC screenshot): the seller is
     // identified by its RING short code ("CI10929 :: ETS HIRO") and the PO is irrelevant.
@@ -1305,6 +1322,7 @@
       var spec = regularMpl ? CA_FIELDS[t.subpopulation].filter(function(f){ return f[1]!=='po'; }) : CA_FIELDS[t.subpopulation];
       facts = '<div class="task-facts">'+cty+spec.map(function(f){
         var v=caVal(f[1], t, t.detail, t.unit);
+        if(CA_OPTIONAL[f[1]] && (v===''||v==null)) return '';
         return '<span>'+esc(f[0])+' <b>'+caFmt(f[1], v)+'</b></span>';
       }).join('')+'</div>';
     } else {
@@ -1312,6 +1330,13 @@
         +'<span>Statement no. <b>'+esc(t.statement_code||'—')+'</b></span>'
         +'<span>Statement amount <b>'+fmtNum(t.statement_amount)+'</b></span>'
         +'<span>Paid at <b>'+esc(t.paid_at||'—')+'</b></span></div>';
+    }
+    // Flow D: what NAV says about the purchase behind the entry, in plain lines under the facts.
+    if(isCogsSub(t.subpopulation)){
+      var cd=t.detail||{};
+      facts += [pendingDoc ? cogsPendingText(t.unit.pending)+'. Upload the document if you have it, or submit with a comment saying why there is none.' : '',
+                cd.trace, cd.explained ? 'Adjustment: '+cd.explained : '', cd.other_notes ? 'Other notes on the receipt: '+cd.other_notes : '']
+        .filter(Boolean).map(function(x){ return '<div class="muted" style="font-size:12px;margin-top:4px">'+esc(x)+'</div>'; }).join('');
     }
     var eviLine = esc(t.evidence_type)+(t.optional?' · optional':'')
       +(t.due_date?' · due '+esc(t.due_date):'')
@@ -1366,6 +1391,7 @@
   // Submit carries the preparer's optional comment (read from the card's textarea).
   function submitTask(btn){
     var card=btn.closest('.task-card'), ta=card&&card.querySelector('.prep-note'), note=ta?ta.value.trim():'';
+    if(btn.dataset.neednote && !note){ toast('No file on this task — add a comment for the reviewer, or upload the document.','warn'); if(ta) ta.focus(); return; }
     var orig=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Submitting';
     RUN().withSuccessHandler(function(items){ renderTasks(items); toast('Submitted for review','ok'); })
       .withFailureHandler(function(e){ btn.disabled=false; btn.innerHTML=orig; toast(e.message,'warn'); })
@@ -1625,13 +1651,18 @@
          : miss ? '<span class="pill red">missing data</span>' : '<span class="pill amber">'+(cs.length-m)+' variance</span>';
   }
   function openSubtaskTable(stage, line){
-    var cfg=SUBTASK_CFG[stage], flowC=isFlowCSub(line.subpopulation);
-    $('taskModalTitle').textContent=(stage==='audit'?'Audit':'Review')+' · '+line.document_no+(flowC?' · tasks':' · payments');
+    var cfg=SUBTASK_CFG[stage], flowC=isFlowCSub(line.subpopulation), cogs=isCogsSub(line.subpopulation);
+    $('taskModalTitle').textContent=(stage==='audit'?'Audit':'Review')+' · '+line.document_no+((flowC||cogs)?' · tasks':' · payments');
     var asgs=line.assignments||[];
     var rows=asgs.map(function(a,idx){
       var u=a.unit||{}, canAct=String(a.status).toLowerCase()===cfg.actNeeded;   // task-level: independent of siblings
       var sys=u.kind==='system';
-      var lead = flowC
+      var sent=['submitted','reviewed','accepted'].indexOf(String(a.status).toLowerCase())!==-1;
+      var lead = cogs
+        ? '<td>'+esc(a.evidence_type||('#'+(idx+1)))+'<div class="muted mono" style="font-size:11.5px">'+esc(u.doc_no||(u.pending?'not in NAV yet':''))+'</div></td>'
+          +'<td class="trunc" title="'+esc(a.assigned_to||'')+'">'+esc(shortEmail(a.assigned_to)||'—')+'</td>'
+          +'<td>'+((a.files&&a.files.length)?(a.files.length+' file'+(a.files.length>1?'s':'')):(sent?'<span class="pill neutral">comment only</span>':'<span class="muted">—</span>'))+'</td>'
+        : flowC
         ? '<td>'+esc(a.evidence_type||('#'+(idx+1)))+(sys?' <span class="pill blue" style="font-size:10px">system</span>':'')+'</td>'
           +'<td class="trunc" title="'+esc(sys?'Produced by the app':(a.assigned_to||''))+'">'+esc(sys?'App':shortEmail(a.assigned_to)||'—')+'</td>'
           +'<td>'+(sys?checksPill(u):((a.files&&a.files.length)?(a.files.length+' file'+(a.files.length>1?'s':'')):'<span class="muted">—</span>'))+'</td>'
@@ -1644,12 +1675,15 @@
         +'<td><div class="actions"><button class="btn '+(canAct?'primary ':'')+'sm icon-btn subtask-open" data-aid="'+esc(a.assignment_id)+'" title="'+(canAct?(stage==='audit'?'Audit':'Review'):'View')+'">⋯</button></div></td>'
         +'</tr>';
     }).join('');
-    var facts = flowC
+    var facts = cogs
+      ? fact('Value entry','<span class="mono">'+esc(line.document_no)+'</span>')+fact('Company', esc(line.company||'—'))
+        +fact('Subpopulation', esc(line.subpopulation))+fact('Cost amount', fmtNum(line.amount))+fact('Vendor', esc(line.vendor||'—'))+fact('Tasks', String(asgs.length))
+      : flowC
       ? fact('Sales order item','<span class="mono">'+esc(line.document_no)+'</span>')+fact('Company', esc(line.company||'—'))
         +fact('Subpopulation', esc(line.subpopulation))+fact('Unit price', fmtNum(line.amount))+fact('Tasks', String(asgs.length))
       : fact('Sales order item','<span class="mono">'+esc(line.document_no)+'</span>')+fact('Company', esc(line.company||'—'))
         +fact('Subpopulation', esc(line.subpopulation))+fact('Payments', String(asgs.length));
-    var head = flowC ? '<th>Task</th><th>Owner</th><th>Result</th>' : '<th>Payment no.</th><th>Bank</th><th>Amount</th>';
+    var head = cogs ? '<th>Task</th><th>Owner</th><th>Files</th>' : flowC ? '<th>Task</th><th>Owner</th><th>Result</th>' : '<th>Payment no.</th><th>Bank</th><th>Amount</th>';
     $('taskModalBody').innerHTML='<div class="line-head" style="margin-bottom:10px"><span class="grow"></span>'+(stage!=='audit'?histIconBtn(line.line_id):'')+'</div>'
       +'<div class="facts" style="margin-bottom:12px">'+facts+'</div>'
       +'<div style="overflow-x:auto"><table class="req-table"><thead><tr>'+head+(cfg.ai?'<th>AI</th>':'')+'<th>Status</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
@@ -1701,6 +1735,24 @@
     return '<div class="ai-panel" data-verdict="'+esc(v)+'"><div class="ai-head"><span class="pill neutral" style="font-size:10.5px">System check</span>'
       +'<span class="ai-result">'+sysVerdictPill(v)+' <span class="ai-sum">'+esc(a.ai_summary||'')+'</span></span></div>'+ovr+'</div>';
   }
+  // Flow D (COGS): the sampled entry, the purchase behind it and the document this task is about.
+  function cogsFactsHtml(line, a){
+    var d=line.detail||{}, u=a.unit||{}, mono=function(v){ return '<span class="mono">'+esc(v||'—')+'</span>'; };
+    var lines=[d.trace, d.explained ? 'Adjustment: '+d.explained : '', d.other_notes ? 'Other notes on the receipt: '+d.other_notes : '']
+      .filter(Boolean).map(function(x){ return '<div class="muted" style="font-size:12px;margin-top:6px">'+esc(x)+'</div>'; }).join('');
+    return '<div class="facts">'
+      +fact('Value entry', mono(line.document_no))+fact('Company', esc(line.company||'—'))
+      +fact('Posted', esc(d.entry_date||'—'))+fact('Sales document', mono(d.sales_doc))
+      +fact('Type', esc(d.entry_type||'—'))+fact('Cost type', esc(d.cost_type||'—'))
+      +fact('Cost amount', fmtNum(line.amount))+fact('Quantity', esc(d.quantity||'—'))
+      +fact('Item', mono(d.item_no))+(d.item_desc?fact('Description', esc(d.item_desc)):'')
+      +fact('Vendor', esc(u.vendor||line.vendor||'—'))
+      +fact('Purchase receipt', mono(u.receipt_no||d.receipt_no))+fact('PO', mono(u.po||d.purchase_order))
+      +fact('NAV document', u.doc_no ? mono(u.doc_no) : '<span class="muted">'+esc(u.pending?'Not in NAV yet':'—')+'</span>')
+      +fact('Vendor document no.', mono(u.vendor_doc_no))+fact('Document date', esc(u.doc_date||'—'))
+      +(u.item_charge?fact('Charge', esc(u.item_charge))+fact('Per unit', fmtNum(u.unit_amount)):'')
+      +'</div>'+lines;
+  }
   function renderFlowCTask(stage, line, a){
     var cfg=SUBTASK_CFG[stage], u=a.unit||{}, sys=u.kind==='system', d=line.detail||{};
     var canAct=String(a.status).toLowerCase()===cfg.actNeeded;
@@ -1716,17 +1768,21 @@
         : fact('Statement','<span class="mono">'+esc(line.statement_code||'—')+'</span>')+fact('Closing balance', fmtNum(line.closing_balance))
           +fact('Paid at', esc(line.paid_at||'—'))+fact('MPL type', esc(line.mpl_type||'—'))+fact('Seller', esc(line.vendor||'—'))+fact('PO', esc(d.po||'—')))
       +'</div>';
+    var cogs=isCogsSub(line.subpopulation);
+    if(cogs) facts=cogsFactsHtml(line, a);
+    var noDoc = cogs && !a.files.length && u.pending;   // submitted with a comment only: the invoice is not in NAV yet
     var chips=a.files.length
       ? a.files.map(function(f){ return '<button class="chip" data-eid="'+esc(f.evidence_id)+'" data-line="'+esc(a.assignment_id)+'">'+esc(f.file_name)+'</button>'; }).join('')
       : '<span class="muted" style="font-size:12px">no files</span>';
     // Review only: the gate panel (system verdict + override, or the AI check). The auditor
     // sees the checks table and the reviewer's note — never a verdict panel.
     var gated = canAct && stage==='review';
-    var panel = gated ? (sys ? systemPanelHtml(a) : aiPanelHtml({ai_verdict:a.ai_verdict, ai_summary:a.ai_summary})) : '';
+    var panel = gated ? (sys ? systemPanelHtml(a) : aiPanelHtml({ai_verdict:a.ai_verdict, ai_summary:a.ai_summary,
+      ovr_label: noDoc ? 'There is no document on this task. I read the preparer\'s comment and I am telling the auditor why in the note below.' : ''})) : '';
     var prepNote = prepNoteHtml(line, a);
     var noteLine = threadSlot(line, a.assignment_id, a.note);
     var actions = canAct
-      ? panel+'<div class="line-foot"><input class="note-in" placeholder="'+(sys&&stage==='review'?'Note to the auditor (optional)':'Note (required to return)')+'">'
+      ? panel+'<div class="line-foot"><input class="note-in" placeholder="'+(sys&&stage==='review'?'Note to the auditor (optional)':(noDoc&&stage==='review')?'Note to the auditor — why there is no document (required)':'Note (required to return)')+'">'
         +'<button class="btn primary sm subtask-primary" data-aid="'+esc(a.assignment_id)+'"'+(gated?' disabled':'')+'>'+esc(cfg.primaryLabel)+'</button>'
         +((sys&&stage==='review')?'':'<button class="btn sm subtask-return" data-aid="'+esc(a.assignment_id)+'">Return</button>')+'</div>'
       : '<div class="muted" style="font-size:12.5px; margin-top:10px">'+esc(String(a.status).replace(/_/g,' '))+'</div>';
@@ -1735,13 +1791,13 @@
         +(sys?'<span class="pill blue" style="margin-left:8px;font-size:10px">system</span>':'')
         +'<span class="grow"></span>'+statusPill(a.status)+'</div>'
       +'<div class="rev-grid"><div>'+facts+'</div>'
-      +'<div class="preview" id="prev-'+esc(a.assignment_id)+'"><span class="ph">'+(sys?'The reconciliation workbook is attached below.':'Select a document to preview')+'</span></div></div>'
+      +'<div class="preview" id="prev-'+esc(a.assignment_id)+'"><span class="ph">'+(sys?'The reconciliation workbook is attached below.':noDoc?esc('No document on this task — '+cogsPendingText(u.pending)+'.'):'Select a document to preview')+'</span></div></div>'
       +(sys?checksTableHtml(u.checks):'')
       +'<div class="doc-chips" style="margin-top:10px">'+chips+'</div>'
       +prepNote+noteLine+actions+'</div>';
   }
   function renderSubtaskReview(stage, line, a){
-    if(isFlowCSub(line.subpopulation)) return renderFlowCTask(stage, line, a);
+    if(isFlowCSub(line.subpopulation) || isCogsSub(line.subpopulation)) return renderFlowCTask(stage, line, a);
     var cfg=SUBTASK_CFG[stage], u=a.unit||{};
     var canAct=String(a.status).toLowerCase()===cfg.actNeeded;   // task-level: independent of siblings
     var facts='<div class="facts">'
@@ -1798,7 +1854,9 @@
     var card=btn.closest('.line-card'), aid=card.dataset.aid, lineId=curSubtaskLine;
     var noteEl=card.querySelector('.note-in'), note=noteEl?noteEl.value.trim():'';
     if(needNote && !note){ toast('Please add a note explaining what to fix.','warn'); return; }
-    var okMsg = needNote ? 'Payment returned to preparer' : (stage==='audit'?'Payment closed':'Payment reviewed');
+    var ln0=((stageState[stage].detail||{}).lines||[]).filter(function(l){ return String(l.line_id)===String(lineId); })[0];
+    var noun=(ln0 && isCogsSub(ln0.subpopulation)) ? 'Task' : 'Payment';
+    var okMsg = needNote ? noun+' returned to preparer' : (stage==='audit'?noun+' closed':noun+' reviewed');
     var busy  = needNote ? 'Returning' : (stage==='audit'?'Closing':'Submitting');
     var sibs=card.querySelectorAll('.subtask-primary, .subtask-return');
     Array.prototype.forEach.call(sibs, function(b){ b.disabled=true; });
@@ -1886,7 +1944,7 @@
       ? aiVerdictPill(v)+' <span class="ai-sum">'+esc(l.ai_summary||'')+'</span>'
       : '<span class="ai-sum muted">Compares the document(s) with the expected data. Run this before submitting.</span>';
     var ovr = (v && v!=='accept')
-      ? '<label class="ai-ovr-row"><input type="checkbox" class="ai-ovr"> Despite the AI assessment, I confirm this document is aligned with what\'s expected as evidence for this task.</label>'
+      ? '<label class="ai-ovr-row"><input type="checkbox" class="ai-ovr"> '+(l.ovr_label ? esc(l.ovr_label) : 'Despite the AI assessment, I confirm this document is aligned with what\'s expected as evidence for this task.')+'</label>'
       : '';
     return '<div class="ai-panel" data-verdict="'+esc(v)+'">'
       +'<div class="ai-head"><button class="btn sm ai-run" type="button">'+(v?'Re-run AI check':'Run AI check')+'</button>'

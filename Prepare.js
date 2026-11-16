@@ -56,13 +56,18 @@ function listMyAssignments() {
 // Field specs mirror the client's CA_FIELDS (Index.html) so the export's Details
 // column carries exactly what the "My tasks" card shows on screen — keep in sync.
 var CA_JP_EXPORT_ = [['Order', 'order_nr'], ['Amount', 'amount'], ['Payment date', 'jp_created'], ['Gateway', 'jp_gateway'], ['Payment provider', 'jp_provider'], ['Retrieval ref', 'jp_retrieval']];
+var CA_COGS_EXPORT_ = [['Posted', 'entry_date'], ['Sales document', 'sales_doc'], ['Type', 'entry_type'], ['Item', 'item_no'], ['Description', 'item_desc'],
+  ['Cost amount', 'amount'], ['Vendor', 'vendor'], ['Receipt', 'receipt_no'], ['PO', 'po'],
+  ['NAV document', 'doc_no'], ['Vendor document no', 'vendor_doc_no'], ['Document date', 'doc_date'], ['Invoices in NAV', 'invoice_status']];
 var CA_FIELDS_EXPORT_ = {
   'Prepaid - Voucher': [['Order', 'order_nr'], ['Amount', 'amount']],
   'Prepaid - JumiaPay': CA_JP_EXPORT_, 'Postpaid - JumiaPay on delivery': CA_JP_EXPORT_, 'Postpaid - Cash - 3PL via JPay': CA_JP_EXPORT_,
   'Postpaid - Cash & POS': [['Package no', 'package_number'], ['Collection partner', 'collection_partner'], ['Payment no', 'payment_no'], ['Payment date', 'payment_date'], ['Payment reference', 'payment_ref'], ['Bank account', 'bank_account'], ['Amount', 'amount']],
   'Prepaid - Other methods': [['Order', 'order_nr'], ['Amount', 'amount']],
   // Flow C Retail (the "Sales invoice" task) — same fields as the card.
-  'Retail': [['Package no', 'package_number'], ['BOB item', 'bob_soi'], ['SKU', 'sku'], ['Unit price', 'amount'], ['Delivered', 'delivered_date'], ['Customer', 'inv_customer'], ['Invoice total', 'inv_total']]
+  'Retail': [['Package no', 'package_number'], ['BOB item', 'bob_soi'], ['SKU', 'sku'], ['Unit price', 'amount'], ['Delivered', 'delivered_date'], ['Customer', 'inv_customer'], ['Invoice total', 'inv_total']],
+  // Flow D (COGS by NAV value entry) — same fields as the card.
+  'COGS - Original cost': CA_COGS_EXPORT_, 'COGS - Adjustment': CA_COGS_EXPORT_
 };
 // Value resolves per-payment unit → line detail → the task row, same order as caVal.
 function caValExport_(key, t) {
@@ -204,7 +209,11 @@ function submitAssignment(assignmentId, note) {
     var missing = slots.filter(function (s) { return !s.optional && !have[s.key]; });
     if (missing.length) throw new Error('Upload ' + missing.map(function (s) { return s.label; }).join(', ') + ' before submitting.');
   } else if (!files.length) {
-    throw new Error('Upload at least one evidence file before submitting.');
+    // Flow D: a purchase-invoice task whose invoice NAV does not show yet (`pending` on the
+    // task) may be submitted with a comment alone — the auditor is told the invoice is still
+    // to be received. Everything else needs a file.
+    if (!parseJson_(asg.detail_json).pending) throw new Error('Upload at least one evidence file before submitting.');
+    if (!String(note || '').trim()) throw new Error('No file on this task: add a comment for the reviewer saying why (for example, the invoice has not been received yet), or upload the document.');
   }
 
   // Optional preparer comment: seen by the reviewer only (never the auditor), so the
