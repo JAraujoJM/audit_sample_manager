@@ -94,7 +94,11 @@ task (`Assignments.preparer_note`, set by `submitAssignment(id, note)`) — e.g.
 its justification up front. It reaches the **Reviewer only** (`reviewDetail` sends `preparer_note` for the
 `review` stage only; shown in both line and per-payment review windows); the **Auditor never sees it** — the
 reviewer transcribes/edits/ignores it into their own note-to-auditor. Preparers can also **export their tasks
-to Excel** (`exportMyTasks`, Prepare.js — one-tab xlsx checklist, Export button in the My-tasks toolbar).
+to Excel** (`exportMyTasks`, Prepare.js — one-tab xlsx, Export button in the My-tasks toolbar). Since 16 Nov 2026 it
+carries **everything the card shows, one column per card field** (`myTasksTable_`: fixed columns, then the union of the
+card fields of the task types the preparer actually has, then files uploaded / reviewer note / own comment), so the work can
+be done offline. The field specs `CA_FIELDS_EXPORT_` mirror the client's `CA_FIELDS` label for label — **a field added to a
+card must be added there too**. Cells are text (`@`) except the amount columns (`CA_NUM_EXPORT_`), which stay numbers.
 
 **Comment thread (13 Nov 2026).** `Assignments.notes` / `Sample_Lines.note` keep only the LAST comment (each action
 overwrites it), so an auditor who got a task back could not read why they had returned it. The review and audit windows
