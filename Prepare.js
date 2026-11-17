@@ -271,11 +271,11 @@ function submitAssignment(assignmentId, note) {
     var missing = slots.filter(function (s) { return !s.optional && !have[s.key]; });
     if (missing.length) throw new Error('Upload ' + missing.map(function (s) { return s.label; }).join(', ') + ' before submitting.');
   } else if (!files.length) {
-    // Flow D: a purchase-invoice task whose invoice NAV does not show yet (`pending` on the
-    // task) may be submitted with a comment alone — the auditor is told the invoice is still
-    // to be received. Everything else needs a file.
-    if (!parseJson_(asg.detail_json).pending) throw new Error('Upload at least one evidence file before submitting.');
-    if (!String(note || '').trim()) throw new Error('No file on this task: add a comment for the reviewer saying why (for example, the invoice has not been received yet), or upload the document.');
+    // Every task needs a file. Flow D: a purchase-invoice task whose invoice NAV does not show
+    // yet (`pending` on the task) takes the invoice if the team has it, otherwise the purchase
+    // order (João, 17 Nov 2026 — a comment alone is no longer enough).
+    if (parseJson_(asg.detail_json).pending) throw new Error('Upload the purchase invoice — or the purchase order, if the invoice has not been received yet — before submitting.');
+    throw new Error('Upload at least one evidence file before submitting.');
   }
 
   // Optional preparer comment: seen by the reviewer only (never the auditor), so the

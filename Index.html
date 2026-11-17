@@ -1293,12 +1293,12 @@
       filesBlock = '<div class="files">'+(t.files.map(chipFile).join('') || '<div class="muted" style="font-size:12.5px">No files yet.</div>')+'</div>';
       submitReady = t.files.length>0;
     }
-    // Flow D: a purchase invoice NAV does not show yet can be submitted with a comment and no file.
-    var pendingDoc = !!(t.unit && t.unit.pending), commentOnly = pendingDoc && !t.files.length;
-    if(pendingDoc) submitReady = true;
+    // Flow D: a purchase invoice NAV does not show yet — the task still needs a file (the invoice if
+    // the team has it, otherwise the purchase order); the card says so under the facts.
+    var pendingDoc = !!(t.unit && t.unit.pending);
     var actions = editable
       ? (hasSlots?'':'<label class="btn sm">Add file<input type="file" class="file-input" data-aid="'+esc(t.assignment_id)+'" hidden></label>')
-        +'<button class="btn primary sm submit" data-aid="'+esc(t.assignment_id)+'"'+(commentOnly?' data-neednote="1"':'')+(submitReady?'':' disabled')+'>Submit for review</button>'
+        +'<button class="btn primary sm submit" data-aid="'+esc(t.assignment_id)+'"'+(submitReady?'':' disabled')+'>Submit for review</button>'
       : submitted
         ? '<button class="btn sm withdraw" data-aid="'+esc(t.assignment_id)+'">Withdraw</button>'
         : '<span class="muted" style="font-size:12.5px">Locked · '+esc(s.replace(/_/g,' '))+'</span>';
@@ -1306,7 +1306,7 @@
     // Optional comment to the reviewer (e.g. a known variance + its justification),
     // saved on submit. Only the reviewer sees it — never the auditor.
     var commentBlock = editable
-      ? '<textarea class="prep-note" data-aid="'+esc(t.assignment_id)+'" rows="2" placeholder="'+(commentOnly?'Comment for the reviewer — required to submit without a file (e.g. the invoice has not been received yet)':'Optional comment for the reviewer — e.g. a known variance and why it is expected')+'">'+esc(t.preparer_note||'')+'</textarea>'
+      ? '<textarea class="prep-note" data-aid="'+esc(t.assignment_id)+'" rows="2" placeholder="Optional comment for the reviewer — e.g. a known variance and why it is expected">'+esc(t.preparer_note||'')+'</textarea>'
       : (t.preparer_note ? '<div class="prep-note-view"><b>Your comment:</b> '+esc(t.preparer_note)+'</div>' : '');
     // Flow C Marketplace, Regular MPL seller (proof of payment / VC screenshot): the seller is
     // identified by its RING short code ("CI10929 :: ETS HIRO") and the PO is irrelevant.
@@ -1334,7 +1334,7 @@
     // Flow D: what NAV says about the purchase behind the entry, in plain lines under the facts.
     if(isCogsSub(t.subpopulation)){
       var cd=t.detail||{};
-      facts += [pendingDoc ? cogsPendingText(t.unit.pending)+'. Upload the document if you have it, or submit with a comment saying why there is none.' : '',
+      facts += [pendingDoc ? cogsPendingText(t.unit.pending)+'. Upload the invoice if you have it; otherwise, upload the purchase order.' : '',
                 cd.trace, cd.explained ? 'Adjustment: '+cd.explained : '', cd.other_notes ? 'Other notes on the receipt: '+cd.other_notes : '']
         .filter(Boolean).map(function(x){ return '<div class="muted" style="font-size:12px;margin-top:4px">'+esc(x)+'</div>'; }).join('');
     }
@@ -1391,7 +1391,6 @@
   // Submit carries the preparer's optional comment (read from the card's textarea).
   function submitTask(btn){
     var card=btn.closest('.task-card'), ta=card&&card.querySelector('.prep-note'), note=ta?ta.value.trim():'';
-    if(btn.dataset.neednote && !note){ toast('No file on this task — add a comment for the reviewer, or upload the document.','warn'); if(ta) ta.focus(); return; }
     var orig=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Submitting';
     RUN().withSuccessHandler(function(items){ renderTasks(items); toast('Submitted for review','ok'); })
       .withFailureHandler(function(e){ btn.disabled=false; btn.innerHTML=orig; toast(e.message,'warn'); })

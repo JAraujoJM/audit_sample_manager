@@ -602,54 +602,79 @@ function assessSalesInvoice_(asg, line, ldet, files) {
  * so the vendor check is "the recorded name, without such a suffix, is the issuer or a
  * recognisable part of its name" — never an exact comparison. A number that is absent or
  * different gives "uncertain" (the reviewer decides), never a reject on its own; only a wrong
- * kind of document or a clearly different vendor rejects. A task whose invoice NAV did not show
- * (`pending`) has no recorded number: that check is skipped.
+ * kind of document or a clearly different vendor rejects.
+ * A task whose invoice NAV did not show (`pending`): the preparer uploads the invoice if the team
+ * has it, otherwise the PURCHASE ORDER — so both kinds of document pass check 1, and check 3 is
+ * the purchase order number (the PO's own number, or quoted on the invoice) instead of the
+ * vendor document number, which NAV does not have.
  */
 function assessCogsDocument_(asg, line, ldet, unit, files) {
   var has = function (v) { return v !== undefined && v !== null && String(v).trim() !== ''; };
   var isNote = String(asg.evidence_type || '').trim().toLowerCase() === FLOWD_NOTE.toLowerCase();
   var vendor = String(unit.vendor || line.vendor || '').trim();
   var extNo = String(unit.vendor_doc_no || '').trim();
+  var isPending = !isNote && has(unit.pending);                       // NAV shows no invoice: invoice OR purchase order
+  var poNo = String(unit.po || ldet.purchase_order || '').trim();
   var facts = [
     'Jumia company (the buyer): ' + (line.company || '—'),
     'Recorded vendor (NAV name): ' + (vendor || '(none recorded — skip check 2 and say so)'),
-    'Recorded vendor document number (NAV "External Document No."): ' + (extNo || '(none recorded — skip check 3 and say so)'),
+    isPending ? 'Vendor document number: none — NAV shows no purchase invoice for this purchase yet (' + flowDPendingText_(unit.pending) + ')'
+              : 'Recorded vendor document number (NAV "External Document No."): ' + (extNo || '(none recorded — skip check 3 and say so)'),
     'NAV document number (Jumia\'s own internal number — reference only, it is NOT printed on the vendor\'s document): ' + (unit.doc_no || '—'),
     'NAV posting date (reference only — the document date is usually a few days or weeks earlier): ' + (unit.doc_date || '—'),
-    'Purchase order number (reference only): ' + (unit.po || ldet.purchase_order || '—'),
+    isPending ? 'Recorded purchase order number: ' + (poNo || '(none recorded — skip check 3 and say so)')
+              : 'Purchase order number (reference only): ' + (poNo || '—'),
     'Sampled item (reference only): ' + ([ldet.item_no, ldet.item_desc].filter(Boolean).join(' — ') || '—')
   ];
   if (isNote && has(unit.item_charge)) facts.push('Nature of the note in NAV (item-charge code — PP = price protection, BM = back margin; reference only): ' + unit.item_charge);
   if (isNote && has(unit.doc_amount)) facts.push('Amount of the note assigned to the sampled receipt (reference only — the note usually covers many items): ' + unit.doc_amount);
   var docKind = isNote
     ? 'a CREDIT NOTE or DEBIT NOTE between the vendor and Jumia (a price reduction, price protection, back margin, rebate or similar), issued by either party'
-    : 'the vendor\'s PURCHASE INVOICE (tax invoice / facture) issued to Jumia for goods';
+    : isPending
+      ? 'the vendor\'s PURCHASE INVOICE (tax invoice / facture) issued to Jumia for goods or, when that invoice has not been received ' +
+        'yet, JUMIA\'S PURCHASE ORDER to the vendor — the accounting system shows no invoice for this purchase yet, so either one is valid evidence'
+      : 'the vendor\'s PURCHASE INVOICE (tax invoice / facture) issued to Jumia for goods';
+  var check1 = isPending
+    ? 'an invoice issued by a supplier to Jumia, or a purchase order issued by Jumia to a supplier. A delivery note, goods receipt, ' +
+      'account statement, payment proof, credit note or a screenshot of a system is not. Say in the note which of the two it is.'
+    : (isNote ? 'a credit note or a debit note between the vendor and Jumia' : 'an invoice issued by a supplier to Jumia') +
+      '. A purchase order, delivery note, goods receipt, account statement, payment proof, ' + (isNote ? 'plain invoice' : 'credit note') +
+      ' or a screenshot of a system is not.';
+  var check3 = isPending
+    ? '3) "Purchase order number" — the recorded purchase order number is printed on the document: as the purchase order\'s own number, ' +
+      'or quoted on the invoice. Ignore spaces, dashes and letter case when comparing. The check fails when the number cannot be found; ' +
+      'in the note, quote the order or document number the document does show.\n' +
+      'Dates, the item and the amounts are reference only — never fail the document on them, but say in the summary when the sampled ' +
+      'item can be seen on the document.\n'
+    : '3) "Document number" — the recorded vendor document number is printed on the document as its own ' + (isNote ? 'credit / debit note' : 'invoice') +
+      ' number or reference. Ignore spaces, dashes, slashes, leading zeros and a letter prefix when comparing. The check fails when the number ' +
+      'cannot be found; in the note, quote the document number the document does show.\n' +
+      'Dates, the purchase order, the item and the amounts are reference only — never fail the document on them, but say in the summary ' +
+      'when the purchase order number or the sampled item can be seen on the document.\n';
   var system =
     'You are a meticulous financial-audit evidence reviewer at Jumia. The attached document should be ' + docKind + '. ' +
     'You are given what the accounting system (NAV) recorded for it. Run exactly three checks and report each one in "checks":\n' +
-    '1) "Document type" — the document is ' + (isNote ? 'a credit note or a debit note between the vendor and Jumia' : 'an invoice issued by a supplier to Jumia') +
-    '. A purchase order, delivery note, goods receipt, account statement, payment proof, ' + (isNote ? 'plain invoice' : 'credit note') +
-    ' or a screenshot of a system is not.\n' +
-    '2) "Vendor" — the supplier named on the document is the recorded vendor. The accounting system keeps a short internal name, often ' +
+    '1) "Document type" — the document is ' + check1 + '\n' +
+    '2) "Vendor" — the supplier named on the document' + (isPending ? ' (on a purchase order: the vendor it is addressed to)' : '') +
+    ' is the recorded vendor. The accounting system keeps a short internal name, often ' +
     'with a suffix such as "Retail", "- Retail", "_Retail", "NF" or "ltd", or a trade name instead of the legal name: the check passes when ' +
     'the recorded name, without such a suffix, is the supplier or a recognisable part of its name, allowing for legal form, language, ' +
     'transliteration, letter case, accents and spacing. It fails only when the supplier is clearly a different company.\n' +
-    '3) "Document number" — the recorded vendor document number is printed on the document as its own ' + (isNote ? 'credit / debit note' : 'invoice') +
-    ' number or reference. Ignore spaces, dashes, slashes, leading zeros and a letter prefix when comparing. The check fails when the number ' +
-    'cannot be found; in the note, quote the document number the document does show.\n' +
-    'Dates, the purchase order, the item and the amounts are reference only — never fail the document on them, but say in the summary ' +
-    'when the purchase order number or the sampled item can be seen on the document.\n' +
+    check3 +
     'Verdict: "accept" only when every check that could be run passes. "reject" when it is the wrong kind of document or the supplier is ' +
     'clearly a different company — say which, quoting what the document shows. "uncertain" when the document cannot be read, or when ' +
-    'checks 1 and 2 pass but the recorded document number is not on it.\n' +
-    'In each check\'s note quote the value you read on the document. Summary: one specific sentence (under 240 characters) quoting the ' +
-    'supplier name and the document number read on the document against the recorded ones.';
+    'checks 1 and 2 pass but the recorded ' + (isPending ? 'purchase order' : 'document') + ' number is not on it.\n' +
+    'In each check\'s note quote the value you read on the document. Summary: one specific sentence (under 240 characters) ' +
+    (isPending ? 'that starts with "Purchase order" or "Invoice" (whichever the document is) and quotes the supplier name and the purchase ' +
+                 'order number read on the document against the recorded ones.'
+               : 'quoting the supplier name and the document number read on the document against the recorded ones.');
+  var expected = isPending ? 'Purchase invoice — or the purchase order while the invoice is not in NAV' : asg.evidence_type;
 
   var perDoc = [], worst = 'accept';
   files.forEach(function (e) {
     var d = loadEvidenceBytes_(e);
     if (d.err) { perDoc.push({ file: e.file_name, type: asg.evidence_type, verdict: 'uncertain', summary: d.err }); worst = worseVerdict_(worst, 'uncertain'); return; }
-    var prompt = 'Expected evidence type: "' + asg.evidence_type + '".\n\nRecorded in NAV:\n' + facts.join('\n') +
+    var prompt = 'Expected evidence type: "' + expected + '".\n\nRecorded in NAV:\n' + facts.join('\n') +
       '\n\nAssess the attached document (file name: ' + e.file_name + ').';
     var res;
     try { res = geminiAssess_(system, prompt, { mimeType: d.mime, bytes: d.bytes }); }

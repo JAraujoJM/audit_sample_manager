@@ -310,10 +310,13 @@ invoice and, for an adjustment, the vendor credit / debit note behind it. Module
   (the team's own H1 2026 practice: only the explaining notes were delivered). Subpopulations `COGS - Original cost` /
   `COGS - Adjustment`, both in `PER_TASK_SUBPOPS` (per-task review, like Cash & POS). Line field is `purchase_order`, not
   `po` (`po` is in `LINE_STD_` and never reaches `detail_json`).
-- **No document yet** (João, 16 Nov 2026: nothing is delivered, the auditors are told the invoice is pending, and the task
-  can still be completed if it arrives before closing): a `pending` task may be submitted with a **comment and no file**
-  (`submitAssignment`); its check is `uncertain` with no model call; `reviewerSubmitTask` then **requires the note to the
-  auditor** (the preparer's comment never reaches them). Any other task still needs a file.
+- **No invoice in NAV yet** (`pending` task) — **a file is mandatory** (João, 17 Nov 2026, replacing the 16 Nov "comment and
+  no file" rule): the preparer uploads the invoice if the team has it, **otherwise the purchase order**; the card says so
+  (`renderTaskCard`) and `submitAssignment` refuses a pending task without a file. The AI check (`assessCogsDocument_`,
+  `isPending`) then accepts **an invoice or a Jumia purchase order**, and its third check is the **purchase order number**
+  (`unit.po`) instead of the vendor document number NAV does not have. Left in place for tasks submitted under the old rule:
+  no files → `uncertain` with no model call, and `reviewerSubmitTask` requires a note to the auditor when a pending task has
+  no evidence (the preparer's comment never reaches them).
 - **AI check** = its own prompt (`assessCogsDocument_`, Review.js, routed from `assessAssignmentCore_`): document type, vendor
   (NAV names carry suffixes like "Retail" / "NF" — "recorded name is part of the issuer's name", never exact), vendor
   document number; a missing number is `uncertain`, only a wrong document type or vendor rejects.
