@@ -1248,26 +1248,37 @@
       .withFailureHandler(function(e){ $('taskList').innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
       .listMyAssignments();
   }
-  var myTasks=[], myPendingOnly=true;
+  var myTasks=[], myPendingOnly=true, myCompany='all';
   var ACTION_STATUSES=['pending','assigned','in_progress'];   // preparer still has something to do
   function filterMyTasks_(all){
-    return myPendingOnly ? all.filter(function(t){ return ACTION_STATUSES.indexOf(String(t.status).toLowerCase())!==-1; }) : all;
+    return all.filter(function(t){
+      return (!myPendingOnly || ACTION_STATUSES.indexOf(String(t.status).toLowerCase())!==-1)
+          && (myCompany==='all' || t.company===myCompany);
+    });
   }
-  function taskFilterBar_(all){
+  // Company filter (same control as the Assign view): offered only when the preparer's tasks
+  // span more than one company; the choice is kept while the page stays open.
+  function myCompanies_(all){ return uniq_(all.map(function(t){ return t.company; })).sort(); }
+  function taskFilterBar_(cos){
     return '<div class="row" style="margin-bottom:12px; gap:0; align-items:center">'
       +'<label class="switch"><input type="checkbox" id="myPendingTog"'+(myPendingOnly?' checked':'')+'><span class="sw-track"><span class="sw-knob"></span></span></label>'
       +'<span class="sw-label">Pending my action</span>'
+      +(cos.length>1 ? '<select id="myCompanySel" style="width:auto; min-width:150px; max-width:200px; margin-left:18px"><option value="all">All companies</option>'
+          +cos.map(function(c){ return '<option value="'+esc(c)+'"'+(myCompany===c?' selected':'')+'>'+esc(c)+'</option>'; }).join('')+'</select>' : '')
       +'<button class="btn sm" id="myExportBtn" style="margin-left:auto" title="Download all your tasks as an Excel checklist">Export</button></div>';
   }
   function renderTasks(items){
     if(items){ myTasks=items; memoKeep('tasks', items); }
     var all=myTasks;
     if(!all.length){ $('taskList').innerHTML='<div class="empty">No tasks assigned to you yet.</div>'; return; }
+    var cos=myCompanies_(all);
+    if(myCompany!=='all' && cos.indexOf(myCompany)===-1) myCompany='all';   // that company's tasks are gone
     var shown=filterMyTasks_(all);
+    var forCo=myCompany!=='all' ? ' for '+esc(myCompany) : '';
     var body=shown.length
       ? '<div class="card">'+shown.map(renderTaskCard).join('')+'</div>'
-      : '<div class="card"><div class="empty">'+(myPendingOnly?'No tasks pending your action. Switch off the toggle to see all your tasks.':'No tasks.')+'</div></div>';
-    $('taskList').innerHTML=taskFilterBar_(all)+body;
+      : '<div class="card"><div class="empty">'+(myPendingOnly?'No tasks pending your action'+forCo+'. Switch off the toggle to see all your tasks'+forCo+'.':'No tasks'+forCo+'.')+'</div></div>';
+    $('taskList').innerHTML=taskFilterBar_(cos)+body;
     wireTasks();
   }
   function renderTaskCard(t){
@@ -1355,6 +1366,7 @@
   function wireTasks(){
     var L=$('taskList');
     var tog=$('myPendingTog'); if(tog) tog.addEventListener('change', function(){ myPendingOnly=tog.checked; renderTasks(); });
+    var cs=$('myCompanySel'); if(cs) cs.addEventListener('change', function(){ myCompany=cs.value; renderTasks(); });
     Array.prototype.forEach.call(L.querySelectorAll('.file-input'), function(inp){ inp.addEventListener('change', function(){ handleUpload(inp); }); });
     Array.prototype.forEach.call(L.querySelectorAll('.submit'),     function(b){ b.addEventListener('click', function(){ submitTask(b); }); });
     var xb=$('myExportBtn'); if(xb) xb.addEventListener('click', function(){ exportMyTasks_(xb); });
