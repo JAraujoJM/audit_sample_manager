@@ -2,9 +2,11 @@
  * Review — server API for the Reviewer and Auditor stages.
  * --------------------------------------------------------
  * Once every preparer has submitted a line's evidence (line status 'submitted'),
- * the Reviewer submits it to the Auditor; the Auditor then closes it or returns
- * it for rework. Returning reopens the line's assignments so preparers can fix
- * and resubmit.
+ * the Reviewer submits it to the Auditor; the Auditor then closes it or returns it.
+ * An auditor's return goes back to the REVIEWER (23 Nov 2026): most returns are
+ * clarifications the reviewer answers alone, so the task lands on the reviewer's desk
+ * with its files and checks intact, and the reviewer either answers it (a note is then
+ * mandatory) or sends it on to the preparer with the usual reviewer return.
  *
  * SoD: Reviewer submits, Auditor returns/closes — a user holds one role, so the
  * two can't be the same person. Administrator may act as an override.
@@ -18,6 +20,40 @@ var STAGE_STATUS = { review: 'pending_review', audit: 'pending_audit' };
 
 function stageRoles_(stage) {
   return stage === 'audit' ? [ROLES.AUDITOR, ROLES.ADMIN] : [ROLES.REVIEWER, ROLES.ADMIN];
+}
+
+/* ---------- auditor <-> reviewer rules (23 Nov 2026) ---------- */
+/** The stored note of a task / sample the auditor sent back ('Returned by auditor: …'). */
+function isAuditorReturn_(note) { return String(note || '').indexOf('Returned by auditor:') === 0; }
+
+/** Is this task on the reviewer's desk because of an auditor's return? Per-task flows keep the
+ *  auditor's note on the task; whole-sample flows (Flow A, Voucher, JumiaPay) on the sample. */
+function returnedByAuditor_(asg, line) {
+  if (String(asg.status).toLowerCase() !== 'submitted') return false;
+  if (isAuditorReturn_(asg.notes)) return true;
+  return !String(asg.notes || '').trim() && !!line &&
+         String(line.status).toLowerCase() === 'pending_review' && isAuditorReturn_(line.note);
+}
+
+/**
+ * May the AUDITOR see this task's evidence? Only once the reviewer has approved it: the task is
+ * reviewed (or already accepted). Whole-sample flows are approved as a SAMPLE, so a task still
+ * 'submitted' on a sample that is with the auditor or closed counts too (optional evidence handed
+ * in after the review; rows older than the 'reviewed' status). The same rule decides what the
+ * audit view receives, which file an auditor can open and what the audit export carries.
+ */
+function auditorSeesTask_(line, asg) {
+  var st = String(asg.status).toLowerCase();
+  if (st === 'reviewed' || st === 'accepted') return true;
+  return st === 'submitted' && !isPerTaskSub_(line.subpopulation) &&
+         ['pending_audit', 'closed'].indexOf(String(line.status).toLowerCase()) !== -1;
+}
+
+/** The stored note as the AUDITOR may read it: the auditor <-> reviewer channel only — never a
+ *  reviewer's return to the preparer (the comment thread applies the same cut). */
+function auditorNote_(note) {
+  var n = String(note || '');
+  return /^(Reviewer:|Auditor:|Returned by auditor:|Closed:)/.test(n) ? n : '';
 }
 
 /* ---------- read ---------- */
@@ -86,18 +122,28 @@ function reviewDetail(requestId, stage) {
   var lines = t.Sample_Lines
     .filter(function (l) { return String(l.request_id) === String(requestId); })
     .map(function (l) {
+      var isAudit = stage === 'audit';
       return {
         line_id: l.line_id, document_no: l.document_no, company: l.company, vendor: l.vendor,
         mpl_type: l.mpl_type, paid_status: l.paid_status, statement_code: l.statement_code,
         amount: l.amount, closing_balance: l.closing_balance, paid_at: toDateStr_(l.paid_at, tz),
-        status: l.status, note: l.note || '',
+        status: l.status, note: isAudit ? auditorNote_(l.note) : (l.note || ''),
+        // Review: the sample came back from the auditor (whole-sample flows) — a note is required to re-send it.
+        from_auditor: !isAudit && String(l.status).toLowerCase() === 'pending_review' && isAuditorReturn_(l.note),
         subpopulation: l.subpopulation || '', detail: parseJson_(l.detail_json),
         ai_verdict: noAi ? '' : (l.ai_verdict || ''), ai_summary: noAi ? '' : (l.ai_summary || ''), ai_checked_at: noAi ? '' : (l.ai_checked_at || ''),
         assignments: (asgByLine[l.line_id] || []).map(function (a) {
           var slts = parseJson_(a.slots_json); if (!Array.isArray(slts)) slts = [];
+          // The auditor gets a task's evidence only once the reviewer has approved it — the files
+          // (and an app reconciliation's checks) stay on the server until then.
+          var held = isAudit && !auditorSeesTask_(l, a);
+          var unit = parseJson_(a.detail_json), files = evByAsg[a.assignment_id] || [];
+          if (held && unit.kind === 'system') unit = { kind: 'system' };
           return { assignment_id: a.assignment_id, evidence_type: a.evidence_type, assigned_to: a.assigned_to, status: a.status,
-                   optional: isOptional_(a.optional), unit: parseJson_(a.detail_json), slots: slts, files: evByAsg[a.assignment_id] || [],
-                   note: a.notes || '', ai_verdict: noAi ? '' : (a.ai_verdict || ''), ai_summary: noAi ? '' : (a.ai_summary || ''),
+                   optional: isOptional_(a.optional), unit: unit, slots: slts, files: held ? [] : files,
+                   files_hidden: held && files.length > 0,
+                   from_auditor: !isAudit && returnedByAuditor_(a, l),
+                   note: isAudit ? auditorNote_(a.notes) : (a.notes || ''), ai_verdict: noAi ? '' : (a.ai_verdict || ''), ai_summary: noAi ? '' : (a.ai_summary || ''),
                    // The preparer's comment is for the reviewer only — the auditor never sees it
                    // (the reviewer transcribes what's relevant into their own note to the auditor).
                    preparer_note: (stage === 'review') ? (a.preparer_note || '') : '' };
@@ -109,8 +155,8 @@ function reviewDetail(requestId, stage) {
 
 /**
  * Stream one evidence file to the client as a data URL (app-mediated — the file
- * is never shared on Drive). Reviewer/Auditor/Admin may fetch any; a Preparer
- * only their own uploads.
+ * is never shared on Drive). Reviewer/Admin may fetch any; a Preparer only their
+ * own uploads; an Auditor only the files of a task the reviewer has approved.
  */
 function getEvidenceFile(evidenceId) {
   var me = requireRole_([ROLES.REVIEWER, ROLES.AUDITOR, ROLES.ADMIN, ROLES.PREPARER]);
@@ -118,6 +164,14 @@ function getEvidenceFile(evidenceId) {
   if (!ev) throw new Error('File not found.');
   if (me.role === ROLES.PREPARER && String(ev.uploaded_by).toLowerCase() !== me.email.toLowerCase()) {
     throw new Error('That file is not yours.');
+  }
+  if (me.role === ROLES.AUDITOR) {
+    var at = readTabsCached_(['Assignments', 'Sample_Lines']);
+    var easg = at.Assignments.filter(function (a) { return String(a.assignment_id) === String(ev.assignment_id); })[0];
+    var eline = easg && at.Sample_Lines.filter(function (l) { return String(l.line_id) === String(easg.line_id); })[0];
+    if (!easg || !eline || !auditorSeesTask_(eline, easg)) {
+      throw new Error('This file is not available yet: its task has not been approved by the reviewer.');
+    }
   }
   var blob = DriveApp.getFileById(ev.file_id).getBlob();
   var bytes = blob.getBytes();
@@ -784,12 +838,14 @@ function reviewerSubmit(lineId, override, note) {
   if (verdict !== 'accept' && !override) {
     throw new Error('The AI flagged this evidence (' + verdict + '). Tick the confirmation to proceed anyway.');
   }
+  note = String(note || '').trim();
+  // A sample the auditor sent back goes on with the reviewer's answer — never silently.
+  if (!note && isAuditorReturn_(line.note)) throw new Error('The auditor returned this sample: add a note answering them before you send it back.');
   getAssignments(lineId).forEach(function (a) {
     if (String(a.status).toLowerCase() === 'submitted') {
       updateRowById_(dataSs_(), 'Assignments', 'assignment_id', a.assignment_id, { status: 'reviewed' });
     }
   });
-  note = String(note || '').trim();
   // Keep the reviewer's comment on the sample so the auditor sees it, and in the trail.
   updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'pending_audit', note: note ? ('Reviewer: ' + note) : '' });
   logActivity('REVIEW_SUBMIT', 'line', lineId,
@@ -814,6 +870,8 @@ function reviewerSubmitTask(assignmentId, override, note) {
   if (verdict !== 'accept' && !override) throw new Error('The AI flagged this payment (' + verdict + '). Tick the confirmation to proceed anyway.');
 
   note = String(note || '').trim();
+  // A task the auditor sent back goes on with the reviewer's answer — never silently.
+  if (!note && isAuditorReturn_(asg.notes)) throw new Error('The auditor returned this task: add a note answering them before you send it back.');
   // Flow D: a task sent on with NO document (invoice not in NAV yet) must carry the reviewer's
   // note — the preparer's comment never reaches the auditor, so this note is how they are told.
   if (!note && parseJson_(asg.detail_json).pending &&
@@ -857,7 +915,7 @@ function auditorCloseTask(assignmentId, note) {
   return reviewDetail(asg.request_id, 'audit');
 }
 
-/** Auditor returns ONE payment to the preparer — only that task; siblings are untouched. */
+/** Auditor returns ONE task — to the REVIEWER; only that task, siblings are untouched. */
 function auditorReturnTask(assignmentId, note) {
   requireRole_([ROLES.AUDITOR, ROLES.ADMIN]);
   if (!String(note || '').trim()) throw new Error('Please add a note explaining what to fix.');
@@ -865,12 +923,10 @@ function auditorReturnTask(assignmentId, note) {
   if (!asg) throw new Error('Task not found.');
   if (String(asg.status).toLowerCase() !== 'reviewed') throw new Error('Only a reviewed task can be returned (now: ' + asg.status + ').');
 
-  // An app-produced reconciliation has no preparer: the auditor's return sends it back to
-  // the REVIEWER (status submitted again, checks kept); anything else goes back to in_progress.
-  var patch = parseJson_(asg.detail_json).kind === 'system'
-    ? { status: 'submitted', notes: 'Returned by auditor: ' + note }
-    : { status: 'in_progress', submitted_at: '', ai_verdict: '', ai_summary: '', ai_checked_at: '', notes: 'Returned by auditor: ' + note };
-  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, patch);
+  // Every return lands on the REVIEWER's desk (23 Nov 2026; app reconciliations always did):
+  // status 'submitted' again with the files, the AI result and the preparer's comment untouched.
+  // The reviewer answers it (note required) or returns it to the preparer themselves.
+  updateRowById_(dataSs_(), 'Assignments', 'assignment_id', assignmentId, { status: 'submitted', notes: 'Returned by auditor: ' + note });
   updateLineAssignmentRollup_(asg.line_id);
   logActivity('AUDIT_RETURN_TASK', 'assignment', assignmentId, note);
   return reviewDetail(asg.request_id, 'audit');
@@ -906,8 +962,14 @@ function auditorReturn(lineId, note) {
   requireRole_([ROLES.AUDITOR, ROLES.ADMIN]);
   if (!String(note || '').trim()) throw new Error('Please add a note explaining what to fix.');
   var line = requireLineStatus_(lineId, 'pending_audit');
-  reopenLineAssignments_(lineId);
-  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'in_progress', note: 'Returned by auditor: ' + note });
+  // Back to the REVIEWER (23 Nov 2026), not to the preparers: the tasks the reviewer had approved
+  // are 'submitted' again and the sample is pending review, files and AI verdict untouched.
+  getAssignments(lineId).forEach(function (a) {
+    if (['reviewed', 'accepted'].indexOf(String(a.status).toLowerCase()) !== -1) {
+      updateRowById_(dataSs_(), 'Assignments', 'assignment_id', a.assignment_id, { status: 'submitted' });
+    }
+  });
+  updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'pending_review', note: 'Returned by auditor: ' + note });
   logActivity('AUDIT_RETURN', 'line', lineId, note);
   return reviewDetail(line.request_id, 'audit');
 }
@@ -1009,6 +1071,7 @@ function auditExport(requestId) {
     var H3 = ['Sample (SOI)', 'Task / evidence', 'Payment no', 'Slot', 'File name', 'Uploaded by', 'Uploaded at', 'Path in export'];
     var R3 = [H3];
     var evFiles = [];   // {fileId, soi, task, fileName} — copied into the Drive folder later
+    var notReady = 0;   // tasks whose files stay out: not approved by the reviewer yet
     lines.forEach(function (l) {
       var det = parseJson_(l.detail_json);
       var la = asg.filter(function (a) { return String(a.line_id) === String(l.line_id); });
@@ -1016,6 +1079,8 @@ function auditExport(requestId) {
       la.forEach(function (a) {
         var u = parseJson_(a.detail_json);
         var files = evd.filter(function (e) { return String(e.assignment_id) === String(a.assignment_id); });
+        // Only evidence the reviewer has approved leaves the app — whoever runs the export.
+        if (files.length && !auditorSeesTask_(l, a)) { notReady++; files = []; }
         var taskLabel = taskLabel_(a, u);
         R1.push([sampleLink(l), l.document_no, l.company, l.subpopulation, l.status, a.evidence_type,
           u.payment_no || '', (u.amount != null && u.amount !== '' ? u.amount : (l.amount || '')),
@@ -1239,6 +1304,7 @@ function auditExport(requestId) {
 
     logActivity('AUDIT_EXPORT', 'request', requestId,
       placed + ' file(s), ~' + Math.round(placedBytes / 1048576) + ' MB' + (missing ? (', ' + missing + ' missing') : '') + ', shared: ' + (shared.join(', ') || 'none')
+      + (notReady ? '; evidence of ' + notReady + ' task(s) not approved by the reviewer left out' : '')
       + '; IPE: ' + ext.length + ' extraction(s), ' + ext.filter(function (x) { return String(x.integrity).indexOf('Pass') === 0; }).length + ' pass, '
       + gwLog.lines.length + ' log line(s)' + (gwLog.error ? ' (log error: ' + gwLog.error + ')' : '') + ', sample list ' + sample.sourceShort
       + (function () { var g = ext.filter(function (x) { return String(x.source).indexOf('gateway original') === 0; }); return g.length ? '; gateway originals used: ' + g.map(function (x) { return x.tag; }).join(', ') : ''; })()
@@ -1246,7 +1312,7 @@ function auditExport(requestId) {
     return {
       folderUrl: outFolder.getUrl(), folderName: outFolder.getName(),
       fileCount: placed, missing: missing, missingFiles: missingFiles, totalMb: Math.round(placedBytes / 1048576 * 10) / 10,
-      shared: shared, download: download,
+      shared: shared, download: download, notReady: notReady,
       ipe: { extractions: ext.length, pass: ext.filter(function (x) { return String(x.integrity).indexOf('Pass') === 0; }).length,
              logLines: gwLog.lines.length, logError: gwLog.error || '', sampleList: sample.sourceShort }
     };

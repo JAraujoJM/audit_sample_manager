@@ -42,7 +42,10 @@ function listMyAssignments() {
         subpopulation: line.subpopulation || '', detail: parseJson_(line.detail_json), unit: parseJson_(a.detail_json),
         evidence_type: a.evidence_type, optional: isOptional_(a.optional), slots: slots,
         status: a.status, due_date: toDateStr_(req.due_date, tz),
-        note: a.notes || line.note || '', preparer_note: a.preparer_note || '', files: files
+        note: a.notes || line.note || '', preparer_note: a.preparer_note || '', files: files,
+        // The auditor sent it back and it is on the reviewer's desk: nothing for the preparer to do
+        // (and nothing to withdraw) unless the reviewer returns it to them.
+        with_reviewer: returnedByAuditor_(a, line)
       };
     })
     .sort(function (x, y) { return String(x.due_date || '9999').localeCompare(String(y.due_date || '9999')); });
@@ -313,6 +316,7 @@ function withdrawAssignment(assignmentId) {
   assertOwner_(asg, me);
   if (parseJson_(asg.detail_json).kind === 'system') throw new Error('A system reconciliation cannot be withdrawn.');
   if (String(asg.status).toLowerCase() !== 'submitted') throw new Error('Only a submitted task can be withdrawn.');
+  if (returnedByAuditor_(asg, findLine_(asg.line_id))) throw new Error('The auditor returned this task and it is with the reviewer now. The reviewer will send it back to you if something is needed from you.');
 
   updateRowById_(ds, 'Assignments', 'assignment_id', assignmentId, { status: 'in_progress', submitted_at: '' });
   updateLineAssignmentRollup_(asg.line_id);

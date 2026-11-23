@@ -84,6 +84,29 @@ Review/Audit request table "Pending" column + "Pending my action" filter are **t
 3 tasks where only 1 is on your desk counts that 1). Do NOT reintroduce a rule that requires all of a
 sample's tasks to be on-desk before acting — that was tried and reverted.
 
+**Auditor return → REVIEWER (23 Nov 2026, João).** Most auditor returns are clarifications the reviewer answers alone, so a
+return no longer goes to the preparer. `auditorReturnTask` (per-task flows): the task is `submitted` again with
+`notes = 'Returned by auditor: …'`; files, AI result, preparer comment and `submitted_at` untouched. `auditorReturn`
+(whole-sample flows — Flow A, Voucher, JumiaPay): its reviewed tasks are `submitted` again and the sample goes to
+`pending_review` with the note on `Sample_Lines.note`, AI verdict kept. The reviewer then either **answers** — a note is
+mandatory (`reviewerSubmit` / `reviewerSubmitTask` refuse an empty note while the stored note is an auditor return;
+`isAuditorReturn_`) — or **passes it on** with the usual reviewer return (then it is a normal preparer task and a normal
+review: the stored note is the reviewer's, so the next submit needs no note). While it is on the reviewer's desk the
+preparer cannot withdraw it (`returnedByAuditor_`, `with_reviewer` on the My-tasks card). `reviewDetail(…,'review')` sends
+`from_auditor` (task and sample) → amber "Returned by auditor" tag in the lists and windows. Nothing was migrated: tasks
+an auditor returned before this change stay with their preparer; when resubmitted they still carry the auditor's note, so
+the reviewer's answer is required for them too. The note prefixes are load-bearing (`isAuditorReturn_`, `auditorNote_`,
+client `NOTE_PREFIX`) — do not reword them.
+
+**The auditor gets evidence only after the reviewer's approval (23 Nov 2026).** One rule, `auditorSeesTask_(line, asg)`:
+task `reviewed` / `accepted`; for whole-sample flows also a task still `submitted` on a sample that is `pending_audit` /
+`closed` (older rows, optional evidence handed in later). It is applied **server-side in three places**: `reviewDetail(…,'audit')`
+(no `files`, `files_hidden` flag, an unapproved app reconciliation is cut to `{kind:'system'}` — no checks), `getEvidenceFile`
+(an Auditor is refused by evidence id) and `auditExport` (**whoever runs it, admins included**; held tasks stay listed with
+their status, `notReady` in the result and in the `AUDIT_EXPORT` log). The audit payload's `note` also goes through
+`auditorNote_` (auditor ↔ reviewer prefixes only — a reviewer's return to the preparer used to show under the thread).
+Any new way for an auditor to reach a file must go through `auditorSeesTask_`.
+
 **AI visibility segregation:** the reviewer sees the AI verdict/summary and may override it with a comment;
 the **auditor never sees any AI output** — only reviewer comments addressed to them (stored on
 `Assignments.notes`, surfaced via `reviewDetail`). The reviewer's override comment is saved on submit and

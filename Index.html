@@ -1315,7 +1315,8 @@
       ? (hasSlots?'':'<label class="btn sm">Add file<input type="file" class="file-input" data-aid="'+esc(t.assignment_id)+'" hidden></label>')
         +'<button class="btn primary sm submit" data-aid="'+esc(t.assignment_id)+'"'+(submitReady?'':' disabled')+'>Submit for review</button>'
       : submitted
-        ? '<button class="btn sm withdraw" data-aid="'+esc(t.assignment_id)+'">Withdraw</button>'
+        ? (t.with_reviewer ? '<span class="muted" style="font-size:12.5px">With the reviewer · returned by the auditor</span>'
+                           : '<button class="btn sm withdraw" data-aid="'+esc(t.assignment_id)+'">Withdraw</button>')
         : '<span class="muted" style="font-size:12.5px">Locked · '+esc(s.replace(/_/g,' '))+'</span>';
     var note = t.note ? '<div class="task-note">'+esc(t.note)+'</div>' : '';
     // Optional comment to the reviewer (e.g. a known variance + its justification),
@@ -1470,6 +1471,12 @@
       .withFailureHandler(function(e){ $(c.tasksWrap).innerHTML='<div class="empty">'+esc(e.message)+'</div>'; })
       .reviewDetail(id, stage);
   }
+  // Review stage: a sample (or one of its tasks) the auditor sent back — it carries a tag, and the
+  // reviewer's note is required to send it to the auditor again (the server enforces it).
+  var BACK_PILL=' <span class="pill amber" style="margin-left:6px" title="The auditor sent it back: answer with a note, or return it to the preparer">Returned by auditor</span>';
+  var BACK_NOTE='Note to the auditor — your answer to their return (required)';
+  var HELD_TEXT='Not available yet — the evidence shows here once the reviewer has approved it';
+  function isFromAuditor(l){ return !!l.from_auditor || (l.assignments||[]).some(function(a){ return !!a.from_auditor; }); }
   function renderStageTasks(stage){
     var c=STAGE_CFG[stage], d=stageState[stage].detail; if(!d) return;
     var actionable=d.actionable, pendingOnly=stageState[stage].pendingOnly;
@@ -1505,6 +1512,7 @@
     } else {
       var rows=shown.map(function(l){
         var canAct=hasAct(l);
+        var st=statusPill(l.status)+(isFromAuditor(l)?BACK_PILL:'');
         var openTd='<td><div class="actions"><button class="btn '+(canAct?'primary ':'')+'sm icon-btn task-open" data-line="'+esc(l.line_id)+'" title="'+(canAct?'Review / decide':'View')+'">⋯</button></div></td>';
         if(isB){
           var ts=(l.assignments||[]), sub=ts.filter(function(a){ return DONE.indexOf(String(a.status).toLowerCase())!==-1; }).length, pend=ts.length-sub;
@@ -1514,14 +1522,14 @@
             +'<td>'+(l.subpopulation?'<span class="pill neutral">'+esc(l.subpopulation)+'</span>':'—')+'</td>'
             +'<td>'+sub+'</td>'
             +'<td>'+pend+'</td>'
-            +'<td>'+statusPill(l.status)+'</td>'+openTd+'</tr>';
+            +'<td>'+st+'</td>'+openTd+'</tr>';
         }
         var adv=/advance/i.test(l.mpl_type);
         return '<tr>'
           +'<td class="mono">'+esc(l.document_no)+'</td>'
           +'<td class="trunc" title="'+esc(l.vendor||'')+'">'+esc(l.vendor||'—')+'</td>'
           +'<td>'+(adv?'<span class="pill blue">MPL advance</span>':'<span class="pill neutral">Regular</span>')+'</td>'
-          +'<td>'+statusPill(l.status)+'</td>'+openTd+'</tr>';
+          +'<td>'+st+'</td>'+openTd+'</tr>';
       }).join('');
       var header = isB
         ? '<th>Document</th><th>Company</th><th>Subpopulation</th><th>Tasks submitted</th><th>Tasks not started</th><th>Status</th><th></th>'
@@ -1556,6 +1564,7 @@
       +' · '+(r.fileCount||0)+' file(s) · '+(r.totalMb||0)+' MB'
       +shared
       +(r.download?'':' · too large for a direct download — open it in Drive')
+      +(r.notReady?' · '+r.notReady+' task(s) not yet approved by the reviewer are not included':'')
       +(r.missing?missingExportBox_(r):'');
     if(r.missing) toast(r.missing+' file(s) could not be copied into the export — see the list under the Export button','warn');
   }
@@ -1676,7 +1685,7 @@
       var lead = cogs
         ? '<td>'+esc(a.evidence_type||('#'+(idx+1)))+'<div class="muted mono" style="font-size:11.5px">'+esc(u.doc_no||(u.pending?'not in NAV yet':''))+'</div></td>'
           +'<td class="trunc" title="'+esc(a.assigned_to||'')+'">'+esc(shortEmail(a.assigned_to)||'—')+'</td>'
-          +'<td>'+((a.files&&a.files.length)?(a.files.length+' file'+(a.files.length>1?'s':'')):(sent?'<span class="pill neutral">comment only</span>':'<span class="muted">—</span>'))+'</td>'
+          +'<td>'+((a.files&&a.files.length)?(a.files.length+' file'+(a.files.length>1?'s':'')):((sent&&!a.files_hidden)?'<span class="pill neutral">comment only</span>':'<span class="muted">—</span>'))+'</td>'
         : flowC
         ? '<td>'+esc(a.evidence_type||('#'+(idx+1)))+(sys?' <span class="pill blue" style="font-size:10px">system</span>':'')+'</td>'
           +'<td class="trunc" title="'+esc(sys?'Produced by the app':(a.assigned_to||''))+'">'+esc(sys?'App':shortEmail(a.assigned_to)||'—')+'</td>'
@@ -1686,7 +1695,7 @@
           +'<td>'+fmtNum(u.amount)+'</td>';
       return '<tr>'+lead
         +(cfg.ai?('<td>'+(sys?'<span class="muted" title="Deterministic system check — see Result">—</span>':(a.ai_verdict?aiVerdictPill(String(a.ai_verdict).toLowerCase()):'<span class="muted">—</span>'))+'</td>'):'')
-        +'<td>'+statusPill(a.status)+'</td>'
+        +'<td>'+statusPill(a.status)+(a.from_auditor?BACK_PILL:'')+'</td>'
         +'<td><div class="actions"><button class="btn '+(canAct?'primary ':'')+'sm icon-btn subtask-open" data-aid="'+esc(a.assignment_id)+'" title="'+(canAct?(stage==='audit'?'Audit':'Review'):'View')+'">⋯</button></div></td>'
         +'</tr>';
     }).join('');
@@ -1785,10 +1794,12 @@
       +'</div>';
     var cogs=isCogsSub(line.subpopulation);
     if(cogs) facts=cogsFactsHtml(line, a);
-    var noDoc = cogs && !a.files.length && u.pending;   // submitted with a comment only: the invoice is not in NAV yet
+    var held = !!a.files_hidden;                         // audit: the reviewer has not approved it yet
+    var back = stage==='review' && !!a.from_auditor;     // review: the auditor sent it back
+    var noDoc = cogs && !a.files.length && u.pending && !held;   // submitted with a comment only: the invoice is not in NAV yet
     var chips=a.files.length
       ? a.files.map(function(f){ return '<button class="chip" data-eid="'+esc(f.evidence_id)+'" data-line="'+esc(a.assignment_id)+'">'+esc(f.file_name)+'</button>'; }).join('')
-      : '<span class="muted" style="font-size:12px">no files</span>';
+      : '<span class="muted" style="font-size:12px">'+(held?esc(HELD_TEXT):'no files')+'</span>';
     // Review only: the gate panel (system verdict + override, or the AI check). The auditor
     // sees the checks table and the reviewer's note — never a verdict panel.
     var gated = canAct && stage==='review';
@@ -1797,16 +1808,16 @@
     var prepNote = prepNoteHtml(line, a);
     var noteLine = threadSlot(line, a.assignment_id, a.note);
     var actions = canAct
-      ? panel+'<div class="line-foot"><input class="note-in" placeholder="'+(sys&&stage==='review'?'Note to the auditor (optional)':(noDoc&&stage==='review')?'Note to the auditor — why there is no document (required)':'Note (required to return)')+'">'
+      ? panel+'<div class="line-foot"><input class="note-in" placeholder="'+(back?BACK_NOTE:sys&&stage==='review'?'Note to the auditor (optional)':(noDoc&&stage==='review')?'Note to the auditor — why there is no document (required)':'Note (required to return)')+'">'
         +'<button class="btn primary sm subtask-primary" data-aid="'+esc(a.assignment_id)+'"'+(gated?' disabled':'')+'>'+esc(cfg.primaryLabel)+'</button>'
         +((sys&&stage==='review')?'':'<button class="btn sm subtask-return" data-aid="'+esc(a.assignment_id)+'">Return</button>')+'</div>'
       : '<div class="muted" style="font-size:12.5px; margin-top:10px">'+esc(String(a.status).replace(/_/g,' '))+'</div>';
-    return '<div class="line-card" data-aid="'+esc(a.assignment_id)+'" data-doc="'+esc(String(a.evidence_type||'document').toLowerCase())+'" style="border:0;padding:0;margin:0">'
+    return '<div class="line-card" data-aid="'+esc(a.assignment_id)+'"'+(back?' data-back="1"':'')+' data-doc="'+esc(String(a.evidence_type||'document').toLowerCase())+'" style="border:0;padding:0;margin:0">'
       +'<div class="line-head"><button class="btn sm subtask-back">← Tasks</button><span class="doc" style="margin-left:8px">'+esc(a.evidence_type)+'</span>'
         +(sys?'<span class="pill blue" style="margin-left:8px;font-size:10px">system</span>':'')
-        +'<span class="grow"></span>'+statusPill(a.status)+'</div>'
+        +'<span class="grow"></span>'+statusPill(a.status)+(back?BACK_PILL:'')+'</div>'
       +'<div class="rev-grid"><div>'+facts+'</div>'
-      +'<div class="preview" id="prev-'+esc(a.assignment_id)+'"><span class="ph">'+(sys?'The reconciliation workbook is attached below.':noDoc?esc('No document on this task — '+cogsPendingText(u.pending)+'.'):'Select a document to preview')+'</span></div></div>'
+      +'<div class="preview" id="prev-'+esc(a.assignment_id)+'"><span class="ph">'+(held?esc(HELD_TEXT):sys?'The reconciliation workbook is attached below.':noDoc?esc('No document on this task — '+cogsPendingText(u.pending)+'.'):'Select a document to preview')+'</span></div></div>'
       +(sys?checksTableHtml(u.checks):'')
       +'<div class="doc-chips" style="margin-top:10px">'+chips+'</div>'
       +prepNote+noteLine+actions+'</div>';
@@ -1824,25 +1835,27 @@
       +fact('Bank account', esc(u.bank_account||'—'))
       +fact('Amount', fmtNum(u.amount))
       +fact('Packlist no.','<span class="mono">'+esc(u.packlist_no||'—')+'</span>')+'</div>';
+    var held = !!a.files_hidden;                         // audit: the reviewer has not approved it yet
+    var back = stage==='review' && !!a.from_auditor;     // review: the auditor sent it back
     var chips=a.files.length
       ? a.files.map(function(f){ return '<button class="chip" data-eid="'+esc(f.evidence_id)+'" data-line="'+esc(a.assignment_id)+'">'+esc(f.file_name)+'</button>'; }).join('')
-      : '<span class="muted" style="font-size:12px">no files</span>';
+      : '<span class="muted" style="font-size:12px">'+(held?esc(HELD_TEXT):'no files')+'</span>';
     // The AI panel is Review-only — the auditor never sees the AI's comments.
     var aiBlock = (cfg.ai && canAct) ? aiPanelHtml({ai_verdict:a.ai_verdict, ai_summary:a.ai_summary}) : '';
     var noteLine = threadSlot(line, a.assignment_id, a.note);   // last note now, the full thread once it loads
     // Preparer's comment — reviewer-only (server sends it for the review stage only).
     var prepNote = prepNoteHtml(line, a);
     var actions = canAct
-      ? aiBlock+'<div class="line-foot"><input class="note-in" placeholder="Note (required to return)">'
+      ? aiBlock+'<div class="line-foot"><input class="note-in" placeholder="'+(back?BACK_NOTE:'Note (required to return)')+'">'
         +'<button class="btn primary sm subtask-primary" data-aid="'+esc(a.assignment_id)+'"'+(cfg.ai?' disabled':'')+'>'+esc(cfg.primaryLabel)+'</button>'
         +'<button class="btn sm subtask-return" data-aid="'+esc(a.assignment_id)+'">Return</button></div>'
       : aiBlock+'<div class="muted" style="font-size:12.5px; margin-top:10px">'+esc(String(a.status).replace(/_/g,' '))+'</div>';
     actions = prepNote + noteLine + actions;
-    return '<div class="line-card" data-aid="'+esc(a.assignment_id)+'" style="border:0;padding:0;margin:0">'
+    return '<div class="line-card" data-aid="'+esc(a.assignment_id)+'"'+(back?' data-back="1"':'')+' style="border:0;padding:0;margin:0">'
       +'<div class="line-head"><button class="btn sm subtask-back">← Payments</button><span class="doc" style="margin-left:8px">'+esc(u.payment_no||a.evidence_type)+'</span>'
-        +'<span class="grow"></span>'+statusPill(a.status)+'</div>'
+        +'<span class="grow"></span>'+statusPill(a.status)+(back?BACK_PILL:'')+'</div>'
       +'<div class="rev-grid"><div>'+facts+'</div>'
-      +'<div class="preview" id="prev-'+esc(a.assignment_id)+'"><span class="ph">Select a document to preview</span></div></div>'
+      +'<div class="preview" id="prev-'+esc(a.assignment_id)+'"><span class="ph">'+(held?esc(HELD_TEXT):'Select a document to preview')+'</span></div></div>'
       +'<div class="doc-chips" style="margin-top:10px">'+chips+'</div>'
       +actions+'</div>';
   }
@@ -1869,9 +1882,10 @@
     var card=btn.closest('.line-card'), aid=card.dataset.aid, lineId=curSubtaskLine;
     var noteEl=card.querySelector('.note-in'), note=noteEl?noteEl.value.trim():'';
     if(needNote && !note){ toast('Please add a note explaining what to fix.','warn'); return; }
+    if(!needNote && card.dataset.back==='1' && !note){ toast('The auditor returned this task: add a note answering them before you send it back.','warn'); if(noteEl) noteEl.focus(); return; }
     var ln0=((stageState[stage].detail||{}).lines||[]).filter(function(l){ return String(l.line_id)===String(lineId); })[0];
     var noun=(ln0 && isCogsSub(ln0.subpopulation)) ? 'Task' : 'Payment';
-    var okMsg = needNote ? noun+' returned to preparer' : (stage==='audit'?noun+' closed':noun+' reviewed');
+    var okMsg = needNote ? noun+(stage==='audit'?' returned to reviewer':' returned to preparer') : (stage==='audit'?noun+' closed':noun+' reviewed');
     var busy  = needNote ? 'Returning' : (stage==='audit'?'Closing':'Submitting');
     var sibs=card.querySelectorAll('.subtask-primary, .subtask-return');
     Array.prototype.forEach.call(sibs, function(b){ b.disabled=true; });
@@ -1920,17 +1934,18 @@
         var bySlot={}; a.files.forEach(function(f){ (bySlot[f.slot||'']=bySlot[f.slot||'']||[]).push(f); });
         body=a.slots.map(function(sl){
           var fs=bySlot[sl.key]||[];
-          var chips=fs.length?fs.map(chip).join(''):'<span class="muted" style="font-size:12px">no file</span>';
+          var chips=fs.length?fs.map(chip).join(''):'<span class="muted" style="font-size:12px">'+(a.files_hidden?esc(HELD_TEXT):'no file')+'</span>';
           return '<div class="slot-rev"><span class="slot-l">'+esc(sl.label)+(sl.optional?' (optional)':'')+'</span> '+chips+'</div>';
         }).join('');
       } else {
-        body='<div class="doc-chips">'+(a.files.length?a.files.map(chip).join(''):'<span class="muted" style="font-size:12px">no files</span>')+'</div>';
+        body='<div class="doc-chips">'+(a.files.length?a.files.map(chip).join(''):'<span class="muted" style="font-size:12px">'+(a.files_hidden?esc(HELD_TEXT):'no files')+'</span>')+'</div>';
       }
       var prepNote = prepNoteHtml(l, a);
       return '<div class="asg-rev"><div class="et">'+esc(a.evidence_type)+opt+'</div>'
         +'<div class="who">'+esc(a.assigned_to||'unassigned')+'</div>'+uLine+body+prepNote+'</div>';
     }).join('');
     var note = threadSlot(l, '', l.note);   // sample-level window: the thread carries the comments of all its tasks
+    var lineBack = stage==='review' && !!l.from_auditor;   // the auditor sent the sample back
     var actions='';
     if(String(l.status).toLowerCase()===actionable){
       var isReview = stage==='review';
@@ -1938,17 +1953,17 @@
       // verdict isn't "accept", a signed override is required). Audit is unchanged.
       var ai = isReview ? aiPanelHtml(l) : '';
       var primaryDisabled = isReview ? ' disabled' : '';
-      actions=ai+'<div class="line-foot"><input class="note-in" placeholder="Note (required to return)">'
+      actions=ai+'<div class="line-foot"><input class="note-in" placeholder="'+(lineBack?BACK_NOTE:'Note (required to return)')+'">'
         +'<button class="btn primary sm stage-primary" data-id="'+esc(l.line_id)+'"'+primaryDisabled+'>'+esc(STAGE_CFG[stage].primaryLabel)+'</button>'
         +'<button class="btn sm stage-return" data-id="'+esc(l.line_id)+'">Return</button></div>';
     }
-    return '<div class="line-card" data-id="'+esc(l.line_id)+'" style="border:0;padding:0;margin:0">'
+    return '<div class="line-card" data-id="'+esc(l.line_id)+'"'+(lineBack?' data-back="1"':'')+' style="border:0;padding:0;margin:0">'
       +'<div class="line-head"><span class="doc">'+esc(l.document_no)+'</span><span class="ven">'+esc(l.vendor||'')+'</span>'
         // Auditors shouldn't see the interaction history between the other agents.
         +(stage!=='audit' ? histIconBtn(l.line_id) : '')
-        +'<span class="grow"></span>'+statusPill(l.status)+'</div>'
+        +'<span class="grow"></span>'+statusPill(l.status)+(lineBack?BACK_PILL:'')+'</div>'
       +'<div class="rev-grid"><div>'+facts+asgs+note+'</div>'
-      +'<div class="preview" id="prev-'+esc(l.line_id)+'"><span class="ph">Select a document to preview</span></div></div>'
+      +'<div class="preview" id="prev-'+esc(l.line_id)+'"><span class="ph">'+(l.assignments.some(function(a){ return a.files_hidden; }) && !l.assignments.some(function(a){ return a.files.length; }) ? esc(HELD_TEXT) : 'Select a document to preview')+'</span></div></div>'
       +actions+'</div>';
   }
   var AI_VERDICT={ accept:['green','AI: aligned'], reject:['red','AI: not aligned'], uncertain:['amber','AI: uncertain'] };
@@ -2064,7 +2079,8 @@
     var card=btn.closest('.line-card'), id=card.dataset.id;
     var noteEl=card.querySelector('.note-in'), note=noteEl?noteEl.value.trim():'';
     if(needNote && !note){ toast('Please add a note explaining what to fix.','warn'); return; }
-    var okMsg = needNote ? 'Returned to preparer' : (stage==='review'?'Submitted to auditor':'Sample closed');
+    if(!needNote && card.dataset.back==='1' && !note){ toast('The auditor returned this sample: add a note answering them before you send it back.','warn'); if(noteEl) noteEl.focus(); return; }
+    var okMsg = needNote ? (stage==='audit'?'Returned to reviewer':'Returned to preparer') : (stage==='review'?'Submitted to auditor':'Sample closed');
     var busy  = needNote ? 'Returning' : (stage==='review'?'Submitting':'Closing');
     // Disable both action buttons; show the spinner on the one clicked.
     var sibs=card.querySelectorAll('.stage-primary, .stage-return');
