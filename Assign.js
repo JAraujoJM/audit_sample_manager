@@ -177,4 +177,7 @@ function updateLineAssignmentRollup_(lineId) {
   // First time a sample becomes ready for the reviewer, queue the AI pre-check in the
   // background (a time trigger) so it never delays the preparer's submit.
   if (next === 'pending_review' && prev !== 'pending_review') scheduleAiCheck_();
+  // A task changed: a request that has an audit folder gets it refreshed in the background
+  // (AuditFolder.js — does nothing, and costs nothing, while no audit folder exists).
+  noteExportChange_();
 }

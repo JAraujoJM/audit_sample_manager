@@ -150,7 +150,11 @@ function reviewDetail(requestId, stage) {
         })
       };
     });
-  return { request: slimRequest_(req), stage: stage, actionable: STAGE_STATUS[stage], lines: lines };
+  var out = { request: slimRequest_(req), stage: stage, actionable: STAGE_STATUS[stage], lines: lines };
+  // Audit view: the request's audit folder (AuditFolder.js), for the people it is shared with —
+  // its link and whether it is up to date, without clicking Export again.
+  if (stage === 'audit') { try { out.export_folder = afInfoForViewer_(req, me, t); } catch (e) { out.export_folder = null; } }
+  return out;
 }
 
 /**
@@ -850,6 +854,7 @@ function reviewerSubmit(lineId, override, note) {
   updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'pending_audit', note: note ? ('Reviewer: ' + note) : '' });
   logActivity('REVIEW_SUBMIT', 'line', lineId,
     'to auditor (AI ' + verdict + (verdict !== 'accept' ? '; reviewer override' : '') + ')' + (note ? ' — ' + note : ''));
+  noteExportChange_();
   return reviewDetail(line.request_id, 'review');
 }
 
@@ -940,6 +945,7 @@ function reviewerReturn(lineId, note) {
   reopenLineAssignments_(lineId);
   updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'in_progress', note: 'Returned by reviewer: ' + note });
   logActivity('REVIEW_RETURN', 'line', lineId, note);
+  noteExportChange_();
   return reviewDetail(line.request_id, 'review');
 }
 
@@ -955,6 +961,7 @@ function auditorClose(lineId, note) {
   updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'closed', note: note ? ('Closed: ' + note) : '' });
   recomputeRequestStatus_(line.request_id);
   logActivity('AUDIT_CLOSE', 'line', lineId, note || '');
+  noteExportChange_();
   return reviewDetail(line.request_id, 'audit');
 }
 
@@ -971,6 +978,7 @@ function auditorReturn(lineId, note) {
   });
   updateRowById_(dataSs_(), 'Sample_Lines', 'line_id', lineId, { status: 'pending_review', note: 'Returned by auditor: ' + note });
   logActivity('AUDIT_RETURN', 'line', lineId, note);
+  noteExportChange_();
   return reviewDetail(line.request_id, 'audit');
 }
 
@@ -1015,90 +1023,114 @@ function recomputeRequestStatus_(requestId) {
   }
 }
 
-/* ---------- auditor export ----------
- * One ZIP the auditor can drop into their own working papers:
- *   • an Excel workbook — Samples & Tasks (enriched), the IPE (queries + SHA-256 +
- *     checks + procedure), and an Evidence index (which file is where in the zip);
+/* ---------- auditor export: the pieces of the audit package ----------
+ * What the auditor gets, assembled into the request's Drive folder by AuditFolder.js (one folder
+ * per request, kept up to date in the background — the Export button only hands out its link):
+ *   • an Excel workbook — Samples & Tasks (enriched), the IPE (queries + SHA-256 + checks),
+ *     an Evidence index (which file is where), the Sample list, the gateway Execution log,
+ *     the Methodology (flows that reconcile) and an Export status tab;
  *   • Extraction/ — the gateway result CSVs + SOX evidence workbooks (raw data + hashes);
- *   • Evidence/<sample>/<task>/<file> — every collected evidence file, clearly named.
- * The workbook is built in a throwaway Google Sheet, exported to .xlsx, then zipped.
+ *   • Execution log/ and Sample list/ — the gateway log lines + job files, the list as received;
+ *   • Evidence/<sample>/<task>/<file> — the evidence of every task the reviewer has approved;
+ *   • Reconciliation (system)/ — the app's reconciliation workbook (+ its methodology).
+ * The functions below only BUILD those pieces; nothing here writes to Drive except the
+ * throwaway Google Sheet the workbook is exported from.
  */
-function auditExport(requestId) {
-  var me = requireRole_([ROLES.AUDITOR, ROLES.ADMIN]);
-  var ds = dataSs_();
-  var tz = ds.getSpreadsheetTimeZone();
-  var req = findRequest_(requestId);
-  if (!req) throw new Error('Request not found.');
-  var allLines = readObjects_(ds, 'Sample_Lines').filter(function (l) { return String(l.request_id) === String(requestId); });
-  var lines = allLines.filter(function (l) { return String(l.status).toLowerCase() !== 'not_found'; });
-  var asg = readObjects_(ds, 'Assignments').filter(function (a) { return String(a.request_id) === String(requestId); });
-  var evd = readObjects_(ds, 'Evidence').filter(function (e) { return String(e.request_id) === String(requestId); });
 
-  // IPE inputs, gathered once: every extraction of the request (stored gateway CSV + SOX xlsx,
-  // re-hashed and row-counted now) joined to the gateway's own execution-log line.
+/**
+ * The IPE inputs of a request: every extraction (stored gateway CSV + SOX xlsx, re-hashed and
+ * row-counted now) joined to the gateway's own execution-log line. Heavy (it reads every CSV and
+ * scans the gateway log) and the same for as long as the request's extraction does not change,
+ * so AuditFolder.js computes it once per extraction and keeps it.
+ */
+function exportStaticBundle_(req, flowMod) {
   var ipe = null; if (req.ipe_json) { try { ipe = JSON.parse(req.ipe_json); } catch (e) {} }
-  var flowMod = flowModule_(req.flow_id);
   var ext = exportExtractions_(req, ipe, flowMod);
   var gwLog = gatewayLogLines_(ext.map(function (x) { return x.gatewayId; }));
   ext.forEach(function (x) { x.log = gwLog.byId[x.gatewayId] || null; x.integrity = extractionIntegrity_(x); });
-  var methodRows = (flowMod && typeof flowMod.methodology === 'function')
+  return { ext: ext, gwLog: { lines: gwLog.lines, path: gwLog.path, error: gwLog.error }, builtAt: nowIso_() };
+}
+
+/** The methodology rows of a flow that reconciles (Flow C), or null. */
+function exportMethodology_(flowMod, ext) {
+  return (flowMod && typeof flowMod.methodology === 'function')
     ? flowMod.methodology(ext.map(function (x) { return { tag: x.tag, database: x.database, originalCsv: x.originalCsv, sha256: x.csvShaNow }; }))
     : null;
+}
 
-  // The submitted sample list: the stored paste (requests created since the app keeps it) or,
-  // for older requests, the de-duplicated keys the app parsed from it, in the order received.
-  var sample = exportSampleList_(req, allLines);
-
-  var zipName = sanitizeName_((req.request_ref || requestId) + ' - audit export');
-  var ss = SpreadsheetApp.create('Audit export ' + (req.request_ref || requestId));
-  try {
-    // Tab 1 (Samples & Tasks) + Tab 3 rows (Evidence index) + evidence blobs, one pass.
-    // Column A links each row to its entry in the 'Sample list' tab.
-    var H1 = ['Sample list #', 'Sample (SOI)', 'Company', 'Subpopulation', 'Sample status', 'Task / evidence', 'Payment no', 'Amount', 'Payment date', 'Bank account', 'Payment reference', 'Order no', 'Gateway / provider', 'Assigned to', 'Task status', 'Evidence files'];
-    // A flow module can add its own columns to this tab (Flow D: the purchase document facts).
-    var XH = (flowMod && flowMod.exportHeaders) || [];
-    var xVals = function (l, det, a, u) {
-      var v = []; try { v = (XH.length && typeof flowMod.exportValues === 'function') ? (flowMod.exportValues(l, det, a, u) || []) : []; } catch (e) { v = []; }
-      v = v.slice(0, XH.length); while (v.length < XH.length) v.push('');
-      return v;
-    };
-    H1 = H1.concat(XH);
-    var R1 = [H1];
-    var sampleLink = function (l) {
-      var n = sample.noByLine[l.line_id];
-      return n ? '=HYPERLINK("#\'Sample list\'!A' + (sample.firstRow + n - 1) + '","' + n + '")' : '';
-    };
-    var H3 = ['Sample (SOI)', 'Task / evidence', 'Payment no', 'Slot', 'File name', 'Uploaded by', 'Uploaded at', 'Path in export'];
-    var R3 = [H3];
-    var evFiles = [];   // {fileId, soi, task, fileName} — copied into the Drive folder later
-    var notReady = 0;   // tasks whose files stay out: not approved by the reviewer yet
-    lines.forEach(function (l) {
-      var det = parseJson_(l.detail_json);
-      var la = asg.filter(function (a) { return String(a.line_id) === String(l.line_id); });
-      if (!la.length) { R1.push([sampleLink(l), l.document_no, l.company, l.subpopulation, l.status, '', '', l.amount, '', '', '', det.order_nr || '', '', '', '', ''].concat(xVals(l, det, null, {}))); return; }
-      la.forEach(function (a) {
-        var u = parseJson_(a.detail_json);
-        var files = evd.filter(function (e) { return String(e.assignment_id) === String(a.assignment_id); });
-        // Only evidence the reviewer has approved leaves the app — whoever runs the export.
-        if (files.length && !auditorSeesTask_(l, a)) { notReady++; files = []; }
-        var taskLabel = taskLabel_(a, u);
-        R1.push([sampleLink(l), l.document_no, l.company, l.subpopulation, l.status, a.evidence_type,
-          u.payment_no || '', (u.amount != null && u.amount !== '' ? u.amount : (l.amount || '')),
-          String(u.payment_date || '').slice(0, 10), u.bank_account || '', u.payment_ref || '', det.order_nr || '',
-          [det.jp_gateway, det.jp_provider].filter(Boolean).join(' / '), a.assigned_to || '', a.status,
-          files.map(function (e) { return e.file_name; }).join(', ')].concat(xVals(l, det, a, u)));
-        // App-produced evidence (Flow C's reconciliation workbook) is ONE file shared by every
-        // system task of the request: it goes once into 'Reconciliation (system)/' at the export
-        // root and every sample's row points to that same path — no per-sample copies.
-        var isSystem = u.kind === 'system';
-        files.forEach(function (e) {
-          var soiDir = sanitizeName_(l.document_no), taskDir = sanitizeName_(taskLabel), fName = sanitizeName_(e.file_name);
-          var path = isSystem ? ('Reconciliation (system)/' + fName) : ('Evidence/' + soiDir + '/' + taskDir + '/' + fName);
-          evFiles.push({ fileId: e.file_id, soi: soiDir, task: taskDir, fileName: fName, system: isSystem, path: path });
-          R3.push([l.document_no, a.evidence_type, u.payment_no || '', e.slot || '', e.file_name, e.uploaded_by || '', toDateStr_(e.uploaded_at, tz), path]);
-        });
+/**
+ * The 'Samples & Tasks' and 'Evidence index' tabs and the evidence files that belong in the
+ * folder — ONLY the evidence of tasks the reviewer has approved (auditorSeesTask_), whoever asks.
+ * A task that is not approved stays listed with its status, without its files.
+ * Returns { H1, R1, H3, R3, copies: [{ key, fileId, dir, fileName, path, system }], notReady, approved, tasks }.
+ * `copies` holds one entry per file to copy: an app reconciliation workbook is ONE file shared by
+ * every system task of the request, so it appears once (key 'sys:<file id>') however many
+ * samples point at it; any other file is keyed on its Evidence row ('ev:<evidence id>').
+ */
+function exportPlan_(lines, asg, evd, sample, flowMod, tz) {
+  // Column A links each row to its entry in the 'Sample list' tab.
+  var H1 = ['Sample list #', 'Sample (SOI)', 'Company', 'Subpopulation', 'Sample status', 'Task / evidence', 'Payment no', 'Amount', 'Payment date', 'Bank account', 'Payment reference', 'Order no', 'Gateway / provider', 'Assigned to', 'Task status', 'Evidence files'];
+  // A flow module can add its own columns to this tab (Flow D: the purchase document facts).
+  var XH = (flowMod && flowMod.exportHeaders) || [];
+  var xVals = function (l, det, a, u) {
+    var v = []; try { v = (XH.length && typeof flowMod.exportValues === 'function') ? (flowMod.exportValues(l, det, a, u) || []) : []; } catch (e) { v = []; }
+    v = v.slice(0, XH.length); while (v.length < XH.length) v.push('');
+    return v;
+  };
+  H1 = H1.concat(XH);
+  var R1 = [H1];
+  var sampleLink = function (l) {
+    var n = sample.noByLine[l.line_id];
+    return n ? '=HYPERLINK("#\'Sample list\'!A' + (sample.firstRow + n - 1) + '","' + n + '")' : '';
+  };
+  var H3 = ['Sample (SOI)', 'Task / evidence', 'Payment no', 'Slot', 'File name', 'Uploaded by', 'Uploaded at', 'Path in export'];
+  var R3 = [H3];
+  var copies = [], seen = {}, notReady = 0, approved = 0, tasks = 0;
+  lines.forEach(function (l) {
+    var det = parseJson_(l.detail_json);
+    var la = asg.filter(function (a) { return String(a.line_id) === String(l.line_id); });
+    if (!la.length) { R1.push([sampleLink(l), l.document_no, l.company, l.subpopulation, l.status, '', '', l.amount, '', '', '', det.order_nr || '', '', '', '', ''].concat(xVals(l, det, null, {}))); return; }
+    la.forEach(function (a) {
+      var u = parseJson_(a.detail_json);
+      var files = evd.filter(function (e) { return String(e.assignment_id) === String(a.assignment_id); });
+      tasks++;
+      // Only evidence the reviewer has approved leaves the app — whoever runs the export.
+      if (auditorSeesTask_(l, a)) approved++;
+      else { if (files.length) notReady++; files = []; }
+      var taskLabel = taskLabel_(a, u);
+      R1.push([sampleLink(l), l.document_no, l.company, l.subpopulation, l.status, a.evidence_type,
+        u.payment_no || '', (u.amount != null && u.amount !== '' ? u.amount : (l.amount || '')),
+        String(u.payment_date || '').slice(0, 10), u.bank_account || '', u.payment_ref || '', det.order_nr || '',
+        [det.jp_gateway, det.jp_provider].filter(Boolean).join(' / '), a.assigned_to || '', a.status,
+        files.map(function (e) { return e.file_name; }).join(', ')].concat(xVals(l, det, a, u)));
+      // App-produced evidence (Flow C's reconciliation workbook) is ONE file shared by every
+      // system task of the request: it goes once into 'Reconciliation (system)/' at the export
+      // root and every sample's row points to that same path — no per-sample copies.
+      var isSystem = u.kind === 'system';
+      files.forEach(function (e) {
+        var soiDir = sanitizeName_(l.document_no), taskDir = sanitizeName_(taskLabel), fName = sanitizeName_(e.file_name);
+        var dir = isSystem ? 'Reconciliation (system)' : ('Evidence/' + soiDir + '/' + taskDir);
+        var key = isSystem ? ('sys:' + e.file_id) : ('ev:' + e.evidence_id);
+        if (!seen[key]) { seen[key] = true; copies.push({ key: key, fileId: e.file_id, dir: dir, fileName: fName, path: dir + '/' + fName, system: isSystem }); }
+        R3.push([l.document_no, a.evidence_type, u.payment_no || '', e.slot || '', e.file_name, e.uploaded_by || '', toDateStr_(e.uploaded_at, tz), dir + '/' + fName]);
       });
     });
+  });
+  return { H1: H1, R1: R1, H3: H3, R3: R3, copies: copies, notReady: notReady, approved: approved, tasks: tasks };
+}
+
+/**
+ * The export workbook as an .xlsx blob named `fileName`: built in a throwaway Google Sheet,
+ * exported, and the sheet trashed. `statusRows` = the two-column 'Export status' tab.
+ */
+function buildExportWorkbook_(req, plan, bundle, sample, methodRows, statusRows, fileName) {
+  var requestId = req.request_id;
+  var ipe = null; if (req.ipe_json) { try { ipe = JSON.parse(req.ipe_json); } catch (e) {} }
+  var ext = bundle.ext, gwLog = bundle.gwLog;
+  var H1 = plan.H1, R1 = plan.R1, H3 = plan.H3, R3 = plan.R3;
+  var ss = SpreadsheetApp.create('Audit export ' + (req.request_ref || requestId));
+  try {
+    // Tab 1: Samples & Tasks.
     var t1 = ss.getSheets()[0].setName('Samples & Tasks');
     t1.getRange(1, 1, R1.length, H1.length).setValues(R1);
     t1.setFrozenRows(1); t1.getRange(1, 1, 1, H1.length).setFontWeight('bold');
@@ -1194,128 +1226,22 @@ function auditExport(requestId) {
       [30, 150, 620, 230, 420].forEach(function (px, i) { if (i < W6) t6.setColumnWidth(i + 1, px); });
     }
 
+    // Last tab: Export status — when the folder was last refreshed and what it holds.
+    if (statusRows && statusRows.length) {
+      var t7 = ss.insertSheet('Export status');
+      var G7 = statusRows.map(function (r) { return [String(r[0] == null ? '' : r[0]), String(r[1] == null ? '' : r[1])]; });
+      t7.getRange(1, 1, G7.length, 2).setNumberFormat('@').setValues(G7).setWrap(true).setVerticalAlignment('top');
+      t7.getRange(1, 1, G7.length, 1).setFontWeight('bold');
+      t7.setColumnWidth(1, 330); t7.setColumnWidth(2, 640);
+    }
+
     SpreadsheetApp.flush();
 
     // Export the workbook as .xlsx.
     var resp = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + ss.getId() + '/export?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
     if (resp.getResponseCode() >= 300) throw new Error('Could not build the Excel file (HTTP ' + resp.getResponseCode() + ').');
-    var xlsxBlob = resp.getBlob().setName(zipName + '.xlsx');
-
-    // ---- Assemble the export as REAL files in a Drive folder ----------------
-    // Evidence is copied Drive-side (makeCopy), one file at a time — so the run
-    // never holds the whole export in memory and there is no ~50 MB blob ceiling.
-    // The folder is the reliable deliverable; the ZIP below is a bonus for small runs.
-    var exportsId = PropertiesService.getScriptProperties().getProperty(PROP.EXPORTS);
-    if (!exportsId) throw new Error('Exports folder not provisioned — run setup().');
-    var stamp = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd HH-mm');
-    var reqFolder = getOrCreateFolder_(DriveApp.getFolderById(exportsId), requestId);
-    var outFolder = reqFolder.createFolder(zipName + ' (' + stamp + ')');
-    // ONE tally of what actually lands in the folder (every file below goes through place):
-    // it is what the Audit card shows the auditor — "N file(s) · X MB" must be the real folder.
-    var placed = 0, placedBytes = 0, missing = 0, missingFiles = [];   // missingFiles: export paths that could not be copied
-    var place = function (file) { placed++; try { placedBytes += Number(file.getSize()) || 0; } catch (e) {} return file; };
-    place(outFolder.createFile(xlsxBlob));
-
-    // [fileId, path]: one CSV (+ SOX evidence xlsx) per extraction — the same list as the IPE tab.
-    // makeCopy keeps the bytes, so the hashes in the IPE / execution log still match; only the
-    // name is the export's stable one (query1_result.csv …) that the reconciliation tabs cite.
-    var extraction = [];
-    ext.forEach(function (x) {
-      extraction.push([x.csvId, 'Extraction/' + x.exportCsv]);
-      if (x.xlsxId) extraction.push([x.xlsxId, 'Extraction/' + x.exportXlsx]);
-    });
-    var extFolder = extraction.length ? outFolder.createFolder('Extraction') : null;
-    extraction.forEach(function (p) { try { place(DriveApp.getFileById(p[0]).makeCopy(p[1].replace(/^Extraction\//, ''), extFolder)); } catch (e) { missing++; missingFiles.push(p[1]); } });
-    // Execution log/: the gateway log lines (verbatim, file order) + the job files they hash.
-    var logFolder = outFolder.createFolder('Execution log');
-    var logText = gwLog.lines.map(function (ln) { return ln.raw; }).join('\n') + (gwLog.lines.length ? '\n' : '');
-    var logFile = place(logFolder.createFile(Utilities.newBlob(logText, 'text/plain', 'execution_log.jsonl')));
-    extraction.push([logFile.getId(), 'Execution log/execution_log.jsonl']);
-    var jobsFolder = null;
-    gwLog.lines.forEach(function (ln) {
-      var jf = ln.obj.job_file; if (!jf) return;
-      try {
-        var it = sub_('Requests_Completed').getFilesByName(jf);
-        if (!it.hasNext()) return;
-        var cp = place(it.next().makeCopy(jf, jobsFolder || (jobsFolder = logFolder.createFolder('jobs'))));
-        extraction.push([cp.getId(), 'Execution log/jobs/' + jf]);
-      } catch (e) {}
-    });
-
-    // Sample list/: the paste as received (when stored) + the numbered list as CSV.
-    var smpFolder = outFolder.createFolder('Sample list');
-    if (sample.fileId) {
-      try { var sf = place(DriveApp.getFileById(sample.fileId).makeCopy(SAMPLE_LIST_FILE, smpFolder)); extraction.push([sf.getId(), 'Sample list/' + SAMPLE_LIST_FILE]); } catch (e) {}
-    }
-    var smpCsv = place(smpFolder.createFile(Utilities.newBlob(sample.csv, 'text/csv', 'sample_list.csv')));
-    extraction.push([smpCsv.getId(), 'Sample list/sample_list.csv']);
-
-    var dirCache = {}, seenFile = {};
-    var evRoot = evFiles.some(function (f) { return !f.system; }) ? outFolder.createFolder('Evidence') : null;
-    var sysRoot = null;
-    evFiles.forEach(function (f) {
-      if (seenFile[f.fileId]) return;                       // one Drive copy per distinct file
-      try {
-        var dest;
-        if (f.system) {
-          dest = sysRoot || (sysRoot = outFolder.createFolder('Reconciliation (system)'));
-        } else {
-          var soiF = dirCache[f.soi] || (dirCache[f.soi] = evRoot.createFolder(f.soi));
-          var tk = f.soi + ' ' + f.task;
-          dest = dirCache[tk] || (dirCache[tk] = soiF.createFolder(f.task));
-        }
-        place(DriveApp.getFileById(f.fileId).makeCopy(f.fileName, dest)); seenFile[f.fileId] = true;
-      } catch (err) { missing++; missingFiles.push(f.path); }
-    });
-
-    // The methodology also sits NEXT TO the reconciliation workbook (whose own Methodology tab
-    // exists only for requests enriched after it was added).
-    if (methodRows && sysRoot) {
-      try {
-        var mf = place(buildXlsxFile_('Methodology - reconciliation', [{ name: 'Methodology', rows: methodRows, freezeRows: 1,
-          colWidths: [30, 150, 620, 230, 420], styles: [{ range: 'A1:E' + methodRows.length, wrap: true, valign: 'top' }] }], sysRoot));
-        extraction.push([mf.getId(), 'Reconciliation (system)/' + mf.getName()]);
-      } catch (e) { logActivity('EXPORT_METHODOLOGY_FAILED', 'request', requestId, String(e)); }
-    }
-
-    // Auto-share with the requester + the request's reviewer/auditor, so they can
-    // open it straight from the Drive without asking anyone for access.
-    var recipients = [me.email, req.auditor_email, req.reviewer_email]
-      .filter(function (x) { return x; })
-      .map(function (x) { return String(x).toLowerCase().trim(); })
-      .filter(function (x, i, a) { return x && a.indexOf(x) === i; });
-    var shared = shareFileWith_(outFolder.getId(), recipients);
-
-    // Convenience one-click ZIP — only for small exports (in-memory zip + base64
-    // return have a hard cap); larger exports are delivered via the Drive link. The ZIP carries
-    // EVERYTHING in the folder, so the gate is the folder total, not the evidence alone.
-    var download = null;
-    if (placedBytes <= 30 * 1024 * 1024) {
-      try {
-        var zipBlobs = [xlsxBlob.copyBlob().setName(zipName + '.xlsx')];
-        extraction.forEach(function (p) { try { var b = DriveApp.getFileById(p[0]).getBlob().copyBlob(); b.setName(p[1]); zipBlobs.push(b); } catch (e) {} });
-        var zipped = {};
-        evFiles.forEach(function (f) { if (zipped[f.fileId]) return; try { var b = DriveApp.getFileById(f.fileId).getBlob().copyBlob(); b.setName(f.path); zipBlobs.push(b); zipped[f.fileId] = true; } catch (e) {} });
-        var zip = Utilities.zip(zipBlobs, zipName + '.zip');
-        download = { name: zip.getName(), mime: 'application/zip', dataUrl: 'data:application/zip;base64,' + Utilities.base64Encode(zip.getBytes()) };
-      } catch (e) { download = null; }   // fall back to the Drive link
-    }
-
-    logActivity('AUDIT_EXPORT', 'request', requestId,
-      placed + ' file(s), ~' + Math.round(placedBytes / 1048576) + ' MB' + (missing ? (', ' + missing + ' missing') : '') + ', shared: ' + (shared.join(', ') || 'none')
-      + (notReady ? '; evidence of ' + notReady + ' task(s) not approved by the reviewer left out' : '')
-      + '; IPE: ' + ext.length + ' extraction(s), ' + ext.filter(function (x) { return String(x.integrity).indexOf('Pass') === 0; }).length + ' pass, '
-      + gwLog.lines.length + ' log line(s)' + (gwLog.error ? ' (log error: ' + gwLog.error + ')' : '') + ', sample list ' + sample.sourceShort
-      + (function () { var g = ext.filter(function (x) { return String(x.source).indexOf('gateway original') === 0; }); return g.length ? '; gateway originals used: ' + g.map(function (x) { return x.tag; }).join(', ') : ''; })()
-      + (missingFiles.length ? '; MISSING: ' + missingFiles.join(' | ').substring(0, 1500) : ''));
-    return {
-      folderUrl: outFolder.getUrl(), folderName: outFolder.getName(),
-      fileCount: placed, missing: missing, missingFiles: missingFiles, totalMb: Math.round(placedBytes / 1048576 * 10) / 10,
-      shared: shared, download: download, notReady: notReady,
-      ipe: { extractions: ext.length, pass: ext.filter(function (x) { return String(x.integrity).indexOf('Pass') === 0; }).length,
-             logLines: gwLog.lines.length, logError: gwLog.error || '', sampleList: sample.sourceShort }
-    };
+    return resp.getBlob().setName(fileName);
   } finally {
     try { DriveApp.getFileById(ss.getId()).setTrashed(true); } catch (e) {}
   }

@@ -85,6 +85,9 @@ var SCHEMA = {
     Activity_Log: ['ts', 'actor', 'action', 'entity_type', 'entity_id', 'details'],
     // One row per page open / screen / dashboard view (who, served or refused, server and browser ms, scope).
     // Usage + load-time log (FinOps rule 8); the SOX trail of actions stays in Activity_Log.
-    Access_Log:   ['ts', 'user', 'role', 'event', 'view', 'outcome', 'server_ms', 'client_ms', 'scope', 'detail', 'visit']
+    Access_Log:   ['ts', 'user', 'role', 'event', 'view', 'outcome', 'server_ms', 'client_ms', 'scope', 'detail', 'visit'],
+    // The manifest of the audit folders (AuditFolder.js): one row per file / folder the app placed in a
+    // request's audit folder. Created on the first sync; written only by the sync, never read by a screen.
+    Export_Files: ['request_id', 'key', 'kind', 'path', 'source_id', 'file_id', 'bytes', 'status', 'synced_at']
   }
 };

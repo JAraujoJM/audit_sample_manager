@@ -20,7 +20,8 @@ NAV) is **built and on `/dev`, awaiting `seedFlowD()` + a first real run** — s
   engine), `Db.js` (data layer), `Config.js` (SCHEMA/PROP/ROLES), `Setup.js` (provisioning/seed),
   `Request.js`, `Assign.js` (assignment + status rollup), `Prepare.js` (preparer/My tasks),
   `Review.js` (review/audit/AI/export), `Gemini.js` (AI client), `Flows.js` (registry), `FlowA.js`,
-  `FlowB.js`. `Index.html` = single-file client UI; `appsscript.json` = manifest.
+  `FlowB.js`, `FlowC.js`, `FlowD.js`, `AuditFolder.js` (the living audit folder), `Cache.js`, `Dashboard.js`.
+  `Index.html` = single-file client UI; `appsscript.json` = manifest.
 - Data plane: **Google Sheets** (state), **Drive** (app-mediated evidence files, owned by the deployer),
   Gmail + time-driven triggers (notifications/reminders — not yet built). Internal users live in Jumia
   Google Workspace.
@@ -139,20 +140,43 @@ in `THREAD_RULES_`** (and never log a comment only in `notes`). Client: the wind
 (`mountThread`); a stored note that is not in the thread stays visible under it, and a preparer comment already in the
 thread is not repeated above it. The stored columns and every action are unchanged. In prod since **@43** (13 Nov 2026).
 
-**Auditor export** (`auditExport(requestId)`, Review.js; Export button in the Audit request detail): builds
-a temp Google Sheet → exports `.xlsx` (tabs: Samples & Tasks enriched / IPE with queries + SHA-256 + checks /
-Evidence index), then **assembles the export as real files in a Drive folder** `Exports/{reqId}/{name} (stamp)/`
-— the xlsx at the root, `Extraction/` (gateway CSVs + SOX xlsx) and `Evidence/<soi>/<task>/<file>` copied
-**Drive-side via `makeCopy`**, one file at a time (no in-memory aggregate, so no size ceiling). The folder is
-**auto-shared** (reader) with the current user + the request's reviewer/auditor via Drive REST
-`permissions.create` (`supportsAllDrives`, `shareFileWith_`), and the client shows its link. A convenience
-one-click **ZIP download is produced only when the evidence totals ≤30 MB** (`Utilities.zip` + base64 return
-have a ~50 MB blob cap); larger exports are delivered by the Drive link alone — it never throws on size.
-Return shape: `{ folderUrl, folderName, fileCount, missing, totalMb, shared[], download|null, ipe{extractions, pass, logLines, logError, sampleList} }`. Uses existing
-scopes only (full-drive, already pulled in by DriveApp). **Do NOT revert to zipping everything in memory** —
-that was the 70 MB failure (and the fragile `zip.copyBlob()` left an empty Exports folder).
+**Auditor export = ONE living folder per request (23 Nov 2026, João; `AuditFolder.js`).** The auditors found the export
+slow and `Exports/{reqId}/` filled with one dated folder per click. Now a request has a single audit folder
+`Exports/{reqId}/{PBC ref} - audit export/`, created and shared (reader — clicker + the request's auditor(s) and reviewer,
+`shareFileWith_`) on the **first** click on Export, then **kept up to date in the background**; the button only returns its
+link and state (`auditExport` → `{ folderUrl, status: 'ready'|'updating', refreshedAt, fileCount, totalMb, done, total, notReady,
+missing, missingFiles, shared, error }`; **no ZIP any more**), and the client follows a sync with `auditFolderStatus` (8 s poll).
+The audit view shows the folder line without a click to whoever it is shared with (`reviewDetail(…,'audit').export_folder`).
+- **Content**: the workbook at the root (same tabs as before + a last tab `Export status`), `Extraction/`, `Execution log/`
+  (+ `jobs/`), `Sample list/`, `Evidence/<soi>/<task>/<file>`, `Reconciliation (system)/`. Evidence follows
+  `auditorSeesTask_` only: copied in when the reviewer approves the task, **trashed again when the auditor returns it**
+  (empty task folders pruned). Files are still copied Drive-side one at a time (`makeCopy`, no in-memory aggregate — **never
+  go back to zipping in memory**, that was the 70 MB failure). The workbook is rebuilt only when everything it lists is in the
+  folder, and **in place** (Drive REST media upload, same file id; if Drive refuses: new file, old one binned).
+- **State**: script property `AFR_<reqId>` (folder id/url, `sig` = hash of everything the workbook shows and the folder holds,
+  `complete`, `pending`, counts, `missing[]`, `shared[]`); a folder is *stale* when the hash of the current rows differs
+  (`afSig_`) — so a missed notification can never leave it silently out of date. Manifest = new Data tab **`Export_Files`**
+  (one row per file / folder placed; rows are never deleted, a removed file keeps its row with status `removed`; created on
+  the first sync, in `UNCACHED_TABS_`). The heavy IPE inputs (`exportStaticBundle_`: re-hash of every CSV + the gateway log
+  scan) are computed **once per extraction** and kept as `Exports/{reqId}/_audit_folder_extractions.json` (not in the shared
+  folder); a re-extraction / file repair changes `afStaticSig_` and rebuilds them.
+- **Background job**: time trigger `runExportSync_` (own handler — the AI pre-check trigger is untouched). Actions call
+  `noteExportChange_()` **after** their writes (end of `updateLineAssignmentRollup_`, and the four whole-sample actions in
+  Review.js); it does nothing while no folder exists (`AF_ANY`). First change → ~1 min later; background syncs are ≥ 5 min apart
+  (`AF_MIN_GAP_MS_` — trigger runtime is a daily quota shared with the AI checks); an Export click schedules one within seconds.
+  The handler clears `AF_SYNC_AT` **before** reading, holds the script lock (one sync at a time), works `AF_BUDGET_MS_` (4.5 min)
+  and reschedules itself until complete ("n of m files so far"). Opening the audit view of a stale folder also schedules a sync.
+- **Safety nets**: a killed run (or a manifest that could not be written) leaves `AFRUN_<reqId>` → the next run looks in Drive
+  before copying (no duplicates); a scheduled sync that did not fire within 3 min, or no trigger scope → the next Export click
+  syncs inline; a file that cannot be copied is listed in the state, the `Export status` tab, the `AUDIT_FOLDER_SYNC` log and a
+  red box on screen (**never swallow a failed copy**) and retried on every click; a folder binned in Drive → the next click starts
+  a new one. Old dated folders are never touched. Admin, in the editor: `auditFolderStates()`, `auditFolderSyncNow()`,
+  `auditFolderForget(reqId)`.
+- A new write path that changes what the workbook shows must end with `noteExportChange_()`; a change to the workbook layout =
+  bump `AF_VERSION_` (every folder then rebuilds its workbook). The package builders stay in Review.js (`exportPlan_`,
+  `buildExportWorkbook_`, `exportStaticBundle_`, `exportMethodology_`).
 
-**IPE package (Forvis Mazars ask, 20 Oct 2026 — thread "Jumia FY26 - Tool testing").** The export also carries:
+**IPE package (Forvis Mazars ask, 20 Oct 2026 — thread "Jumia FY26 - Tool testing").** The audit folder also carries:
 - **IPE tab: ONE ROW PER EXTRACTION** (`exportExtractions_`: stage 1, Flow B stage 2, every `stages_json` query) —
   export file ↔ original gateway filename (the stored copy keeps the gateway's name) ↔ gateway request_id, server,
   database, completion time, duration, row count and SHA-256 three ways (gateway log / app at extraction / file in
@@ -180,8 +204,8 @@ that was the 70 MB failure (and the fragile `zip.copyBlob()` left an empty Expor
   `stages[].csvName` (`gatewayIdFromName_`), so their log lines now appear too. Admin repair (Setup.js):
   `repairRequestFiles(id)` (wrapper `repairFiles_REQ_b16a4636`) re-copies dead slots into `Exports/{reqId}/` and
   re-points the Requests row — never on a hash mismatch; `auditRequestFileLinks()` is the read-only scan.
-  `auditExport` returns `missingFiles[]`; the client shows a red box listing them + a warn toast, and the
-  `AUDIT_EXPORT` log names them. **Never swallow a failed copy silently.**
+  The folder state carries `missingFiles[]`; the client shows a red box listing them + a warn toast, and the
+  `AUDIT_FOLDER_SYNC` log names them. **Never swallow a failed copy silently.**
 
 ## Flow A routing rules (the decision the engine encodes)
 Two facts decide each line:

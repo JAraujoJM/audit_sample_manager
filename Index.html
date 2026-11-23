@@ -1465,6 +1465,7 @@
   function openStageDetail(stage, id){
     var c=STAGE_CFG[stage];
     stageState[stage].reqId=id; stageState[stage].pendingOnly=true;
+    stageState[stage].folder=null; stopFolderPoll_();
     $(c.listPane).hidden=true; $(c.detailPane).hidden=false; animateSlide($(c.detailPane),'slide-r');
     $(c.tasksWrap).innerHTML='<div class="empty">Loading…</div>';
     RUN().withSuccessHandler(function(d){ stageState[stage].detail=d; renderStageTasks(stage); })
@@ -1501,7 +1502,7 @@
       +'<div><h2 style="font-size:16px;margin:0 0 2px">'+esc(d.request.title)+'</h2>'
       +'<p class="sub" style="margin:0">'+esc(d.request.period||'')+' · '+lines.length+' samples'+(isB?(' · '+totalTasks+' tasks'):'')+'</p></div>'
       +'<span class="grow"></span>'
-      +(stage==='audit'?'<button class="btn primary sm" id="auditExportBtn" title="Excel + all evidence, saved to a Drive folder and shared with you (plus a ZIP download when small enough)">Export</button>':'')
+      +(stage==='audit'?'<button class="btn primary sm" id="auditExportBtn" title="The request\'s audit folder in Drive: the Excel summary and the evidence of every task the reviewer has approved. One folder, shared with you and kept up to date automatically.">Export</button>':'')
       +'</div></div>';
     var toggle='<div class="row" style="margin-bottom:12px; gap:0; align-items:center">'
       +'<label class="switch"><input type="checkbox" class="pending-toggle"'+(pendingOnly?' checked':'')+'><span class="sw-track"><span class="sw-knob"></span></span></label>'
@@ -1542,37 +1543,73 @@
     if(tog) tog.addEventListener('change', function(){ stageState[stage].pendingOnly=tog.checked; renderStageTasks(stage); });
     Array.prototype.forEach.call($(c.tasksWrap).querySelectorAll('.task-open'), function(b){ b.addEventListener('click', function(){ openTaskModal(stage, b.dataset.line); }); });
     var xb=$(c.tasksWrap).querySelector('#auditExportBtn'); if(xb) xb.addEventListener('click', function(){ runAuditExport(xb); });
+    if(stage==='audit' && xb){
+      // The folder line: what the server sent with this detail (once), else what Export / the poll last said.
+      if(d.export_folder && !d.__folderUsed){ stageState.audit.folder=d.export_folder; d.__folderUsed=true; }
+      if(stageState.audit.folder){ showExportResult_(xb, stageState.audit.folder); followFolder_(); }
+    }
   }
+  /* ---- the request's audit folder --------------------------------------------------------------
+   * One Drive folder per request, created on the first Export click and then kept up to date by the
+   * server in the background. The button only asks for its link and state; while the server says
+   * "updating", the line under the button follows the progress on its own (auditFolderStatus). */
+  var folderPoll=null, folderPolls=0;
+  function stopFolderPoll_(){ if(folderPoll){ clearTimeout(folderPoll); folderPoll=null; } folderPolls=0; }
   function runAuditExport(btn){
     var reqId=stageState.audit.reqId; if(!reqId) return;
-    var o=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Exporting';
-    toast('Building the export — this can take a moment…','info');
+    var o=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Opening';
     RUN().withSuccessHandler(function(r){
       btn.disabled=false; btn.innerHTML=o;
-      if(r.download) downloadBlob(r.download);          // small enough for a one-click download
-      showExportResult_(btn, r);                        // always: the Drive folder link (+ the missing-file warning)
-      if(!r.missing) toast(r.download?'Export ready':('Export saved to Drive · '+r.totalMb+' MB'),'ok');
+      if(stageState.audit.reqId!==reqId) return;
+      stageState.audit.folder=r; folderPolls=0;
+      showExportResult_(btn, r);                        // the Drive folder link + its state (+ the missing-file warning)
+      if(r.missing) toast(r.missing+' file(s) could not be copied into the audit folder — see the list under the Export button','warn');
+      else toast(r.status==='ready'?'The audit folder is up to date — link below':'The audit folder is being updated — link below','ok');
+      followFolder_();
     }).withFailureHandler(function(e){ btn.disabled=false; btn.innerHTML=o; toast(e.message,'warn'); })
       .auditExport(reqId);
   }
-  // Persistent result line under the Export button: link to the shared Drive folder.
+  // While the folder is being updated: ask for its state every few seconds, for as long as this
+  // request stays open in the Audit view (about a quarter of an hour at most).
+  function followFolder_(){
+    var reqId=stageState.audit.reqId, f=stageState.audit.folder;
+    if(folderPoll || !reqId || !f || f.status==='ready' || folderPolls>=110) return;
+    folderPoll=setTimeout(function(){
+      folderPoll=null; folderPolls++;
+      if(stageState.audit.reqId!==reqId || $(STAGE_CFG.audit.detailPane).hidden) return;
+      RUN().withSuccessHandler(function(r){
+        if(!r || stageState.audit.reqId!==reqId) return;
+        var was=stageState.audit.folder; stageState.audit.folder=r;
+        var xb=$(STAGE_CFG.audit.tasksWrap).querySelector('#auditExportBtn'); if(xb) showExportResult_(xb, r);
+        if(r.status==='ready' && was && was.status!=='ready') toast('The audit folder is up to date','ok');
+        followFolder_();
+      }).withFailureHandler(function(){ followFolder_(); })
+        .auditFolderStatus(reqId);
+    }, 8000);
+  }
+  // Persistent line under the Export button: link to the shared Drive folder and how fresh it is.
   function showExportResult_(btn, r){
     var host=btn.parentNode, box=host.querySelector('#auditExportLink');
     if(!box){ box=document.createElement('div'); box.id='auditExportLink'; box.style.cssText='width:100%; margin-top:8px; font-size:12.5px; color:var(--text-2)'; host.appendChild(box); }
-    var shared=(r.shared&&r.shared.length)?(' · shared with '+r.shared.map(esc).join(', ')):'';
-    box.innerHTML='<a href="'+esc(r.folderUrl||'#')+'" target="_blank" rel="noopener">Open export folder in Drive</a>'
+    var shared=(r.shared&&r.shared.length)?(' · shared with '+esc(shortEmail(r.shared.join(', ')))):'';
+    var state = r.status==='ready'
+      ? (r.missing?'<span class="pill red">Incomplete</span>':'<span class="pill green">Up to date</span>')+(r.refreshedAt?' · last updated '+fmtDateTime(r.refreshedAt):'')
+      : '<span class="pill amber"><span class="spinner"></span>Updating</span>'
+        +((r.total&&r.done<r.total)?' '+r.done+' of '+r.total+' files so far':'')
+        +(r.refreshedAt?' · last complete version '+fmtDateTime(r.refreshedAt):' · first version being prepared');
+    box.innerHTML='<a href="'+esc(r.folderUrl||'#')+'" target="_blank" rel="noopener">Open audit folder in Drive</a>'
+      +' · '+state
       +' · '+(r.fileCount||0)+' file(s) · '+(r.totalMb||0)+' MB'
       +shared
-      +(r.download?'':' · too large for a direct download — open it in Drive')
       +(r.notReady?' · '+r.notReady+' task(s) not yet approved by the reviewer are not included':'')
+      +(r.error?'<div style="margin-top:6px; color:var(--red)">The last update stopped: '+esc(r.error)+'</div>':'')
       +(r.missing?missingExportBox_(r):'');
-    if(r.missing) toast(r.missing+' file(s) could not be copied into the export — see the list under the Export button','warn');
   }
   // A file that could not be copied must never pass as an empty folder: list every path.
   function missingExportBox_(r){
     var paths=r.missingFiles||[];
     return '<div style="margin-top:6px; padding:8px 10px; border-radius:8px; background:var(--red-tint); color:var(--red)">'
-      +'<span class="pill red">'+r.missing+' file(s) missing</span> could not be copied — this export is incomplete; please tell the Jumia FinOps team'
+      +'<span class="pill red">'+r.missing+' file(s) missing</span> could not be copied — the audit folder is incomplete; please tell the Jumia FinOps team'
       +(paths.length?'<ul style="margin:6px 0 0 18px; padding:0">'+paths.map(function(p){ return '<li>'+esc(p)+'</li>'; }).join('')+'</ul>':'')
       +'</div>';
   }

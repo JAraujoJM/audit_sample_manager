@@ -25,7 +25,7 @@ var CACHE_TTL_CONFIG_ = 300;    // seconds
 var CACHE_TTL_DATA_   = 1800;   // seconds
 var CACHE_CHUNK_      = 30000;  // chars per cache value (CacheService caps a value at 100 KB; UTF-8 can triple a char)
 var CONFIG_TABS_      = ['Users', 'Flows', 'Routing', 'Periods', 'Settings'];
-var UNCACHED_TABS_    = ['Access_Log'];   // append-only usage log: never read through the cache, never bumped
+var UNCACHED_TABS_    = ['Access_Log', 'Export_Files'];   // usage log + audit-folder manifest: never read through the cache, never bumped
 
 /* ---------- script properties, read once per execution ---------- */
 var __propsSnap_ = null;
