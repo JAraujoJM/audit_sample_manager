@@ -99,6 +99,9 @@ carries **everything the card shows, one column per card field** (`myTasksTable_
 card fields of the task types the preparer actually has, then files uploaded / reviewer note / own comment), so the work can
 be done offline. The field specs `CA_FIELDS_EXPORT_` mirror the client's `CA_FIELDS` label for label — **a field added to a
 card must be added there too**. Cells are text (`@`) except the amount columns (`CA_NUM_EXPORT_`), which stay numbers.
+**The export holds what the screen shows (23 Nov 2026):** the client passes its two filters — `exportMyTasks({ pendingOnly, company })`
+("Pending my action" toggle = statuses `MY_ACTION_STATUSES_`, and the company dropdown added 18 Nov) — and the server applies
+them; no argument = every task. A filter added to the My-tasks toolbar must be passed and applied there too.
 
 **Comment thread (13 Nov 2026).** `Assignments.notes` / `Sample_Lines.note` keep only the LAST comment (each action
 overwrites it), so an auditor who got a task back could not read why they had returned it. The review and audit windows
@@ -218,6 +221,10 @@ delivery is the whole settlement payment; everything else → `OMS_Payment_Amoun
 `fixFlowBAmounts(requestId)` (Setup.js — recomputes from the stored extraction, only `Sample_Lines.amount`,
 idempotent, logged as `AMOUNT_FIX`). Full detail (queries, subpopulations, owners, phase-by-phase build log)
 is in the **`flow-b-cash-anchor` memory**.
+**"JPay Order" (23 Nov 2026):** the *Postpaid - JumiaPay on delivery* card (and only that one — `CA_JPOD` / `CA_JPOD_EXPORT_`)
+shows query 2's `cod_order_nr` (`jp_order_nr` in `detail_json`, stored since the first run — no query change, live requests
+show it at once), right after *Order*; the preparers track the evidence by it. When query 2 returned no row it falls back to
+query 1's merchant order id (`jpay_order_id` — the reference query 2 was asked for) via `CA_ALT` / `CA_ALT_EXPORT_`.
 
 ## Flow C — Marketplace revenues / COGS by sales-order item (live — REQ_bc265bfa in flight)
 Input = `ID_COMPANY` + `COD_OMS_SALES_ORDER_ITEM` (Flow B's paste format). **Stage 1** `RPT_SOI` (the base

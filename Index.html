@@ -328,7 +328,6 @@
   .topbar{display:block; padding:0 22px; background:#fff; backdrop-filter:none; border-bottom:1px solid var(--sep); box-shadow:0 1px 3px rgba(26,26,26,.05);}
   .topbar-in{max-width:1180px; margin:0 auto; display:flex; align-items:center; gap:6px; flex-wrap:wrap;}
   .brand{padding:9px 14px 9px 0; gap:10px;}
-  .brand-mark{background:var(--grad); border-radius:8px; padding:4px;}
   .brand-t{display:flex; flex-direction:column; line-height:1.2;}
   .brand-t b{font-size:15px; font-weight:700;}
   .brand-t small{font-size:10.5px; color:var(--text-3); font-weight:400;}
@@ -411,7 +410,7 @@
 <body>
   <header class="topbar"><div class="topbar-in">
     <div class="brand"><span class="brand-mark" title="Jumia">
-      <svg viewBox="0 0 1544 1548" width="26" height="26" aria-hidden="true" focusable="false">
+      <svg viewBox="0 0 1544 1548" width="34" height="34" aria-hidden="true" focusable="false">
         <path fill="#ffffff" d="m780.4 1404.5c-360.7 0-652.3-283.2-652.3-633.5 0-350.3 291.6-633.5 652.3-633.5 360.7 0 652.2 283.2 652.2 633.5 0 350.3-291.5 633.5-652.2 633.5z"/>
         <path fill="#f8991d" fill-rule="evenodd" d="m1432.6 374.2v0.2h1.6c73.1 120.3 111 259.6 109.3 400.7 0 141.7-38.1 281.1-109.8 402.9l-22 32.5-43.7 58.7-49.3 54.5c-14.8 16.8-36.3 31.2-54.4 49.2-28.5 22.5-59.2 43.7-90.8 62l-33.1 22c-113.5 59.9-239.5 91.3-368 90.9-128.7 0.7-255.5-32-367.6-95.1-21.8-9.8-42.7-22-61.8-36.4l-58.6-43.8c-38.1-31.6-73.6-66.7-105.2-105.3-16.6-18.7-31.4-39.9-43.8-61.9l-21.7-29-36.4-65.9c-15.9-34.2-29.4-69.1-40.5-105.3-23.1-74.3-35.3-151.7-36.4-229.8 0.5-52.7 6.3-104.8 18.1-156.5 21.3-111.2 67.5-216.3 135.7-306.6 21.3-30.3 45.7-58.2 72.9-83.7l25.7-25.7 58.6-49.3 61.8-40.5 32.5-18.1c112.3-63.3 239.3-96.2 368-94.7 128.9-0.4 255.4 32.1 368 94.7l32.5 18.1 58.5 40.5 58.2 49.3 25.7 25.7c27.2 25.1 51.6 53.2 72.9 83.7 15.9 19.7 30.5 40.2 43.8 62zm-481.5 152.8l-174.8-357.8-178.4 357.8-393.7 58.2 283.7 277.3-65.5 394.2 349.1-185.7 353.6 185.7-65.8-394.2 284.4-277.3z"/>
       </svg></span><span class="brand-t"><b>Audit Samples Manager</b><small>External audit samples · evidence · review</small></span></div>
@@ -632,9 +631,11 @@
   // Flow D (COGS by NAV value entry): the sampled entry, then the purchase document the task is about.
   var CA_COGS=[['Posted','entry_date'],['Sales document','sales_doc'],['Type','entry_type'],['Item','item_no'],['Description','item_desc'],['Cost amount','amount'],
     ['Receipt','receipt_no'],['PO','po'],['NAV document','doc_no'],['Vendor document no.','vendor_doc_no'],['Document date','doc_date'],['Charge','item_charge'],['Per unit','unit_amount']];
+  // JumiaPay on delivery: the preparers track the evidence by the JumiaPay order (query 2's cod_order_nr).
+  var CA_JPOD=[CA_JP[0], ['JPay Order','jp_order_nr']].concat(CA_JP.slice(1));
   var CA_FIELDS={
     'Prepaid - Voucher':[['Order','order_nr'],['Amount','amount']],
-    'Prepaid - JumiaPay':CA_JP, 'Postpaid - JumiaPay on delivery':CA_JP, 'Postpaid - Cash - 3PL via JPay':CA_JP,
+    'Prepaid - JumiaPay':CA_JP, 'Postpaid - JumiaPay on delivery':CA_JPOD, 'Postpaid - Cash - 3PL via JPay':CA_JP,
     'Postpaid - Cash & POS':[['Package no','package_number'],['Collection partner','collection_partner'],['Payment no','payment_no'],['Payment date','payment_date'],['Payment reference','payment_ref'],['Bank account','bank_account'],['Amount','amount']],
     'Prepaid - Other methods':[['Order','order_nr'],['Amount','amount']],
     // Flow C (Marketplace revenues / COGS by sales-order item)
@@ -652,11 +653,14 @@
   function isCogsSub(s){ return s==='COGS - Original cost' || s==='COGS - Adjustment'; }
   // Why a COGS purchase-invoice task has no document in NAV (the task's `pending` code).
   function cogsPendingText(p){ return p==='no_receipt' ? 'NAV shows no purchase receipt behind this entry' : 'NAV shows no purchase invoice on this receipt yet'; }
+  // A key with a stand-in: when query 2 returned no row for the item, the JumiaPay order is the
+  // merchant order id of query 1 (the very reference query 2 was asked for).
+  var CA_ALT={jp_order_nr:'jpay_order_id'};
   function caVal(key, line, detail, unit){
     if(unit && unit[key]!=null && unit[key]!=='') return unit[key];
     if(detail && detail[key]!=null && detail[key]!=='') return detail[key];
     if(line && line[key]!=null && line[key]!=='') return line[key];
-    return '';
+    return CA_ALT[key] ? caVal(CA_ALT[key], line, detail, unit) : '';
   }
   // Keys rendered as numbers; everything else is text ('—' when empty).
   var CA_NUM_KEYS={amount:1, inv_total:1, unit_amount:1, doc_amount:1};
@@ -1265,7 +1269,7 @@
       +'<span class="sw-label">Pending my action</span>'
       +(cos.length>1 ? '<select id="myCompanySel" style="width:auto; min-width:150px; max-width:200px; margin-left:18px"><option value="all">All companies</option>'
           +cos.map(function(c){ return '<option value="'+esc(c)+'"'+(myCompany===c?' selected':'')+'>'+esc(c)+'</option>'; }).join('')+'</select>' : '')
-      +'<button class="btn sm" id="myExportBtn" style="margin-left:auto" title="Download all your tasks as an Excel checklist">Export</button></div>';
+      +'<button class="btn sm" id="myExportBtn" style="margin-left:auto" title="Download the tasks shown here as an Excel checklist">Export</button></div>';
   }
   function renderTasks(items){
     if(items){ myTasks=items; memoKeep('tasks', items); }
@@ -1412,7 +1416,7 @@
     var o=btn.innerHTML; btn.disabled=true; btn.innerHTML='<span class="spinner"></span>Exporting';
     RUN().withSuccessHandler(function(f){ btn.disabled=false; btn.innerHTML=o; downloadBlob(f); toast('Export ready','ok'); })
       .withFailureHandler(function(e){ btn.disabled=false; btn.innerHTML=o; toast(e.message,'warn'); })
-      .exportMyTasks();
+      .exportMyTasks({ pendingOnly:myPendingOnly, company:myCompany });   // the same filters as the screen
   }
 
   /* ---------- review / audit (reviewer + auditor) ----------

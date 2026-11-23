@@ -63,9 +63,10 @@ var CA_COGS_EXPORT_ = [['Posted', 'entry_date'], ['Sales document', 'sales_doc']
   ['NAV document', 'doc_no'], ['Vendor document no.', 'vendor_doc_no'], ['Document date', 'doc_date'], ['Charge', 'item_charge'], ['Per unit', 'unit_amount']];
 // Flow A card (and any type without a spec of its own).
 var CA_FLOWA_EXPORT_ = [['Statement no.', 'statement_code'], ['Statement amount', 'statement_amount'], ['Paid at', 'paid_at']];
+var CA_JPOD_EXPORT_ = [CA_JP_EXPORT_[0], ['JPay Order', 'jp_order_nr']].concat(CA_JP_EXPORT_.slice(1));
 var CA_FIELDS_EXPORT_ = {
   'Prepaid - Voucher': [['Order', 'order_nr'], ['Amount', 'amount']],
-  'Prepaid - JumiaPay': CA_JP_EXPORT_, 'Postpaid - JumiaPay on delivery': CA_JP_EXPORT_, 'Postpaid - Cash - 3PL via JPay': CA_JP_EXPORT_,
+  'Prepaid - JumiaPay': CA_JP_EXPORT_, 'Postpaid - JumiaPay on delivery': CA_JPOD_EXPORT_, 'Postpaid - Cash - 3PL via JPay': CA_JP_EXPORT_,
   'Postpaid - Cash & POS': [['Package no', 'package_number'], ['Collection partner', 'collection_partner'], ['Payment no', 'payment_no'], ['Payment date', 'payment_date'], ['Payment reference', 'payment_ref'], ['Bank account', 'bank_account'], ['Amount', 'amount']],
   'Prepaid - Other methods': [['Order', 'order_nr'], ['Amount', 'amount']],
   // Flow C Retail (the "Sales invoice" task) — same fields as the card.
@@ -74,13 +75,15 @@ var CA_FIELDS_EXPORT_ = {
   // Flow D (COGS by NAV value entry) — same fields as the card.
   'COGS - Original cost': CA_COGS_EXPORT_, 'COGS - Adjustment': CA_COGS_EXPORT_
 };
-// Value resolves per-payment unit → line detail → the task row, same order as caVal.
+// Value resolves per-payment unit → line detail → the task row, same order as caVal; a key
+// with a stand-in (the client's CA_ALT) falls back to it when empty.
+var CA_ALT_EXPORT_ = { jp_order_nr: 'jpay_order_id' };
 function caValExport_(key, t) {
   var u = t.unit || {}, d = t.detail || {};
   if (u[key] != null && u[key] !== '') return u[key];
   if (d[key] != null && d[key] !== '') return d[key];
   if (t[key] != null && t[key] !== '') return t[key];
-  return '';
+  return CA_ALT_EXPORT_[key] ? caValExport_(CA_ALT_EXPORT_[key], t) : '';
 }
 // Keys written as numbers (the client's CA_NUM_KEYS + the two balances) and fields a card
 // leaves out when empty (the client's CA_OPTIONAL) — such a column only exists when a task fills it.
@@ -154,10 +157,22 @@ function myTasksTable_(tasks) {
   };
 }
 
-function exportMyTasks() {
+// The statuses where the preparer still has something to do (the client's ACTION_STATUSES).
+var MY_ACTION_STATUSES_ = ['pending', 'assigned', 'in_progress'];
+
+/** `filter` = the "My tasks" screen's own filters ({ pendingOnly, company }), so the file holds
+ *  what the preparer is looking at. No filter = every task (the behaviour before 23 Nov 2026). */
+function exportMyTasks(filter) {
   var me = requireRole_([ROLES.PREPARER, ROLES.ADMIN]);
-  var tasks = listMyAssignments();
-  if (!tasks.length) throw new Error('You have no tasks to export yet.');
+  var all = listMyAssignments();
+  if (!all.length) throw new Error('You have no tasks to export yet.');
+  filter = filter || {};
+  var company = String(filter.company || 'all'), pendingOnly = !!filter.pendingOnly;
+  var tasks = all.filter(function (t) {
+    return (!pendingOnly || MY_ACTION_STATUSES_.indexOf(String(t.status).toLowerCase()) !== -1)
+        && (company === 'all' || String(t.company) === company);
+  });
+  if (!tasks.length) throw new Error('No tasks to export with the filters on screen.');
 
   var tb = myTasksTable_(tasks), H = tb.headers, rows = [H].concat(tb.rows);
 
@@ -181,7 +196,8 @@ function exportMyTasks() {
       { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
     if (resp.getResponseCode() >= 300) throw new Error('Could not build the Excel file (HTTP ' + resp.getResponseCode() + ').');
     var bytes = resp.getBlob().getBytes();
-    logActivity('MY_TASKS_EXPORT', 'user', me.email, tasks.length + ' task(s)');
+    logActivity('MY_TASKS_EXPORT', 'user', me.email, tasks.length + ' task(s)' + (tasks.length < all.length
+      ? ' of ' + all.length + ' (' + [pendingOnly ? 'pending my action' : '', company !== 'all' ? company : ''].filter(String).join(', ') + ')' : ''));
     return { name: name + '.xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
              dataUrl: 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + Utilities.base64Encode(bytes) };
   } finally {
