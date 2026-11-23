@@ -13,14 +13,15 @@ request is in flight). **Flow C** (Marketplace revenues / COGS by **sales-order 
 system reconciliation tasks) is **built and pushed, awaiting `setup()` + `seedFlowC()` + a first real run**.
 Everything new is additive — Flow A/B code paths are unchanged.
 **16 Nov 2026:** Flows A, B, C are in production (prod = @43). **Flow D** (COGS by NAV value entry, one openquery to live
-NAV) is **built and on `/dev`, awaiting `seedFlowD()` + a first real run** — see its section below.
+NAV) was then built and on `/dev` (since seeded and run for real — see the 23 Nov note) — see its section below.
 
 **23 Nov 2026:** prod = **@50** (promoted on João's go): everything above plus the 23 Nov batch — logo, My-tasks export
 follows the screen, JPay Order, auditor returns → reviewer, evidence visible to the auditor only after review, and the
 living audit folder (`AuditFolder.js`). The living folder was promoted **before its first run on real Drive** — its first
 real Export click is the live test. Versions 44–49 were created outside these sessions (no description): before the
 promotion prod was already at @49, not @43 — check `clasp deployments` rather than trusting a version number written here.
-Flow D is in the prod code but still needs `seedFlowD()` to be selectable.
+**Flow D is live**: João confirmed on 23 Nov that `seedFlowD()` was run and two real requests were created under it and
+worked (done outside these sessions — the "awaiting `seedFlowD()` + a first real run" wording further down is history).
 
 ## Stack
 - **Google Apps Script** (V8, synced with `clasp`). Server is split by concern: `Code.js` (enrichment
@@ -341,7 +342,7 @@ rewritten. This is the pattern for any future "add a task to a live request" cha
 the rule (future requests). Triggers and the editor run HEAD; the invoice-specific AI check and the new card fields reach
 the live `/exec` URL only once prod is promoted (done: prod = **@41**, 12 Nov 2026, deployed by João).
 
-## Flow D — COGS by NAV value entry (built 16 Nov 2026 — on `/dev`, awaiting `seedFlowD()` + a first real run)
+## Flow D — COGS by NAV value entry (built 16 Nov 2026 — live: seeded, two real requests by 23 Nov 2026)
 Input = company code + NAV `Value Entry`.`Entry No_` (`EC_MA 14356476`, either order; `flowDParseSample_`). Each sampled
 entry is the cost of an item sold / returned, or a later **adjustment** of that cost; the support is the vendor's purchase
 invoice and, for an adjustment, the vendor credit / debit note behind it. Module `FlowD.js`, registered as `flowD`.
@@ -430,8 +431,7 @@ Measured on the Executions log (149 calls, 14–20 Oct): every call opened Confi
   side-session notes (`harness.js`/`test.js`: real server code, mocked services, real Data export).
 
 ## Roadmap / next
-- **Flow D first real run**: `seedFlowD()` in the editor (no `setup()` — no schema change) → run a sample on `/dev` →
-  check the tasks → promote to prod only when asked. Then: the "NAV value entries" workbook (system extract), preparer teams.
+- **Flow D** is live (two real requests by 23 Nov 2026). Next: the "NAV value entries" workbook (system extract), preparer teams.
 - **Flow C first real run**: `setup()` (adds `Requests.stages_json`) → `seedFlowC()` → run the H1 2026 sample on
   the `/dev` deployment → check the gateway timings + the workbook → then promote to prod.
 - **Pilot** of Flows A/B continues in production.
