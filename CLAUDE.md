@@ -15,6 +15,13 @@ Everything new is additive — Flow A/B code paths are unchanged.
 **16 Nov 2026:** Flows A, B, C are in production (prod = @43). **Flow D** (COGS by NAV value entry, one openquery to live
 NAV) is **built and on `/dev`, awaiting `seedFlowD()` + a first real run** — see its section below.
 
+**23 Nov 2026:** prod = **@50** (promoted on João's go): everything above plus the 23 Nov batch — logo, My-tasks export
+follows the screen, JPay Order, auditor returns → reviewer, evidence visible to the auditor only after review, and the
+living audit folder (`AuditFolder.js`). The living folder was promoted **before its first run on real Drive** — its first
+real Export click is the live test. Versions 44–49 were created outside these sessions (no description): before the
+promotion prod was already at @49, not @43 — check `clasp deployments` rather than trusting a version number written here.
+Flow D is in the prod code but still needs `seedFlowD()` to be selectable.
+
 ## Stack
 - **Google Apps Script** (V8, synced with `clasp`). Server is split by concern: `Code.js` (enrichment
   engine), `Db.js` (data layer), `Config.js` (SCHEMA/PROP/ROLES), `Setup.js` (provisioning/seed),
