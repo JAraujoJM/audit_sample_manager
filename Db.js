@@ -287,6 +287,21 @@ function parseJson_(s) {
 }
 
 /* ---------- audit trail ---------- */
+/**
+ * Text that goes into a cell as it was typed or built. Sheets reads a cell that starts with
+ * = + - or @ as a FORMULA: the first AUDIT_FOLDER_SYNC lines ("+9 file(s), -0 …", 23–25 Nov 2026)
+ * show as #ERROR! in the trail, and a preparer's comment starting with "=" would be evaluated —
+ * it could point at any cell of the Data sheet and be served back to them (AI verdict, somebody
+ * else's note). A leading space keeps the text a text; readers trim it or match from a fixed
+ * first word. Use it for every cell that holds free text NOT prefixed by the app (log details,
+ * the preparer's comment, an uploaded file's name); the reviewer / auditor notes are safe by
+ * their prefix ('Reviewer: ', 'Returned by auditor: ' …).
+ */
+function sheetText_(s) {
+  s = String(s == null ? '' : s);
+  return /^[=+\-@]/.test(s) ? ' ' + s : s;
+}
+
 function logActivity(action, entityType, entityId, details) {
   try {
     appendObject_(dataSs_(), 'Activity_Log', {
@@ -295,7 +310,7 @@ function logActivity(action, entityType, entityId, details) {
       action: action,
       entity_type: entityType || '',
       entity_id: entityId || '',
-      details: details || ''
+      details: sheetText_(details)
     });
   } catch (e) {
     Logger.log('logActivity failed (non-fatal): ' + e);   // never let logging break the action

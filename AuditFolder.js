@@ -415,7 +415,7 @@ function afSyncOne_(req, allLines, asg, evd, st, sig, deadline) {
   }
   if (ch.added || ch.removed || ch.workbook || err) {
     logActivity('AUDIT_FOLDER_SYNC', 'request', requestId,
-      '+' + ch.added + ' file(s), -' + ch.removed + (ch.workbook ? ', workbook refreshed' : '')
+      'added ' + ch.added + ' file(s), removed ' + ch.removed + (ch.workbook ? ', workbook refreshed' : '')
       + '; folder: ' + st.files + ' file(s), ~' + Math.round(st.bytes / 1048576) + ' MB'
       + (st.complete ? '' : '; ' + st.done + ' of ' + st.total + ' so far')
       + (st.notReady ? '; evidence of ' + st.notReady + ' task(s) not approved by the reviewer left out' : '')

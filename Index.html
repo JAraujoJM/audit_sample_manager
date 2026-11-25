@@ -374,7 +374,8 @@
   .kpi .l i{width:9px; height:9px; border-radius:2px; background:var(--k-c,#8a9099); display:inline-block;}
   .kpi .v{font-size:25px; font-weight:700; font-variant-numeric:tabular-nums; margin-top:6px; line-height:1.1;}
   .kpi .u{font-size:11.5px; color:var(--text-2); margin-top:4px;}
-  .kpi.k-total{--k-c:#8a9099; --k-bg:#F4F4F4; --k-bd:#E4E4E4;}
+  .kpi.k-total{--k-c:var(--ink-soft); --k-bg:#fff; --k-bd:var(--sep-strong);}
+  .kpi.k-todo{--k-c:var(--st-todo); --k-bg:#F4F4F4; --k-bd:#E4E4E4;}
   .kpi.k-review{--k-c:var(--st-review); --k-bg:#FBF1DE; --k-bd:#F1DDB2;}
   .kpi.k-audit{--k-c:var(--st-audit); --k-bg:#E8F0FB; --k-bd:#C9DAF3;}
   .kpi.k-done{--k-c:var(--st-done); --k-bg:#E4F6EE; --k-bd:#BFE6D3;}
@@ -399,7 +400,27 @@
   .brow .t{font-family:var(--mono); font-size:12px; text-align:right; color:var(--ink-soft);}
   .legend{display:flex; flex-wrap:wrap; gap:6px 14px; font-size:11.5px; color:var(--text-2); margin-top:8px;}
   .legend i{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:-1px;}
-  details.tv{margin-top:10px; font-size:12px;} details.tv summary{cursor:pointer; color:var(--text-3);}
+  .dash-grid tr.req{cursor:pointer;}
+  .dash-grid tr.req:hover > td, .dash-grid tr.req.open > td{background:var(--surface-2);}
+  .dash-grid tr.req:focus-visible{outline:2px solid var(--blue); outline-offset:-2px;}
+  .dash-grid tr.req .nm{font-weight:700;} .dash-grid tr.req .pd{color:var(--text-2);}
+  .dash-grid tr.req .sm{font-size:11.5px; color:var(--text-3); padding-left:18px; margin-top:1px;}
+  .dash-grid .chev{display:inline-block; width:18px; color:var(--text-3); font-size:15px; line-height:1; transition:transform .15s;}
+  .dash-grid tr.req.open .chev{transform:rotate(90deg) translateX(1px);}
+  .dash-grid td.bar{min-width:130px; width:18%;}
+  .dash-grid tr.det > td{background:var(--surface-2); padding:14px 18px 18px 28px; white-space:normal; border-bottom:2px solid var(--sep-strong);}
+  .dt-head{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin:0 0 8px; font-size:12.5px;}
+  .dt-head span{color:var(--text-2);}
+  .tbar{height:12px; max-width:640px;}
+  .legend b{color:var(--ink-soft); font-weight:600;}
+  .dt-switch{display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin:18px 0 8px;}
+  .dt-switch .seg{padding:4px 14px; font-size:12.5px;}
+  .dt-switch .cap, .dt-note{margin:0;} .dt-note{margin-top:8px; max-width:820px;}
+  .dash-grid.inner{background:#fff; border:1px solid var(--sep);}
+  .dash-grid.inner tr.grp td{border-top:1px solid var(--sep-strong);}
+  .dash-grid.inner td.in{padding-left:24px;}
+  .dash-grid .sub2{font-size:11.5px; color:var(--text-3); font-weight:400;}
+  .dash-warn{display:flex; gap:9px; align-items:baseline; font-size:12px; color:var(--text-2); margin:0 0 8px;}
   .ctl{display:flex; flex-direction:column; gap:7px; font-size:12.5px;}
   .ctl div{display:flex; gap:8px; align-items:baseline;}
   .tag{font-size:10.5px; font-weight:700; padding:1px 7px; border-radius:5px; white-space:nowrap; background:var(--amber-tint); color:var(--amber);}
@@ -429,23 +450,12 @@
       </div>
       <div class="kpis" id="dashTiles"></div>
       <div class="card">
-        <h3>Samples by stream, company and status</h3>
-        <p class="cap">Count of samples. Grey shading = how many (one scale for the whole grid). Tasks = evidence items behind those samples.</p>
+        <h3>Requests</h3>
+        <p class="cap">One row per request, oldest first. Open a request to see its countries, its people and where the time went.</p>
         <div class="scroll"><table class="dash-grid" id="dashGrid"></table></div>
+        <div class="legend" id="dashLg1"></div>
       </div>
-      <div class="grid2">
-        <div class="card"><h3>Samples by status, per stream</h3><p class="cap">Share of each stream's samples. Hover a segment for the count.</p>
-          <div id="dashStream"></div><div class="legend" id="dashLg1"></div>
-          <details class="tv"><summary>Table view</summary><div id="dashTv1"></div></details></div>
-        <div class="card"><h3>Samples by status, per country</h3><p class="cap">All streams together. Hover a segment for the count.</p>
-          <div id="dashCountry"></div><div class="legend" id="dashLg2"></div>
-          <details class="tv"><summary>Table view</summary><div id="dashTv2"></div></details></div>
-      </div>
-      <div class="grid2">
-        <div class="card"><h3>Tasks by status</h3><p class="cap">System tasks are the app's own reconciliations (Flow C): reviewed, never prepared.</p>
-          <div id="dashDesk"></div><div class="legend" id="dashLg3"></div></div>
-        <div class="card"><h3>Method &amp; controls</h3><p class="cap">Run every time the page opens.</p><div class="ctl" id="dashCtl"></div></div>
-      </div>
+      <div id="dashWarn"></div>
       <p class="cap" id="dashFoot"></p>
     </section>
 
@@ -753,8 +763,10 @@
 
 
   /* ---------- dashboard (CFO view) ---------- */
-  var DST=[['todo','With preparer','--st-todo'],['review','In review','--st-review'],['audit','In audit','--st-audit'],['done','Closed','--st-done'],['nf','Not found','--st-nf']];
-  var dashFirst=true;
+  // One row per REQUEST, oldest first (25 Nov 2026); a row opens to its countries, its people and where the time went.
+  var DST=[['todo','With preparers','--st-todo'],['review','In review','--st-review'],['audit','In audit','--st-audit'],['done','Closed','--st-done'],['nf','Not found','--st-nf']];
+  var DTM=[['none','Not assigned','#c9cdd2'],['prep','Preparers','var(--st-todo)'],['rev','Reviewer','var(--st-review)'],['aud','Auditors','var(--st-audit)']];
+  var dashFirst=true, dashData=null, dashOpen={}, dashMode={};
   function loadDash(){
     if(dashFirst && BOOT && BOOT.dash){
       dashFirst=false; renderDash(BOOT.dash);
@@ -772,67 +784,117 @@
   }
   function dSum(o){ var n=0; for(var k in o) n+=o[k]; return n; }
   function dPct(a,b){ return b?Math.round(100*a/b)+'%':'·'; }
+  function d1(n){ return (Math.round(n*10)/10).toLocaleString(undefined,{minimumFractionDigits:1, maximumFractionDigits:1}); }
   function dBar(c, label, unit){
     var n=dSum(c);
     return DST.filter(function(s){ return c[s[0]]; }).map(function(s){
       return '<i style="flex:'+c[s[0]]+' 0 0;background:var('+s[2]+')" data-tip="'+esc(label)+' · '+s[1]+': '+c[s[0]]+' of '+n+' '+unit+' ('+dPct(c[s[0]],n)+')"></i>';
     }).join('');
   }
-  function dRows(list, el, unit){ $(el).innerHTML=list.map(function(x){ return '<div class="brow"><div class="k" title="'+esc(x[0])+'">'+esc(x[0])+'</div><div class="sbar">'+dBar(x[1],x[0],unit)+'</div><div class="t">'+dSum(x[1])+'</div></div>'; }).join('') || '<div class="empty">No samples yet.</div>'; }
   function dLegend(el, keys){ $(el).innerHTML=DST.filter(function(s){ return !keys||keys.indexOf(s[0])!==-1; }).map(function(s){ return '<span><i style="background:var('+s[2]+')"></i>'+s[1]+'</span>'; }).join(''); }
-  function dTable(el, list){ $(el).innerHTML='<div class="scroll"><table class="dash-grid"><thead><tr><th></th>'+DST.map(function(s){ return '<th class="n">'+s[1]+'</th>'; }).join('')+'</tr></thead><tbody>'
-    +list.map(function(x){ return '<tr><td>'+esc(x[0])+'</td>'+DST.map(function(s){ return '<td class="n">'+(x[1][s[0]]||'—')+'</td>'; }).join('')+'</tr>'; }).join('')+'</tbody></table></div>'; }
   function dAdd(a,b){ var o={}; [a,b].forEach(function(x){ for(var k in x) o[k]=(o[k]||0)+x[k]; }); return o; }
+  function dNum(v){ return v ? '<td class="n">'+v+'</td>' : '<td class="n z">—</td>'; }
+
   function renderDash(d){
-    var reqs=d.requests||[], rows=d.rows||[];
+    dashData=d;
+    var reqs=d.requests||[];
     var tot=reqs.reduce(function(o,r){ return dAdd(o,r.s); },{}), tk=reqs.reduce(function(o,r){ return dAdd(o,r.tk); },{});
     var nS=dSum(tot), nT=dSum(tk), late=reqs.filter(function(r){ return r.daysLate>0; });
+    var un=reqs.reduce(function(n,r){ return n+(r.un||0); },0);
     var revs=Object.keys(d.reviewers||{}).map(function(e){ return shortEmail(e); });
-    var cos={}; rows.forEach(function(r){ cos[r.company]=1; });
-    var flows={}; reqs.forEach(function(r){ flows[r.flow_id]=1; });
-    $('dashSub').textContent=nS+' samples in '+reqs.length+' request'+(reqs.length===1?'':'s')+'. '+(tot.audit||0)+' are with the auditors, '+(tot.review||0)+' are waiting on the Jumia reviewer, '+(tot.done||0)+' are closed.';
-    $('dashStamp').innerHTML='As of <b>'+esc(d.asOf)+' '+esc(d.tz==='Europe/Lisbon'?'Lisbon':d.tz)+'</b><br>Source: app Data sheet (Requests, Sample_Lines, Assignments)';
+    var cos={}; reqs.forEach(function(r){ (r.co||[]).forEach(function(c){ cos[c.company]=1; }); });
+    $('dashSub').textContent=nS+' samples in '+reqs.length+' request'+(reqs.length===1?'':'s')+'. '+(tot.todo||0)+' are with the preparers, '+(tot.review||0)+' are waiting on the Jumia reviewer, '+(tot.audit||0)+' are with the auditors, '+(tot.done||0)+' are closed.';
+    $('dashStamp').innerHTML='As of <b>'+esc(d.asOf)+' '+esc(d.tz==='Europe/Lisbon'?'Lisbon':d.tz)+'</b><br>Source: app Data sheet (Requests, Sample_Lines, Assignments, Activity_Log)';
     function tile(cls,label,val,sub){ return '<div class="kpi '+cls+'"><div class="l"><i></i>'+label+'</div><div class="v">'+val+'</div><div class="u">'+sub+'</div></div>'; }
     $('dashTiles').innerHTML=
-      tile('k-total','Samples',nS, nT+' tasks · '+Object.keys(flows).length+' audit stream'+(Object.keys(flows).length===1?'':'s')+' · '+Object.keys(cos).length+' companies')
+      tile('k-total','Samples',nS, nT+' tasks · '+reqs.length+' request'+(reqs.length===1?'':'s')+' · '+Object.keys(cos).length+' companies')
+     +tile('k-todo','With preparers',tot.todo||0, dPct(tot.todo||0,nS)+' of samples · '+(un?un+' not assigned yet':(tk.todo||0)+' tasks to submit'))
      +tile('k-review','In review · Jumia',tot.review||0, (tot.review?('with '+esc(revs.join(', ')||'the reviewer')):'nothing waiting on the reviewer'))
      +tile('k-audit','In audit · auditors',tot.audit||0, dPct(tot.audit||0,nS)+' of samples · reviewed, waiting for the auditors')
      +tile('k-done','Closed',tot.done||0, dPct(tot.done||0,nS)+' of samples · '+(tk.done||0)+' tasks accepted')
      +tile('k-late','Past due',late.length+' of '+reqs.length, late.length?late.map(function(r){ return esc(r.ref)+' '+r.daysLate+' d'; }).join(' · '):'no request past its due date');
-    // heat grid
-    var max=0; rows.forEach(function(r){ DST.forEach(function(s){ max=Math.max(max, r.s[s[0]]||0); }); });
-    var cs=getComputedStyle(document.documentElement), heat=cs.getPropertyValue('--heat').trim()||'69,68,63', hm=parseFloat(cs.getPropertyValue('--heat-max'))||.3;
-    function cell(v){ if(!v) return '<td class="n z">—</td>'; return '<td class="n" style="background:rgba('+heat+','+(Math.sqrt(v/max)*hm).toFixed(3)+')">'+v+'</td>'; }
-    var head='<thead><tr><th>Audit stream · company</th>'+DST.map(function(s){ return '<th class="n">'+s[1]+'</th>'; }).join('')+'<th class="n">Samples</th><th class="n">Tasks</th><th class="n">% closed</th><th>Due</th></tr></thead>';
-    var body='', byFlow={}, order=[];
-    rows.forEach(function(r){ if(!byFlow[r.flow_id]){ byFlow[r.flow_id]=[]; order.push(r.flow_id); } byFlow[r.flow_id].push(r); });
-    order.forEach(function(f){
-      var g=byFlow[f], gs=g.reduce(function(o,r){ return dAdd(o,r.s); },{}), gt=g.reduce(function(n,r){ return n+r.tasks; },0), n=dSum(gs);
-      var due=reqs.filter(function(r){ return r.flow_id===f; }).map(function(r){
-        return r.daysLate>0 ? '<span class="pill red">'+esc(r.due)+' · '+r.daysLate+' d late</span>' : (r.due?'<span class="pill neutral">'+esc(r.due)+'</span>':'');
-      }).join(' ');
-      body+='<tr class="grp"><td>'+esc(g[0].flow)+'</td>'+DST.map(function(s){ return '<td class="n">'+(gs[s[0]]||'—')+'</td>'; }).join('')
-        +'<td class="n">'+n+'</td><td class="n">'+gt+'</td><td class="n">'+dPct(gs.done||0,n)+'</td><td>'+due+'</td></tr>';
-      g.forEach(function(r){
-        body+='<tr><td>&nbsp;&nbsp;'+esc(r.country)+' <span class="code">'+esc(r.company)+'</span></td>'+DST.map(function(s){ return cell(r.s[s[0]]); }).join('')
-          +'<td class="n">'+r.samples+'</td><td class="n">'+r.tasks+'</td><td class="n">'+dPct(r.s.done||0,r.samples)+'</td><td></td></tr>';
-      });
-    });
-    body+='<tr class="tot"><td>All streams</td>'+DST.map(function(s){ return '<td class="n">'+(tot[s[0]]||'—')+'</td>'; }).join('')+'<td class="n">'+nS+'</td><td class="n">'+nT+'</td><td class="n">'+dPct(tot.done||0,nS)+'</td><td></td></tr>';
-    $('dashGrid').innerHTML=head+'<tbody>'+body+'</tbody>';
-    // charts
-    var byS=order.map(function(f){ return [byFlow[f][0].flow, byFlow[f].reduce(function(o,r){ return dAdd(o,r.s); },{})]; });
-    dRows(byS,'dashStream','samples'); dLegend('dashLg1'); dTable('dashTv1', byS);
-    var cty={}, names={}; rows.forEach(function(r){ cty[r.company]=dAdd(cty[r.company]||{}, r.s); names[r.company]=r.country; });
-    var byC=Object.keys(cty).map(function(k){ return [names[k]+' ('+k+')', cty[k]]; }).sort(function(a,b){ return dSum(b[1])-dSum(a[1]); });
-    dRows(byC,'dashCountry','samples'); dLegend('dashLg2'); dTable('dashTv2', byC);
-    var dk=d.desk||{prep:{},sys:{}};
-    dRows([['Preparer tasks ('+dSum(dk.prep)+')', dk.prep], ['System tasks ('+dSum(dk.sys)+')', dk.sys]].filter(function(x){ return dSum(x[1]); }),'dashDesk','tasks');
-    dLegend('dashLg3', ['todo','review','audit','done']);
-    $('dashCtl').innerHTML=(d.controls||[]).map(function(c){
-      return '<div><span class="tag'+(c.ok?' ok':'')+'">'+esc(c.ok?'OK':(c.tag||'Flag'))+'</span><span>'+esc(c.text)+'</span></div>'; }).join('');
+
+    var cols=DST.filter(function(s){ return s[0]!=='nf' || tot.nf; }), ncol=cols.length+6;
+    var head='<thead><tr><th>Request</th><th>Progress</th>'+cols.map(function(s){ return '<th class="n">'+s[1]+'</th>'; }).join('')+'<th class="n">Samples</th><th class="n">Tasks</th><th class="n">% closed</th><th>Due</th></tr></thead>';
+    var body=reqs.map(function(r){
+      var open=!!dashOpen[r.request_id];
+      var due=r.daysLate>0 ? '<span class="pill red">'+esc(r.due)+' · '+r.daysLate+' d late</span>' : (r.due?'<span class="pill neutral">'+esc(r.due)+'</span>':'');
+      var row='<tr class="req'+(open?' open':'')+'" data-req="'+esc(r.request_id)+'" tabindex="0" role="button" aria-expanded="'+open+'">'
+        +'<td><span class="chev">›</span><span class="nm">'+esc(r.ref)+'</span> <span class="pd">'+esc(r.period)+'</span>'
+        +'<div class="sm">'+esc(r.flow)+' · created '+fmtDate(r.created)+(r.closed?' · closed '+fmtDate(r.closed):'')+'</div></td>'
+        +'<td class="bar"><div class="sbar">'+dBar(r.s, r.ref, 'samples')+'</div></td>'
+        +cols.map(function(s){ return dNum(r.s[s[0]]); }).join('')
+        +'<td class="n">'+r.samples+'</td><td class="n">'+r.tasks+'</td><td class="n">'+dPct(r.s.done||0,r.samples)+'</td><td>'+due+'</td></tr>';
+      if(open) row+='<tr class="det"><td colspan="'+ncol+'">'+dashDetail(r, cols)+'</td></tr>';
+      return row;
+    }).join('');
+    body+='<tr class="tot"><td>All requests</td><td class="bar"><div class="sbar">'+dBar(tot,'All requests','samples')+'</div></td>'+cols.map(function(s){ return dNum(tot[s[0]]); }).join('')
+      +'<td class="n">'+nS+'</td><td class="n">'+nT+'</td><td class="n">'+dPct(tot.done||0,nS)+'</td><td></td></tr>';
+    $('dashGrid').innerHTML = reqs.length ? head+'<tbody>'+body+'</tbody>' : '<tbody><tr><td class="empty">No requests yet.</td></tr></tbody>';
+    dLegend('dashLg1', cols.map(function(s){ return s[0]; }));
+    $('dashWarn').innerHTML=(d.checks||[]).map(function(c){ return '<div class="dash-warn"><span class="tag">Data check</span><span>'+esc(c)+'</span></div>'; }).join('');
     $('dashFoot').textContent='Visible to Administrators and the dashboard viewers list (Settings: dashboard_viewers); never to Auditors. Every open is logged in Access_Log.';
   }
+
+  /** The opened request: where the time went, then its samples by country or its tasks by person. */
+  function dashDetail(r, cols){
+    var t=r.time||{}, sum=(t.none||0)+(t.prep||0)+(t.rev||0)+(t.aud||0), mode=dashMode[r.request_id]==='who'?'who':'co';
+    var h='<div class="dt-head"><b>Where the time went</b><span>'
+      +(r.closed ? 'Created '+fmtDate(r.created)+' · closed '+fmtDate(r.closed)+' · '+r.days+' day'+(r.days===1?'':'s')
+                 : 'Created '+fmtDate(r.created)+' · open for '+r.days+' day'+(r.days===1?'':'s'))
+      +(sum>0&&r.tasks ? ' · a task '+(r.closed?'was':'has been')+' open <b>'+d1(sum/r.tasks)+' days</b> on average'+(r.closed?'':' so far') : '')+'</span></div>';
+    if(sum>0){
+      h+='<div class="sbar tbar">'+DTM.filter(function(m){ return t[m[0]]>0; }).map(function(m){
+        return '<i style="flex:'+t[m[0]]+' 0 0;background:'+m[2]+'" data-tip="'+m[1]+': '+dPct(t[m[0]],sum)+' of the time · '+d1(t[m[0]])+' task-days"></i>'; }).join('')+'</div>'
+        +'<div class="legend">'+DTM.map(function(m){ return '<span><i style="background:'+m[2]+'"></i>'+m[1]+' <b>'+dPct(t[m[0]]||0,sum)+'</b></span>'; }).join('')+'</div>';
+    } else h+='<div class="cap">No task has been open long enough to measure yet.</div>';
+    h+='<div class="dt-switch"><div class="segmented">'
+      +'<button type="button" class="seg'+(mode==='co'?' active':'')+'" data-req="'+esc(r.request_id)+'" data-mode="co">By country</button>'
+      +'<button type="button" class="seg'+(mode==='who'?' active':'')+'" data-req="'+esc(r.request_id)+'" data-mode="who">By person</button></div>'
+      +'<span class="cap">'+(mode==='who'?'Count of tasks — a sample can have several, with different preparers.':'Count of samples. Grey shading = how many.')+'</span></div>';
+    return h+(mode==='who' ? dashPeople(r, sum) : dashCountries(r, cols));
+  }
+  function dashCountries(r, cols){
+    var co=r.co||[], max=0;
+    co.forEach(function(c){ cols.forEach(function(s){ max=Math.max(max, c.s[s[0]]||0); }); });
+    var cs=getComputedStyle(document.documentElement), heat=cs.getPropertyValue('--heat').trim()||'69,68,63', hm=parseFloat(cs.getPropertyValue('--heat-max'))||.3;
+    function cell(v){ if(!v) return '<td class="n z">—</td>'; return '<td class="n" style="background:rgba('+heat+','+(Math.sqrt(v/max)*hm).toFixed(3)+')">'+v+'</td>'; }
+    return '<div class="scroll"><table class="dash-grid inner"><thead><tr><th>Country · company</th>'+cols.map(function(s){ return '<th class="n">'+s[1]+'</th>'; }).join('')
+      +'<th class="n">Samples</th><th class="n">Tasks</th><th class="n">% closed</th></tr></thead><tbody>'
+      +co.map(function(c){ return '<tr><td>'+esc(c.country)+' <span class="code">'+esc(c.company)+'</span></td>'+cols.map(function(s){ return cell(c.s[s[0]]); }).join('')
+        +'<td class="n">'+c.samples+'</td><td class="n">'+c.tasks+'</td><td class="n">'+dPct(c.s.done||0,c.samples)+'</td></tr>'; }).join('')
+      +'</tbody></table></div>';
+  }
+  function dashPeople(r, sum){
+    var t=r.time||{}, held=t.held||{}, TB=['todo','review','audit','done'];
+    function cells(tk){ return TB.map(function(k){ return dNum(tk&&tk[k]); }).join(''); }
+    function tail(tasks, days, n){ return '<td class="n">'+(tasks===''?'':tasks)+'</td>'
+      +'<td class="n"'+(n?' data-tip="'+d1(days)+' days over '+n+' task'+(n===1?'':'s')+'"':'')+'>'+(n?d1(days/n):'—')+'</td><td class="n">'+(sum&&days!=null?dPct(days,sum):'—')+'</td>'; }
+    var all=r.prep||[], preps=all.filter(function(p){ return p.who; }), none=all.filter(function(p){ return !p.who; })[0];
+    var pTk=preps.reduce(function(o,p){ return dAdd(o,p.tk); },{}), pTasks=preps.reduce(function(n,p){ return n+p.tasks; },0);
+    var rows='<tr class="grp"><td>Preparers</td>'+cells(pTk)+tail(pTasks, t.prep||0, held.prep)+'</tr>';
+    preps.forEach(function(p){ rows+='<tr><td class="in">'+esc(shortEmail(p.who))+'</td>'+cells(p.tk)+tail(p.tasks, p.days, p.held)+'</tr>'; });
+    if((none&&none.tasks) || (t.none||0)>=0.05) rows+='<tr><td class="in">Not assigned yet</td>'+cells(none&&none.tk)+tail(none?none.tasks:0, t.none||0, 0)+'</tr>';
+    if(dSum(r.sys||{})) rows+='<tr><td class="in">App reconciliations <span class="sub2">no preparer</span></td>'+cells(r.sys)+tail(dSum(r.sys), null, 0)+'</tr>';
+    rows+='<tr class="grp"><td>Reviewer <span class="sub2">'+esc(shortEmail(r.reviewer)||'—')+'</span></td>'+cells({review:r.tk.review})+tail(held.rev||0, t.rev||0, held.rev)+'</tr>';
+    rows+='<tr class="grp"><td>Auditors <span class="sub2">'+esc(shortEmail(r.auditor)||'—')+'</span></td>'+cells({audit:r.tk.audit, done:r.tk.done})+tail(held.aud||0, t.aud||0, held.aud)+'</tr>';
+    (r.audBy||[]).forEach(function(a){
+      rows+='<tr><td class="in">'+esc(shortEmail(a.who))+'</td><td colspan="7" class="sub2">'+[a.closed?a.closed+' closed':'', a.returned?a.returned+' returned':''].filter(String).join(' · ')+'</td></tr>'; });
+    return '<div class="scroll"><table class="dash-grid inner"><thead><tr><th>Who</th><th class="n">With preparer</th><th class="n">In review</th><th class="n">In audit</th><th class="n">Closed</th>'
+      +'<th class="n">Tasks</th><th class="n">Avg days with them</th><th class="n">Share of time</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+      +'<p class="cap dt-note">Avg days with them = the calendar days a task spent with them, every stay counted, averaged over the tasks they held (hover a figure for the sum). Share of time = their part of all the days this request\'s tasks have been open. '
+      +'The auditors hold a task as a group: under them, who closed or returned it.'
+      +(r.approx?' Assignments were not yet logged task by task for '+r.approx+' of these tasks: their preparer days go to today\'s assignee.':'')+'</p>';
+  }
+  function dashToggle(tr){ var id=tr.getAttribute('data-req'); dashOpen[id]=!dashOpen[id]; if(dashData) renderDash(dashData); }
+  $('dashGrid').addEventListener('click', function(e){
+    var seg=e.target.closest('.seg[data-mode]');
+    if(seg){ dashMode[seg.getAttribute('data-req')]=seg.getAttribute('data-mode'); if(dashData) renderDash(dashData); return; }
+    var tr=e.target.closest('tr.req'); if(tr) dashToggle(tr);
+  });
+  $('dashGrid').addEventListener('keydown', function(e){
+    if((e.key==='Enter'||e.key===' ') && e.target.matches && e.target.matches('tr.req')){ e.preventDefault(); dashToggle(e.target); }
+  });
   document.addEventListener('mousemove', function(e){
     var tip=$('tip'), t=e.target&&e.target.closest?e.target.closest('[data-tip]'):null;
     if(!t){ if(!tip.hidden) tip.hidden=true; return; }
@@ -915,7 +977,7 @@
   $('tlX').addEventListener('click', closeTimeline);
   $('tlOverlay').addEventListener('click', function(e){ if(e.target===$('tlOverlay')) closeTimeline(); });
   var TL_LABEL={
-    ASSIGN:['Assigned to preparer',0], EVIDENCE_UPLOAD:['File uploaded',0], EVIDENCE_REMOVE:['File removed',0],
+    ASSIGN:['Assigned to preparer',0], TASK_ASSIGN:['Assigned',0], EVIDENCE_UPLOAD:['File uploaded',0], EVIDENCE_REMOVE:['File removed',0],
     ASSIGNMENT_SUBMIT:['Submitted by preparer',0], ASSIGNMENT_WITHDRAW:['Submission withdrawn',0],
     AI_CHECK:['AI assessment',1], AI_CHECK_ERROR:['AI check failed',1],
     SYSTEM_RECON:['Reconciliation computed by the app',0],

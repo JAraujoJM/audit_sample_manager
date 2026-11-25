@@ -23,6 +23,10 @@ promotion prod was already at @49, not @43 — check `clasp deployments` rather 
 **Flow D is live**: João confirmed on 23 Nov that `seedFlowD()` was run and two real requests were created under it and
 worked (done outside these sessions — the "awaiting `seedFlowD()` + a first real run" wording further down is history).
 
+**25 Nov 2026 — on `/dev`, NOT in prod (prod is still @50; promote only on João's go):** the dashboard rework
+(one row per request, people, time per holder — see "CFO dashboard" below), the per-task assignment log
+(`ASSIGN_TASKS`) and the formula guard `sheetText_`.
+
 ## Stack
 - **Google Apps Script** (V8, synced with `clasp`). Server is split by concern: `Code.js` (enrichment
   engine), `Db.js` (data layer), `Config.js` (SCHEMA/PROP/ROLES), `Setup.js` (provisioning/seed),
@@ -419,7 +423,32 @@ Measured on the Executions log (149 calls, 14–20 Oct): every call opened Confi
 - **Client**: `RUN()` = timed `google.script.run` (Proxy); screens keep their last copy (`MEMO`) and refresh quietly;
   the Request screen is one call (`requestScreen`).
 - **CFO dashboard** (`Dashboard.js`, first tab): Administrators + Settings `dashboard_viewers` (comma list), never
-  Auditors (`canSeeDashboard_`). No AI output. Orphan Sample_Lines (deleted requests) flagged "Data check first".
+  Auditors (`canSeeDashboard_`). No AI output, no comment. **Reworked 25 Nov 2026 (João):** six tiles (a "With preparers"
+  tile was missing), then ONE ROW PER REQUEST, oldest first — it used to group by stream, which merged Cash Anchor H1 and
+  Q3. A row opens (client state `dashOpen` / `dashMode`) to a "Where the time went" bar and a switch **By country**
+  (samples, heat cells) | **By person** (TASKS — a sample can have several preparers: each preparer's tasks by status,
+  "Avg days with them", share of time; then the reviewer and the auditors as a group, with who closed / returned). The
+  per-stream grid, the two charts, "Tasks by status" and "Method & controls" are gone; `checks[]` in the payload holds
+  only the checks that FAIL (orphan rows, a history that does not land on its status) and shows as a "Data check" line.
+  - **Time per holder = replay of `Activity_Log`** (`dashReplayTask_`, nothing stored, works for requests that were
+    already closed): a task is with nobody / its preparer / the reviewer / the auditors; hand-overs = `DASH_TASK_EV_`
+    (task actions) and `DASH_LINE_EV_` (whole-sample actions, applied only to the tasks they concern). An auditor's
+    return went to the preparer before 23 Nov and to the reviewer since: decided by what happened next (a preparer's
+    submit → it was with the preparer). The replayed final stage is compared with the task's status — a mismatch is
+    counted and shown, never trusted (0 of 179 on the 25 Nov Data export). **If an action's name or meaning changes,
+    update the two maps.** Calendar days. "Avg days with them" = their days / the tasks they held (every stay counted,
+    the sum is the cell's hover text), so the column does not add up top to bottom; share = days / all task-days of the
+    request. App reconciliations sit on the reviewer's desk from extraction (that is reviewer time).
+  - **Per-task assignment log (`ASSIGN_TASKS`, Assign.js `logAssignedTasks_`)**: the `ASSIGN` line only said how many
+    tasks a save touched. Now each save also writes ONE line on the request, details =
+    `{"v":1,"tasks":[[assignment_id, from, to], …]}` (only the tasks whose assignee changed; one `appendRow`, so a big
+    save is not slower and cannot collide with another execution's line). Readers: the replay (a reassigned task keeps
+    its previous preparer's days with them) and Sample history (`taskTimeline` expands it into `TASK_ASSIGN` events on
+    each task). Tasks assigned before it existed (`approx` in the payload, said on the page): "not assigned" runs to
+    the request's first `ASSIGN` save and all preparer days go to today's assignee.
+  - The payload is cached only under 90,000 chars (`cachedJson_`): ~2.2k per request, so beyond ~40 requests it is
+    rebuilt on every open — trim it (or page the closed requests) before that. The cache key now includes the
+    `Activity_Log` version (key prefix `DASH2`).
 - **Access_Log** (Data tab, created on first write; also in SCHEMA): every open / call / dashboard view with user,
   role, outcome (served/refused), server_ms, client_ms, scope, visit — client beacon `logUi`, refusals server-side.
   Read it for before/after numbers. Activity_Log stays the SOX trail.
@@ -429,6 +458,15 @@ Measured on the Executions log (149 calls, 14–20 Oct): every call opened Confi
 - **Look**: BankRec direction C (white top bar with tabs, orange underline = chrome only; state colours
   `--st-done/audit/review/todo/nf` on progress bars, tiles and charts). Offline harness + tests in the 20 Oct
   side-session notes (`harness.js`/`test.js`: real server code, mocked services, real Data export).
+
+## Text in cells: `sheetText_` (25 Nov 2026)
+Sheets reads a cell starting with `=` `+` `-` `@` as a formula. The first `AUDIT_FOLDER_SYNC` lines began with
+"+9 file(s)" → the 15 lines of 23–25 Nov show `#ERROR!` in Activity_Log (João: **leave them** — the original text is
+still in each cell's formula bar; the log is append-only and is not edited after the fact). `sheetText_` (Db.js) adds a
+leading space to such text; it is applied in `logActivity` (every log line), to the preparer's comment
+(`submitAssignment`) and to an uploaded file's name (`uploadEvidence`) — the two cells a preparer fills with free text;
+a formula there could read any cell of the Data sheet and be served back to them. Notes of the reviewer / auditor are
+safe by their prefix. **Any new cell holding free text that the app does not prefix must go through `sheetText_`.**
 
 ## Roadmap / next
 - **Flow D** is live (two real requests by 23 Nov 2026). Next: the "NAV value entries" workbook (system extract), preparer teams.

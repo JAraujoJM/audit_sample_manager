@@ -97,7 +97,7 @@ function assignBatch(updates) {
     if (email && !/@jumia\.com$/i.test(email)) throw new Error('Assignee must be a @jumia.com email: ' + email);
   });
 
-  var touchedLines = {}, requestId = '', updated = 0, locked = 0;
+  var touchedLines = {}, requestId = '', updated = 0, locked = 0, moves = [];
   updates.forEach(function (u) {
     var cur = current[String(u.assignment_id)];
     if (!cur) return;
@@ -109,6 +109,8 @@ function assignBatch(updates) {
       patch.status = email ? 'assigned' : 'pending';
     }
     updateRowById_(ds, 'Assignments', 'assignment_id', u.assignment_id, patch);
+    var was = String(cur.assigned_to || '').trim();
+    if (was.toLowerCase() !== email.toLowerCase()) moves.push([String(u.assignment_id), was, email]);
     touchedLines[cur.line_id] = true;
     updated++;
   });
@@ -116,7 +118,24 @@ function assignBatch(updates) {
   Object.keys(touchedLines).forEach(updateLineAssignmentRollup_);
   logActivity('ASSIGN', 'request', requestId, updated + ' assignment(s) updated by ' + who.email +
     (locked ? (' (' + locked + ' accepted item(s) left unchanged)') : ''));
+  logAssignedTasks_(requestId, moves);
   return { ok: true, updated: updated, locked: locked };
+}
+
+/**
+ * Who each task was given to, and taken from (25 Nov 2026). The ASSIGN line above only says how
+ * many tasks a save touched, so the trail could not tell who had held a task before a
+ * reassignment. ONE Activity_Log line per save — not one per task: a 300-task save must not get
+ * slower, and a single appendRow cannot collide with another execution's log line — with
+ * details = {"v":1,"tasks":[[assignment_id, from, to], …]} (only the tasks whose assignee changed).
+ * Read by the dashboard (Dashboard.js: a reassigned task keeps its previous preparer's days with
+ * them) and by Sample history (taskTimeline). Split so a line stays far below the cell limit.
+ * The format is load-bearing for both readers — change them together.
+ */
+function logAssignedTasks_(requestId, moves) {
+  for (var i = 0; i < moves.length; i += 400) {
+    logActivity(ASSIGN_LOG_ACTION_, 'request', requestId, JSON.stringify({ v: 1, tasks: moves.slice(i, i + 400) }));
+  }
 }
 
 /** Normalise a date cell to a 'yyyy-MM-dd' string. Handles both raw Date cells

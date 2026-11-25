@@ -234,7 +234,7 @@ function uploadEvidence(assignmentId, fileName, mimeType, base64Data, slot) {
 
   appendObject_(ds, 'Evidence', {
     evidence_id: newId_('EVD'), assignment_id: assignmentId, line_id: asg.line_id, request_id: asg.request_id,
-    file_id: file.getId(), file_name: fileName, mime: file.getMimeType(),
+    file_id: file.getId(), file_name: sheetText_(fileName), mime: file.getMimeType(),
     uploaded_by: me.email, uploaded_at: nowIso_(), status: 'uploaded', slot: String(slot || '')
   });
 
@@ -302,7 +302,7 @@ function submitAssignment(assignmentId, note) {
   // column so it never collides with the reviewer/auditor `notes` channel.
   note = String(note || '').trim();
   updateRowById_(ds, 'Assignments', 'assignment_id', assignmentId,
-    { status: 'submitted', submitted_at: nowIso_(), preparer_note: note });
+    { status: 'submitted', submitted_at: nowIso_(), preparer_note: sheetText_(note) });   // never a formula (Db.js sheetText_)
   updateLineAssignmentRollup_(asg.line_id);
   logActivity('ASSIGNMENT_SUBMIT', 'assignment', assignmentId, files.length + ' file(s)' + (note ? ' — ' + note : ''));
   return listMyAssignments();

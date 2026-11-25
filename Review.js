@@ -217,7 +217,23 @@ function taskTimeline(lineId) {
       entity_type: String(e.entity_type), assignment_id: String(e.entity_id),
       evidence_type: isAsg ? (labelByAsg[String(e.entity_id)] || '') : ''
     };
-  }).sort(function (a, b) { return String(a.ts).localeCompare(String(b.ts)); });
+  });
+  // Assignments are logged once per save, on the request (Assign.js logAssignedTasks_): shown
+  // here on each task of this sample they concern.
+  t.Activity_Log.forEach(function (e) {
+    if (String(e.action) !== ASSIGN_LOG_ACTION_ || String(e.entity_id) !== String(line.request_id)) return;
+    var moved = parseJson_(e.details).tasks;
+    if (!Array.isArray(moved)) return;
+    moved.forEach(function (x) {
+      var id = String(x && x[0]);
+      if (labelByAsg[id] == null) return;
+      var from = String(x[1] || ''), to = String(x[2] || '');
+      events.push({ ts: e.ts, actor: e.actor, action: 'TASK_ASSIGN',
+                    details: to ? (from ? 'from ' + from + ' to ' + to : 'to ' + to) : 'assignment removed (was ' + from + ')',
+                    entity_type: 'assignment', assignment_id: id, evidence_type: labelByAsg[id] || '' });
+    });
+  });
+  events.sort(function (a, b) { return String(a.ts).localeCompare(String(b.ts)); });
 
   var out = {
     sample: { line_id: line.line_id, document_no: line.document_no, vendor: line.vendor, status: line.status, subpopulation: line.subpopulation || '' },
