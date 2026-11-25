@@ -23,7 +23,7 @@ promotion prod was already at @49, not @43 — check `clasp deployments` rather 
 **Flow D is live**: João confirmed on 23 Nov that `seedFlowD()` was run and two real requests were created under it and
 worked (done outside these sessions — the "awaiting `seedFlowD()` + a first real run" wording further down is history).
 
-**25 Nov 2026 — on `/dev`, NOT in prod (prod is still @50; promote only on João's go):** the dashboard rework
+**25 Nov 2026 — prod = @51 (promoted on João's go, commit `48e5a6c`):** the dashboard rework
 (one row per request, people, time per holder — see "CFO dashboard" below), the per-task assignment log
 (`ASSIGN_TASKS`) and the formula guard `sheetText_`.
 
